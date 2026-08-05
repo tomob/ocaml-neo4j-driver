@@ -32,7 +32,6 @@
   (logs (>= 0.7))
   (ptime (>= 1.1))
   (mtime (>= 2.0))
-  (ipaddr (>= 5.5))
   (uri (>= 4.0))
   (alcotest :with-test)))
 
@@ -47,6 +46,7 @@
   (neodriver_core (= :version))
   (eio (>= 1.0))
   (eio_main (>= 1.0))
+  (ipaddr (>= 5.5))
   (alcotest :with-test)))
 
 (package
