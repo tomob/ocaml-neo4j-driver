@@ -50,7 +50,7 @@ ocaml-neo4j-driver/            # this repo
 - **Deadline**: `deadline.ml` (monotonic via Mtime + min-timeout) — one unified timing mechanism. **Done** (commit "step A0-3").
 
 ### Phase A1 — PackStream + hydration (port of reference, improvements)
-- Port `packstream.ml` → `neo4j_packstream` with fixes: marker validation → `ProtocolError` instead of `failwith`, bounds, a safe `unpack` with depth/size limits.
+- Port `packstream.ml` → `neo4j_packstream` with fixes: marker validation → `ProtocolError` instead of `failwith`, bounds, a safe `unpack` with depth/size limits. **Done** (commit "step A1-1"): `unpack` returns `(value, error) result`, `max_depth` limit (default 256), containers built incrementally, 16/32-bit lengths read as unsigned, dedicated `error` type + `.mli`.
 - **`values.ml` + `hydration.ml`** (modeled on `_codec/hydration/`):
   - tag descriptors: `N/R/r/P` → Node/Rel/Path; `X/Y` → Point (SRID 4326/4979/7203/9157); `D/T/t/F/f/d` → Date/Time/DateTime; `I/i` (UTC, Bolt 5.2+); `E` → Duration; `V` → Vector; `?` → UnsupportedType.
   - Node deduplication by `element_id` per result (per-query graph), like `_GraphHydrator`.
