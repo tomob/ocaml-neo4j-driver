@@ -11,6 +11,9 @@ open Eio.Std
 open Neodriver_core
 
 let ( let* ) = Result.bind
+let cancelled = function Eio.Cancel.Cancelled _ -> true | _ -> false
+
+type tls_mode = Plain | Verify of string | Trust_all of string
 
 type t = {
   socket : [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r;
@@ -29,8 +32,11 @@ let resolve_host net host port =
 let sockaddr_of_address net = function
   | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) -> resolve_host net host port
 
-let connect net clock sw ?(timeout = infinity) address =
+let connect net clock sw ?(timeout = infinity) ?(tls = Plain) address =
   let timeout = if timeout = infinity then None else Some timeout in
+  let with_timeout f =
+    match timeout with None -> f () | Some timeout -> Eio.Time.with_timeout_exn clock timeout f
+  in
   match sockaddr_of_address net address with
   | None ->
       Error
@@ -43,16 +49,34 @@ let connect net clock sw ?(timeout = infinity) address =
         | Some timeout ->
             Eio.Time.with_timeout_exn clock timeout (fun () -> Eio.Net.connect ~sw net sockaddr)
       in
+      let secure socket =
+        match tls with
+        | Plain -> Ok socket
+        | Verify host -> Tls_client.wrap { Tls_client.mode = Verify; host } socket
+        | Trust_all host -> Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
+      in
       let wrap socket =
         let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
-        { socket; clock; timeout }
+        let* socket = with_timeout (fun () -> secure socket) in
+        Ok { socket; clock; timeout }
       in
-      try Ok (wrap (connect ())) with
-      | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
-      | exn ->
+      match connect () with
+      | exception Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
+      | exception exn ->
           Error
             (Errors.Service_unavailable
-               (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn))))
+               (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
+      | socket -> (
+          match wrap socket with
+          | exception Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
+          | exception exn ->
+              if cancelled exn then raise exn
+              else
+                Error
+                  (Errors.Service_unavailable
+                     (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
+          | Ok transport -> Ok transport
+          | Error _ as error -> error))
 
 let read_exact t buf off len =
   let buffer = Cstruct.create len in

@@ -7,18 +7,31 @@ open Neodriver_core
 type t
 (** A TCP transport with a bounded read/write timeout and Bolt chunk framing. *)
 
+type tls_mode =
+  | Plain
+  | Verify of string
+  | Trust_all of string
+      (** How the connection is secured with TLS:
+          - [Plain]: no TLS.
+          - [Verify host]: wrap the connection in TLS, validating the server certificate against the
+            system trust store and checking [host] ([bolt+s]).
+          - [Trust_all host]: wrap the connection in TLS without validating the server certificate
+            ([bolt+ssc]). *)
+
 val connect :
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   float Eio.Time.clock_ty Eio.Resource.t ->
   Eio.Switch.t ->
   ?timeout:float ->
+  ?tls:tls_mode ->
   Addressing.t ->
   (t, Errors.t) result
-(** Open a TCP connection to [address] (resolving host names as needed) and return a transport.
+(** Open a TCP connection to [address] (resolving host names as needed) and return a transport. If
+    [tls] is [Verify _] or [Trust_all _], the connection is wrapped in TLS before returning.
     Reads/writes on the result are bounded by [timeout] seconds (no timeout if omitted).
     @return
-      [Error _] if the address cannot be resolved, the connection fails, or the connection times
-      out. *)
+      [Error _] if the address cannot be resolved, the connection or TLS handshake fails, or the
+      connection times out. *)
 
 val read_exact : t -> Bytes.t -> int -> int -> (unit, Errors.t) result
 (** Read exactly [len] bytes into [buf] starting at offset [off].
