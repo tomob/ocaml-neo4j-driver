@@ -1,4 +1,4 @@
 (library
  (name neodriver_core)
  (public_name neodriver_core)
- (libraries neodriver_packstream mtime mtime.clock.os))
+ (libraries neodriver_packstream mtime mtime.clock.os uri))

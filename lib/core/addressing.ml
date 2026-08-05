@@ -136,40 +136,11 @@ let scheme_of_string = function
   | "neo4j+ssc" -> Some Neo4j_self_signed
   | _ -> None
 
-let hex_value = function
-  | '0' .. '9' as c -> Char.code c - Char.code '0'
-  | 'a' .. 'f' as c -> Char.code c - Char.code 'a' + 10
-  | 'A' .. 'F' as c -> Char.code c - Char.code 'A' + 10
-  | _ -> -1
-
-(* Decode percent-encoded octets and '+' as space, as used in query strings. *)
+(* Decode percent-encoded octets and '+' as space, as used in query strings.
+   The percent-decoding is delegated to Uri.pct_decode; '+' is only special in
+   the query component. *)
 let url_decode s =
-  let buffer = Buffer.create (String.length s) in
-  let i = ref 0 in
-  let n = String.length s in
-  while !i < n do
-    let c = s.[!i] in
-    if c = '%' && !i + 2 < n then
-      let high = hex_value s.[!i + 1] in
-      let low = hex_value s.[!i + 2] in
-      if high >= 0 && low >= 0 then begin
-        Buffer.add_char buffer (Char.chr ((high * 16) + low));
-        i := !i + 3
-      end
-      else begin
-        Buffer.add_char buffer c;
-        incr i
-      end
-    else if c = '+' then begin
-      Buffer.add_char buffer ' ';
-      incr i
-    end
-    else begin
-      Buffer.add_char buffer c;
-      incr i
-    end
-  done;
-  Buffer.contents buffer
+  Uri.pct_decode (String.map (fun c -> if c = '+' then ' ' else c) s)
 
 (* Parse the query portion of a URI into a routing context. Values must be
    non-empty and keys must not be duplicated. *)
@@ -198,45 +169,38 @@ let parse_routing_context query =
   |> Result.map List.rev
 
 (* Parse a driver URI: "bolt://host[:port]", "neo4j://host[:port][?routing]"
-   and their "+s" / "+ssc" variants. Usernames/passwords are not supported. *)
-let parse_uri uri =
-  let uri = String.trim uri in
-  match String.index_opt uri ':' with
-  | None -> config_error "URI %S is missing a scheme" uri
-  | Some scheme_end ->
-      let scheme = String.lowercase_ascii (String.sub uri 0 scheme_end) in
-      let rest =
-        let start = scheme_end + 1 in
-        if String.length uri > start + 2 && String.sub uri start 2 = "//" then
-          String.sub uri (start + 2) (String.length uri - start - 2)
-        else String.sub uri start (String.length uri - start)
-      in
-      let* scheme =
-        match scheme_of_string scheme with
+   and their "+s" / "+ssc" variants. Usernames/passwords are not supported.
+   The URI structure is parsed by Uri (RFC 3986); only the driver-specific
+   policy (supported schemes, no userinfo, routing context) is verified here,
+   mirroring the Python driver's parse_neo4j_uri. *)
+let parse_uri uri_string =
+  let parsed = Uri.of_string (String.trim uri_string) in
+  let* scheme =
+    match Uri.scheme parsed with
+    | None -> config_error "URI %S is missing a scheme" uri_string
+    | Some scheme_str -> (
+        match scheme_of_string (String.lowercase_ascii scheme_str) with
         | Some scheme -> Ok scheme
         | None ->
             config_error
               "URI scheme %S is not supported. Supported URI schemes are %s"
-              scheme
-              (String.concat ", " supported_schemes)
-      in
-      let authority, query =
-        match String.index_opt rest '?' with
-        | Some i ->
-            ( String.sub rest 0 i,
-              String.sub rest (i + 1) (String.length rest - i - 1) )
-        | None -> (rest, "")
-      in
-      let authority =
-        match String.index_opt authority '/' with
-        | Some i -> String.sub authority 0 i
-        | None -> authority
-      in
-      if String.contains authority '@' then
-        config_error "Username and password are not supported in the URI %S" uri
-      else
-        let* routing_context =
-          if query = "" then Ok [] else parse_routing_context query
-        in
-        let* address = parse authority in
-        Ok { scheme; host = host address; port = port address; routing_context }
+              scheme_str
+              (String.concat ", " supported_schemes))
+  in
+  let* () =
+    match Uri.userinfo parsed with
+    | None -> Ok ()
+    | Some _ ->
+        config_error "Username and password are not supported in the URI %S"
+          uri_string
+  in
+  let host =
+    match Uri.host parsed with Some h when h <> "" -> h | _ -> default_host
+  in
+  let port = match Uri.port parsed with Some p -> p | None -> default_port in
+  let* routing_context =
+    match Uri.verbatim_query parsed with
+    | None | Some "" -> Ok []
+    | Some query -> parse_routing_context query
+  in
+  Ok { scheme; host; port; routing_context }
