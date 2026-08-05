@@ -7,3 +7,5 @@ module Errors = Errors
 module Config = Config
 module Addressing = Addressing
 module Deadline = Deadline
+module Temporal = Temporal
+module Values = Values

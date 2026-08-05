@@ -54,7 +54,7 @@ ocaml-neo4j-driver/            # this repo
 - **`values.ml` + `hydration.ml`** (modeled on `_codec/hydration/`):
   - tag descriptors: `N/R/r/P` → Node/Rel/Path; `X/Y` → Point (SRID 4326/4979/7203/9157); `D/T/t/F/f/d` → Date/Time/DateTime; `I/i` (UTC, Bolt 5.2+); `E` → Duration; `V` → Vector; `?` → UnsupportedType.
   - Node deduplication by `element_id` per result (per-query graph), like `_GraphHydrator`.
-  - value types: `Date/Time/DateTime/Duration` on nanoseconds + ISO-8601 + conversion to/from `Ptime`; `Point` with SRID registry; `Vector` (big-endian bytes).
+  - value types: `Date/Time/DateTime/Duration` on nanoseconds + ISO-8601 + conversion to/from `Ptime`; `Point` with SRID registry; `Vector` (big-endian bytes). **Done** (commit "step A1-2"): `temporal.ml` (full Date/Time/DateTime/Duration, named zones opaque) + `values.ml` (`t` with Node/Rel/Path/Point/Vector/Unsupported/Broken, `legacy_id` kept).
   - a `Broken` variant (analog of `BrokenHydrationObject`) propagated through records.
 
 ### Phase A2 — Eio transport + handshake + TLS
