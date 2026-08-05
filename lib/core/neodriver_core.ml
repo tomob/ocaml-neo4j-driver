@@ -8,3 +8,4 @@ module Addressing = Addressing
 module Deadline = Deadline
 module Temporal = Temporal
 module Values = Values
+module Hydration = Hydration
