@@ -23,3 +23,24 @@ dune runtest
 ```
 
 Requires OCaml >= 5.0 and dune >= 3.13.
+
+## Integration tests
+
+The integration tests in `test/test_integration/` run only when the
+`TEST_NEO4J_*` environment variables point at a live Neo4j instance; otherwise
+they are skipped. The easiest way to run them is with the Docker helper
+script:
+
+```sh
+scripts/integration.sh run              # start Neo4j, run all tests, stop Neo4j
+scripts/integration.sh run-integration  # start Neo4j, run only the integration tests, stop Neo4j
+scripts/integration.sh up               # start the Neo4j container (no-op if running)
+scripts/integration.sh test             # run all tests (container must be up)
+scripts/integration.sh integration      # run only the integration tests (container must be up)
+scripts/integration.sh status           # report whether the container is running
+scripts/integration.sh down             # stop and remove the container
+```
+
+Configuration is via environment variables, e.g. `NEO4J_IMAGE`,
+`NEO4J_CONTAINER`, `NEO4J_HOST_PORT`, `NEO4J_USER`, `NEO4J_PASS`,
+`NEO4J_SCHEME`, `NEO4J_LOG`.
