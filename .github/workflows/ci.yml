@@ -39,7 +39,7 @@ jobs:
         run: opam exec -- dune runtest
 
       - name: Check formatting
-        run: opam exec -- ocamlformat --check --enable-outside-detected-project $(find . -path ./_build -prune -o -name '*.ml' -print -o -name '*.mli' -print)
+        run: opam exec -- ocamlformat --check --enable-outside-detected-project $(find . -path ./_build -prune -o -path ./_opam -prune -o -name '*.ml' -print -o -name '*.mli' -print)
 
       - name: Build docs
         run: opam exec -- dune build @doc
