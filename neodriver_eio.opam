@@ -3,7 +3,7 @@ opam-version: "2.0"
 version: "0.1.0"
 synopsis: "Eio backend of the pure OCaml Neo4j driver"
 description:
-  "Eio (direct-style, OCaml 5) backend for the Neo4j driver. Supports bolt:// connections; TLS will follow in a later phase."
+  "Eio (direct-style, OCaml 5) backend for the Neo4j driver. Supports bolt://, bolt+s:// and bolt+ssc:// connections."
 maintainer: ["Tomasz Barański <tomasz.baranski@posteo.net>"]
 authors: ["Tomasz Barański <tomasz.baranski@posteo.net>"]
 license: "MIT"
@@ -16,6 +16,12 @@ depends: [
   "eio" {>= "1.0"}
   "eio_main" {>= "1.0"}
   "ipaddr" {>= "5.5"}
+  "tls" {>= "2.0"}
+  "tls-eio" {>= "2.0"}
+  "x509" {>= "1.0"}
+  "ca-certs" {>= "1.0"}
+  "domain-name" {>= "0.4"}
+  "mirage-crypto-rng" {>= "1.2"}
   "alcotest" {with-test}
   "odoc" {with-doc}
 ]

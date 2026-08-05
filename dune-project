@@ -38,16 +38,22 @@
 (package
  (name neodriver_eio)
  (synopsis "Eio backend of the pure OCaml Neo4j driver")
- (description
-  "Eio (direct-style, OCaml 5) backend for the Neo4j driver. Supports bolt:// connections; TLS will follow in a later phase.")
- (depends
-  (ocaml (>= 5.2.0))
-  (dune (>= 3.13))
-  (neodriver_core (= :version))
-  (eio (>= 1.0))
-  (eio_main (>= 1.0))
-  (ipaddr (>= 5.5))
-  (alcotest :with-test)))
+  (description
+   "Eio (direct-style, OCaml 5) backend for the Neo4j driver. Supports bolt://, bolt+s:// and bolt+ssc:// connections.")
+  (depends
+   (ocaml (>= 5.2.0))
+   (dune (>= 3.13))
+   (neodriver_core (= :version))
+   (eio (>= 1.0))
+   (eio_main (>= 1.0))
+   (ipaddr (>= 5.5))
+   (tls (>= 2.0))
+   (tls-eio (>= 2.0))
+   (x509 (>= 1.0))
+   (ca-certs (>= 1.0))
+   (domain-name (>= 0.4))
+   (mirage-crypto-rng (>= 1.2))
+   (alcotest :with-test)))
 
 (package
  (name neodriver)

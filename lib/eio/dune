@@ -1,4 +1,15 @@
 (library
  (name neodriver_eio)
  (public_name neodriver_eio)
- (libraries neodriver_core eio eio_main cstruct ipaddr))
+ (libraries
+  neodriver_core
+  eio
+  eio_main
+  cstruct
+  ipaddr
+  tls
+  tls-eio
+  x509
+  ca-certs
+  domain-name
+  mirage-crypto-rng.unix))
