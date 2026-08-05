@@ -3,6 +3,15 @@
 
 type t = { host : string; port : int; scheme : string; user : string; password : string }
 
+let scheme_of_string = function
+  | "bolt" -> Neodriver.Addressing.Bolt
+  | "bolt+s" -> Neodriver.Addressing.Bolt_secure
+  | "bolt+ssc" -> Neodriver.Addressing.Bolt_self_signed
+  | "neo4j" -> Neodriver.Addressing.Neo4j
+  | "neo4j+s" -> Neodriver.Addressing.Neo4j_secure
+  | "neo4j+ssc" -> Neodriver.Addressing.Neo4j_self_signed
+  | other -> invalid_arg ("Test_env: unknown scheme " ^ other)
+
 let of_env () =
   match Sys.getenv_opt "TEST_NEO4J_HOST" with
   | None -> None
@@ -20,3 +29,13 @@ let of_env () =
           user = Option.value ~default:"neo4j" (Sys.getenv_opt "TEST_NEO4J_USER");
           password = Option.value ~default:"" (Sys.getenv_opt "TEST_NEO4J_PASS");
         }
+
+(* A Conn.config for [env], using the env scheme unless overridden. *)
+let conn_config ?scheme (env : t) =
+  Neodriver_eio.Conn.
+    {
+      host = env.host;
+      port = env.port;
+      scheme = Option.value ~default:(scheme_of_string env.scheme) scheme;
+      connection_timeout = 10.0;
+    }

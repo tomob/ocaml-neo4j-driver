@@ -29,6 +29,10 @@ NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-testpassword}"
 NEO4J_SCHEME="${NEO4J_SCHEME:-bolt}"
 NEO4J_LOG="${NEO4J_LOG:-/var/lib/neo4j/logs/neo4j.log}"
+# The certificates are mounted read-only outside NEO4J_HOME (the container's
+# entrypoint chowns everything under NEO4J_HOME, which would require a writable
+# mount). Setting names containing underscores use a double underscore in the
+# env var name: the entrypoint maps '_' to '.' and '__' to '_'.
 
 die() {
   echo "error: $*" >&2
@@ -79,9 +83,21 @@ up() {
     echo "Container '${NEO4J_CONTAINER}' is already running."
     return 0
   fi
+  local ssl_dir
+  ssl_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/test/fixtures/neo4j-ssl"
+  # Enable the Bolt SSL policy with server.bolt.tls_level=OPTIONAL so the same
+  # port accepts both plain and TLS connections: the plain integration tests
+  # keep working and bolt+ssc/bolt+s are exercised too.
   docker run -d --name "${NEO4J_CONTAINER}" \
     -p "${NEO4J_HOST_PORT}:${NEO4J_BOLT_PORT}" \
+    -v "${ssl_dir}:/certificates:ro" \
     -e "NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASS}" \
+    -e "NEO4J_dbms_ssl_policy_bolt_enabled=true" \
+    -e "NEO4J_dbms_ssl_policy_bolt_base__directory=/certificates" \
+    -e "NEO4J_dbms_ssl_policy_bolt_private__key=private.key" \
+    -e "NEO4J_dbms_ssl_policy_bolt_public__certificate=public.crt" \
+    -e "NEO4J_dbms_ssl_policy_bolt_client__auth=NONE" \
+    -e "NEO4J_server_bolt_tls__level=OPTIONAL" \
     "${NEO4J_IMAGE}" >/dev/null
   wait_ready
 }
@@ -116,7 +132,10 @@ test_() {
 }
 
 test_integration() {
+  # Plain pass (bolt://).
   run_tests Integration
+  # TLS pass (bolt+ssc): the [Integration > TLS] tests run only in this pass.
+  NEO4J_SCHEME=bolt+ssc run_tests Integration
 }
 
 run() {
@@ -139,7 +158,7 @@ Usage: $0 {run|run-integration|up|test|integration|status|down}
   run-integration  start the container, run only the integration tests, then stop it
   up               start the Neo4j container (no-op if already running)
   test             run all tests (container must be running)
-  integration      run only the integration tests (container must be running)
+  integration      run only the integration tests, plain and TLS (container must be running)
   status           report whether the container is running
   down             stop and remove the Neo4j container
 

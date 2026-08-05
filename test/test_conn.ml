@@ -1,11 +1,11 @@
-(* Unit tests for Conn (no live Neo4j needed for the non-TLS paths). *)
+(* Unit tests for Conn (no live Neo4j needed). *)
 
 open Neodriver
 open Neodriver_eio
 open Alcotest
 
-(* bolt+s / bolt+ssc are rejected until TLS is implemented. *)
-let tls_error () =
+(* Routing schemes (neo4j://) are rejected until routing is implemented. *)
+let routing_not_supported () =
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.clock env in
@@ -15,12 +15,12 @@ let tls_error () =
               {
                 host = "localhost";
                 port = 7687;
-                scheme = Addressing.Bolt_secure;
+                scheme = Addressing.Neo4j;
                 connection_timeout = 5.0;
               }
           in
           match Conn.connect net clock sw config with
-          | Ok _ -> fail "TLS should not be supported yet"
+          | Ok _ -> fail "routing should not be supported yet"
           | Error _ -> ()))
 
 (* Conn.connect negotiates the version reported by the mock server. *)
@@ -37,8 +37,30 @@ let connect_via_mock () =
           Conn.close conn
       | Error error -> fail (Errors.to_string error))
 
+(* Conn.connect maps bolt+ssc to TLS without certificate validation. *)
+let connect_via_mock_tls () =
+  Test_tls_mock.with_mock
+    (Test_mock.Manifest [ (5, 8, 8) ])
+    (fun net clock sw port ->
+      let config =
+        Conn.
+          {
+            host = "127.0.0.1";
+            port;
+            scheme = Addressing.Bolt_self_signed;
+            connection_timeout = 5.0;
+          }
+      in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          check (pair int int) "conn tls version" (5, 8) (conn.major, conn.minor);
+          Conn.close conn
+      | Error error -> fail (Errors.to_string error))
+
 let tests =
   [
-    ("[Conn] tls_error", [ test_case "TLS scheme rejected" `Quick tls_error ]);
+    ( "[Conn] routing_not_supported",
+      [ test_case "routing scheme rejected" `Quick routing_not_supported ] );
     ("[Conn] connect_via_mock", [ test_case "connect negotiates" `Quick connect_via_mock ]);
+    ("[Conn] connect_via_mock_tls", [ test_case "bolt+ssc connects" `Quick connect_via_mock_tls ]);
   ]
