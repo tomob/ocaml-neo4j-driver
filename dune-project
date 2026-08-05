@@ -41,3 +41,16 @@
   (eio (>= 1.0))
   (eio_main (>= 1.0))
   (alcotest :with-test)))
+
+(package
+ (name neodriver)
+ (synopsis "Convenience module aggregating the public Neo4j driver API")
+ (description
+  "Aggregates the public API of neodriver_packstream, neodriver_core and neodriver_eio under a single Neodriver namespace with friendly short names.")
+ (depends
+  (ocaml (>= 5.0))
+  (dune (>= 3.13))
+  (neodriver_packstream (= :version))
+  (neodriver_core (= :version))
+  (neodriver_eio (= :version))
+  (alcotest :with-test)))

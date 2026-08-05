@@ -24,11 +24,14 @@ ocaml-neo4j-driver/            # this repo
     state.ml                   # client state machine (READY/STREAMING/TX/FAILED/AUTHENTICATION)
     summary.ml                 # ResultSummary, counters, GQL notifications
   lib/eio/                     # neodriver_eio — Eio backend
+    neodriver_eio.ml           # root module (curated public interface)
     transport_eio.ml           # read/write/connect/shutdown + deadline
     conn.ml                    # single Bolt connection
     pool.ml                    # pool
     routing.ml                 # routing table, ROUTE, load balancing
     session.ml, result.ml, tx.ml, driver.ml
+  lib/neodriver/               # neodriver — convenience aggregator
+    neodriver.ml               # friendly names: Neodriver.Packstream/Errors/Config/Driver
   lib/lwt/                     # (later) neodriver_lwt
   testkitbackend/              # Track B — JSON-over-stdio server (analog of testkitbackend/)
   test/                        # alcotest per module
@@ -39,7 +42,7 @@ ocaml-neo4j-driver/            # this repo
 ## TRACK A — Library core
 
 ### Phase A0 — Foundations
-- Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.0`), opam packages (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`; later `neodriver_lwt`), CI (OCaml 5.0–5.4 matrix, `ocamlformat` lint). **Done** (commit "step A0-1").
+- Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.0`), opam packages (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`, `neodriver`; later `neodriver_lwt`), CI (OCaml 5.0–5.4 matrix, `ocamlformat` lint). **Done** (commit "step A0-1").
 - **`errors.ml`** (modeled on `exceptions.py`): type
   `type error = { code : string; message : string; retryable : bool; unauthenticates_all : bool; has_security_code : bool }` with constructors for client errors (`ClientError`, `TransientError`, `DatabaseError`, `ServiceUnavailable`, `SessionExpired`, `PoolTimeout`, ...) and `of_failure : code -> message -> error`. This is the anchor for retry/deactivation/re-auth.
 - **`config.ml`**: records with defaults `{connection_acquisition_timeout=60.; max_transaction_retry_time=30.; initial_retry_delay=1.; retry_delay_multiplier=2.; retry_delay_jitter_factor=0.2; fetch_size=1000; max_pool_size=100; max_connection_lifetime=3600; ...}`.

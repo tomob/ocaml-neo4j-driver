@@ -1,5 +1,4 @@
 (library
  (name neodriver_core)
- (wrapped false)
  (public_name neodriver_core)
  (libraries neodriver_packstream))

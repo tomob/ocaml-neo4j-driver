@@ -1,0 +1,4 @@
+(library
+ (name neodriver)
+ (public_name neodriver)
+ (libraries neodriver_packstream neodriver_core neodriver_eio))
