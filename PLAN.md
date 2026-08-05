@@ -52,10 +52,10 @@ ocaml-neo4j-driver/            # this repo
 ### Phase A1 — PackStream + hydration (port of reference, improvements)
 - Port `packstream.ml` → `neo4j_packstream` with fixes: marker validation → `ProtocolError` instead of `failwith`, bounds, a safe `unpack` with depth/size limits. **Done** (commit "step A1-1"): `unpack` returns `(value, error) result`, `max_depth` limit (default 256), containers built incrementally, 16/32-bit lengths read as unsigned, dedicated `error` type + `.mli`.
 - **`values.ml` + `hydration.ml`** (modeled on `_codec/hydration/`):
-  - tag descriptors: `N/R/r/P` → Node/Rel/Path; `X/Y` → Point (SRID 4326/4979/7203/9157); `D/T/t/F/f/d` → Date/Time/DateTime; `I/i` (UTC, Bolt 5.2+); `E` → Duration; `V` → Vector; `?` → UnsupportedType.
+  - tag descriptors: `N/R/r/P` → Node/Rel/Path; `X/Y` → Point (SRID 4326/4979/7203/9157); `D/T/t/F/f/d` → Date/Time/DateTime; `I/i` (offset / zone name, Bolt 5.2+); `E` → Duration; `V` → Vector; `?` → UnsupportedType.
   - Node deduplication by `element_id` per result (per-query graph), like `_GraphHydrator`. **Done** (commit "step A1-3"): `hydration.ml` with per-version tags (`F/f` vs `I/i`, `V`/`?` for Bolt 6), per-query graph dedup + label/property merge, `Broken` propagation, `hydrate`/`dehydrate`.
   - value types: `Date/Time/DateTime/Duration` on nanoseconds + ISO-8601 + conversion to/from `Ptime`; `Point` with SRID registry; `Vector` (big-endian bytes). **Done** (commit "step A1-2"): `temporal.ml` (full Date/Time/DateTime/Duration, named zones opaque) + `values.ml` (`t` with Node/Rel/Path/Point/Vector/Unsupported/Broken, `legacy_id` kept).
-  - a `Broken` variant (analog of `BrokenHydrationObject`) propagated through records.
+  - a `Broken` variant (analog of `BrokenHydrationObject`) propagated through lists/maps. **Done** (A1-2/A1-3): `Values.Broken` + propagation in `hydration.ml`; surfacing as a record-access error belongs to Phase A4 (Result layer).
 
 ### Phase A2 — Eio transport + handshake + TLS
 - **`transport_eio.ml`**: `Eio.Net` + fibers, `SO_KEEPALIVE`, reads/writes with deadlines, 16 KiB chunks + `0x0000`, coalescing.
