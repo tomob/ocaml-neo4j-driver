@@ -5,11 +5,28 @@
    Addressing, Deadline and Driver directly. *)
 
 module Packstream = Neodriver_packstream.Packstream
+(** PackStream binary serialization. *)
+
 module Errors = Neodriver_core.Errors
+(** Error taxonomy. *)
+
 module Config = Neodriver_core.Config
+(** Configuration records. *)
+
 module Addressing = Neodriver_core.Addressing
+(** Server addresses and URI parsing. *)
+
 module Deadline = Neodriver_core.Deadline
+(** Deadlines. *)
+
 module Temporal = Neodriver_core.Temporal
+(** Temporal value types. *)
+
 module Values = Neodriver_core.Values
+(** Rich value types. *)
+
 module Hydration = Neodriver_core.Hydration
+(** Hydration. *)
+
 module Driver = Neodriver_eio.Driver
+(** Eio backend entry point. *)

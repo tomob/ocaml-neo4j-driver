@@ -2,7 +2,7 @@
 
    See config.ml for the implementation. *)
 
-type access_mode = Read | Write
+type access_mode = Read | Write  (** Access mode for a session: [Read] or [Write]. *)
 
 type workspace_config = {
   connection_acquisition_timeout : float;
@@ -15,6 +15,7 @@ type workspace_config = {
   impersonated_user : string option;
   disable_auto_commit_retries : bool;
 }
+(** Session workspace settings: timeouts, retry policy, fetch size and database selection. *)
 
 type pool_config = {
   max_connection_lifetime : float;
@@ -25,10 +26,16 @@ type pool_config = {
   keep_alive : bool;
   telemetry_disabled : bool;
 }
+(** Connection pool settings. *)
 
 val default_access_mode : access_mode
+(** Default access mode ([Write]). *)
+
 val default_workspace_config : workspace_config
+(** Default workspace configuration. *)
+
 val default_pool_config : pool_config
+(** Default pool configuration. *)
 
 val make_workspace_config :
   ?connection_acquisition_timeout:float ->
@@ -42,6 +49,9 @@ val make_workspace_config :
   ?disable_auto_commit_retries:bool ->
   unit ->
   (workspace_config, Errors.t) result
+(** Build a [workspace_config] from the given overrides (defaults from {!default_workspace_config}),
+    validating the numeric settings.
+    @return [Error (Errors.Configuration_error _)] on out-of-range values. *)
 
 val make_pool_config :
   ?max_connection_lifetime:float ->
@@ -53,3 +63,6 @@ val make_pool_config :
   ?telemetry_disabled:bool ->
   unit ->
   (pool_config, Errors.t) result
+(** Build a [pool_config] from the given overrides (defaults from {!default_pool_config}),
+    validating the numeric settings.
+    @return [Error (Errors.Configuration_error _)] on out-of-range values. *)
