@@ -1,0 +1,3 @@
+(library
+ (name test_integration)
+ (libraries neodriver alcotest eio_main))

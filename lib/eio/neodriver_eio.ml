@@ -3,3 +3,6 @@
    This root module curates which modules of the library are exposed to
    consumers. Only modules aliased here are part of the public API. *)
 module Driver = Driver
+module Transport = Transport
+module Handshake = Handshake
+module Conn = Conn

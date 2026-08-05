@@ -1,4 +1,4 @@
 (library
  (name neodriver_eio)
  (public_name neodriver_eio)
- (libraries neodriver_core eio eio_main))
+ (libraries neodriver_core eio eio_main cstruct ipaddr))

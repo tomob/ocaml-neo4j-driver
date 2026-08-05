@@ -58,8 +58,8 @@ ocaml-neo4j-driver/            # this repo
   - a `Broken` variant (analog of `BrokenHydrationObject`) propagated through lists/maps. **Done** (A1-2/A1-3): `Values.Broken` + propagation in `hydration.ml`; surfacing as a record-access error belongs to Phase A4 (Result layer).
 
 ### Phase A2 — Eio transport + handshake + TLS
-- **`transport_eio.ml`**: `Eio.Net` + fibers, `SO_KEEPALIVE`, reads/writes with deadlines, 16 KiB chunks + `0x0000`, coalescing.
-- **Handshake**: v1 (proposing Bolt 3/4/5) **and manifest `0xFF`** (Bolt 5.4+ and 6.0/6.1) — selecting the highest supported version within the server's range; negotiation in `handshake.ml`.
+- **`transport_eio.ml`**: `Eio.Net` + fibers, `SO_KEEPALIVE`, reads/writes with deadlines, 16 KiB chunks + `0x0000`, coalescing. **Done** (commit "step A2-1"): `transport.ml` (TCP via `Eio.Net`, deadline-bounded reads/writes, chunk framing + NOOP skip), `handshake.ml` (v1 + manifest `0xFF`, highest supported version), `conn.ml` (`Conn.connect`, TLS schemes rejected until A2-2). `SO_KEEPALIVE` deferred (Eio's portable Net API does not expose socket options).
+- **Handshake**: v1 (proposing Bolt 3/4/5) **and manifest `0xFF`** (Bolt 5.4+ and 6.0/6.1) — selecting the highest supported version within the server's range; negotiation in `handshake.ml`. **Done** (commit "step A2-1"), unit-tested via a mock server; integration handshake test gated on `TEST_NEO4J_*` env vars.
 - **TLS via `tls-eio`**: trust modes (system CAs / custom CAs / TrustAll), **hostname verification + SNI from the unresolved host**, TLS ≥ 1.2, mTLS with client certificate. ⚠️ **Risk**: maturity of `tls-eio` — verify in Phase A2; fallback: `ocaml-tls` with a custom Eio adapter, or temporarily `ssl`/`lwt_ssl` for the Lwt flavor.
 - **Address iteration**: `getaddrinfo`, trying all addresses (IPv4+IPv6), error aggregation (the `ExceptionGroup` equivalent — in OCaml a chained record `{last; all}`), timeouts clamped to the deadline.
 
