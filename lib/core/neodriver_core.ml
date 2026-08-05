@@ -4,3 +4,5 @@
    consumers. Only modules aliased here are part of the public API. *)
 module Errors = Errors
 module Config = Config
+module Addressing = Addressing
+module Deadline = Deadline

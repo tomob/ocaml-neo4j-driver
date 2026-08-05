@@ -46,8 +46,8 @@ ocaml-neo4j-driver/            # this repo
 - **`errors.ml`** (modeled on `exceptions.py`): type
   `type error = ...` with constructors for client errors (`ClientError`, `TransientError`, `DatabaseError`, `ServiceUnavailable`, `SessionExpired`, `PoolTimeout`, ...) and `of_neo4j_code : code:string -> message:string -> t`. This is the anchor for retry/deactivation/re-auth. Includes the `classification`/`specific` sub-types, the `_ERROR_REWRITE_MAP` port, `is_retryable`, `unauthenticates_all_connections`, `has_security_code` and `is_fatal_during_discovery`. **Done** (commit "step A0-2").
 - **`config.ml`**: records with defaults `{connection_acquisition_timeout=60.; max_transaction_retry_time=30.; initial_retry_delay=1.; retry_delay_multiplier=2.; retry_delay_jitter_factor=0.2; fetch_size=1000; max_pool_size=100; max_connection_lifetime=3600; ...}` plus validated `make_*` constructors returning `(t, Errors.t) result`. **Done** (commit "step A0-2").
-- **`addressing.ml`**: `Address` + `parse_uri` (extended with `neo4j://`, `+s/+ssc`, routing context from the query string), default ports, `ResolvedAddress` carrying the unresolved host (for SNI).
-- **Deadline**: `deadline.ml` (monotonic + min-timeout) — one unified timing mechanism.
+- **`addressing.ml`**: `Address` + `parse_uri` (extended with `neo4j://`, `+s/+ssc`, routing context from the query string), default ports, `ResolvedAddress` carrying the unresolved host (for SNI). Returns `result`; includes percent-decoding of the routing context. **Done** (commit "step A0-3").
+- **Deadline**: `deadline.ml` (monotonic via Mtime + min-timeout) — one unified timing mechanism. **Done** (commit "step A0-3").
 
 ### Phase A1 — PackStream + hydration (port of reference, improvements)
 - Port `packstream.ml` → `neo4j_packstream` with fixes: marker validation → `ProtocolError` instead of `failwith`, bounds, a safe `unpack` with depth/size limits.

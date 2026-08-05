@@ -4,4 +4,7 @@ module _ = Neodriver.Errors
 module _ = Neodriver.Config
 module _ = Neodriver.Driver
 
-let () = run "neodriver" (Test_errors.tests @ Test_config.tests)
+let () =
+  run "neodriver"
+    (Test_errors.tests @ Test_config.tests @ Test_addressing.tests
+   @ Test_deadline.tests)
