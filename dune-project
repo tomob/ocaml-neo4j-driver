@@ -2,6 +2,11 @@
 (name ocaml_neo4j_driver)
 (version 0.1.0)
 (license MIT)
+(authors "Tomasz Barański <tomasz.baranski@posteo.net>")
+(maintainers "Tomasz Barański <tomasz.baranski@posteo.net>")
+(homepage "https://github.com/tomob/ocaml-neo4j-driver")
+(bug_reports "https://github.com/tomob/ocaml-neo4j-driver/issues")
+(source (github tomob/ocaml-neo4j-driver))
 (generate_opam_files true)
 
 (package
@@ -10,7 +15,7 @@
  (description
   "Pure OCaml implementation of PackStream, the binary serialization format used by Neo4j's Bolt protocol. No async dependencies.")
  (depends
-  (ocaml (>= 5.0))
+  (ocaml (>= 5.2.0))
   (dune (>= 3.13))
   (alcotest :with-test)))
 
@@ -20,7 +25,7 @@
  (description
   "Shared, backend-agnostic logic for the Neo4j driver: error taxonomy, configuration, addressing, hydration, client state machine and result summaries.")
  (depends
-  (ocaml (>= 5.0))
+  (ocaml (>= 5.2.0))
   (dune (>= 3.13))
   (neodriver_packstream (= :version))
   (fmt (>= 0.9))
@@ -36,7 +41,7 @@
  (description
   "Eio (direct-style, OCaml 5) backend for the Neo4j driver. Supports bolt:// connections; TLS will follow in a later phase.")
  (depends
-  (ocaml (>= 5.0))
+  (ocaml (>= 5.2.0))
   (dune (>= 3.13))
   (neodriver_core (= :version))
   (eio (>= 1.0))
@@ -49,7 +54,7 @@
  (description
   "Aggregates the public API of neodriver_packstream, neodriver_core and neodriver_eio under a single Neodriver namespace with friendly short names.")
  (depends
-  (ocaml (>= 5.0))
+  (ocaml (>= 5.2.0))
   (dune (>= 3.13))
   (neodriver_packstream (= :version))
   (neodriver_core (= :version))

@@ -4,9 +4,13 @@ version: "0.1.0"
 synopsis: "Convenience module aggregating the public Neo4j driver API"
 description:
   "Aggregates the public API of neodriver_packstream, neodriver_core and neodriver_eio under a single Neodriver namespace with friendly short names."
+maintainer: ["Tomasz Barański <tomasz.baranski@posteo.net>"]
+authors: ["Tomasz Barański <tomasz.baranski@posteo.net>"]
 license: "MIT"
+homepage: "https://github.com/tomob/ocaml-neo4j-driver"
+bug-reports: "https://github.com/tomob/ocaml-neo4j-driver/issues"
 depends: [
-  "ocaml" {>= "5.0"}
+  "ocaml" {>= "5.2.0"}
   "dune" {>= "3.13" & >= "3.13"}
   "neodriver_packstream" {= version}
   "neodriver_core" {= version}
@@ -28,3 +32,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
+dev-repo: "git+https://github.com/tomob/ocaml-neo4j-driver.git"

@@ -42,7 +42,7 @@ ocaml-neo4j-driver/            # this repo
 ## TRACK A — Library core
 
 ### Phase A0 — Foundations
-- Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.0`), opam packages (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`, `neodriver`; later `neodriver_lwt`), CI (OCaml 5.0–5.4 matrix, `ocamlformat` lint). **Done** (commit "step A0-1").
+- Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.2.0`), opam packages (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`, `neodriver`; later `neodriver_lwt`), CI (OCaml 5.4.x matrix, `ocamlformat` lint). **Done** (commit "step A0-1").
 - **`errors.ml`** (modeled on `exceptions.py`): type
   `type error = ...` with constructors for client errors (`ClientError`, `TransientError`, `DatabaseError`, `ServiceUnavailable`, `SessionExpired`, `PoolTimeout`, ...) and `of_neo4j_code : code:string -> message:string -> t`. This is the anchor for retry/deactivation/re-auth. Includes the `classification`/`specific` sub-types, the `_ERROR_REWRITE_MAP` port, `is_retryable`, `unauthenticates_all_connections`, `has_security_code` and `is_fatal_during_discovery`. **Done** (commit "step A0-2").
 - **`config.ml`**: records with defaults `{connection_acquisition_timeout=60.; max_transaction_retry_time=30.; initial_retry_delay=1.; retry_delay_multiplier=2.; retry_delay_jitter_factor=0.2; fetch_size=1000; max_pool_size=100; max_connection_lifetime=3600; ...}` plus validated `make_*` constructors returning `(t, Errors.t) result`. **Done** (commit "step A0-2").
