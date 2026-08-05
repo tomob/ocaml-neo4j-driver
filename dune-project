@@ -32,6 +32,7 @@
   (logs (>= 0.7))
   (ptime (>= 1.1))
   (mtime (>= 2.0))
+  (ipaddr (>= 5.5))
   (uri (>= 4.0))
   (alcotest :with-test)))
 
