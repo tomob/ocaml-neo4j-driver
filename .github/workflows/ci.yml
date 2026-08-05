@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: OCaml ${{ matrix.ocaml-compiler }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ocaml-compiler:
+          - 5.0.x
+          - 5.1.x
+          - 5.2.x
+          - 5.3.x
+          - 5.4.x
+    steps:
+      - name: Checkout tree
+        uses: actions/checkout@v4
+
+      - name: Set-up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml-compiler }}
+          dune-cache: true
+
+      - name: Install dependencies
+        run: opam install . --deps-only --with-test
+
+      - name: Install dev tools
+        run: opam install ocamlformat.0.29.0
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Run tests
+        run: opam exec -- dune runtest
+
+      - name: Check formatting
+        run: opam exec -- ocamlformat --check --enable-outside-detected-project $(find . -path ./_build -prune -o -name '*.ml' -print -o -name '*.mli' -print)
+
+      - name: Build docs
+        run: opam exec -- dune build @doc

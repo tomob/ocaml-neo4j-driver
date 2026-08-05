@@ -12,10 +12,10 @@ Plan for a pure OCaml Neo4j client library (full cluster driver), built as a **n
 ## Project structure (dune/opam)
 
 ```
-neo4j-ocaml-driver/            # this repo
-  lib/packstream/              # neo4j_packstream — pure, no dependencies
+ocaml-neo4j-driver/            # this repo
+  lib/packstream/              # neodriver_packstream — pure, no dependencies
     packstream.mli/.ml
-  lib/core/                    # neo4j_bolt_core — shared, transport-agnostic
+  lib/core/                    # neodriver_core — shared, transport-agnostic
     errors.mli/.ml             # error taxonomy + retryable
     config.mli/.ml             # driver/session/tx config + defaults
     addressing.mli/.ml         # Address, URI parse (bolt://, neo4j://, routing context)
@@ -23,13 +23,13 @@ neo4j-ocaml-driver/            # this repo
     values.ml                  # Node/Rel/Path/Point/Date/Time/DateTime/Duration/Vector/Unsupported
     state.ml                   # client state machine (READY/STREAMING/TX/FAILED/AUTHENTICATION)
     summary.ml                 # ResultSummary, counters, GQL notifications
-  lib/eio/                     # neo4j_bolt — Eio backend
+  lib/eio/                     # neodriver_eio — Eio backend
     transport_eio.ml           # read/write/connect/shutdown + deadline
     conn.ml                    # single Bolt connection
     pool.ml                    # pool
     routing.ml                 # routing table, ROUTE, load balancing
     session.ml, result.ml, tx.ml, driver.ml
-  lib/lwt/                     # (later) neo4j_bolt_lwt
+  lib/lwt/                     # (later) neodriver_lwt
   testkitbackend/              # Track B — JSON-over-stdio server (analog of testkitbackend/)
   test/                        # alcotest per module
 ```
@@ -39,7 +39,7 @@ neo4j-ocaml-driver/            # this repo
 ## TRACK A — Library core
 
 ### Phase A0 — Foundations
-- Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.0`), opam packages (`neo4j_packstream`, `neo4j_bolt`; later `neo4j_bolt_lwt`), CI (OCaml 5.x matrix, `ocamlformat` lint).
+- Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.0`), opam packages (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`; later `neodriver_lwt`), CI (OCaml 5.0–5.4 matrix, `ocamlformat` lint). **Done** (commit "step A0-1").
 - **`errors.ml`** (modeled on `exceptions.py`): type
   `type error = { code : string; message : string; retryable : bool; unauthenticates_all : bool; has_security_code : bool }` with constructors for client errors (`ClientError`, `TransientError`, `DatabaseError`, `ServiceUnavailable`, `SessionExpired`, `PoolTimeout`, ...) and `of_failure : code -> message -> error`. This is the anchor for retry/deactivation/re-auth.
 - **`config.ml`**: records with defaults `{connection_acquisition_timeout=60.; max_transaction_retry_time=30.; initial_retry_delay=1.; retry_delay_multiplier=2.; retry_delay_jitter_factor=0.2; fetch_size=1000; max_pool_size=100; max_connection_lifetime=3600; ...}`.
@@ -108,5 +108,5 @@ neo4j-ocaml-driver/            # this repo
 ## Risks and open decisions
 
 1. **Maturity of `tls-eio`** (in Phase A2) — the most serious risk. Decision: check its state; if problematic, use `ocaml-tls` with a custom adapter or defer TLS behind the rest of the transport (MVP on `bolt://`).
-2. **Package names**: if the new project is to be published on opam, the names `neo4j_bolt`/`neo4j_bolt_eio` are taken by the reference repo → consider `neo4j_driver`/`neo4j_driver_eio`.
+2. **Package names**: the opam name `neo4j_bolt` is already published (reference repo), so this project uses the `neodriver_*` prefix (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`).
 3. **Version coverage**: design for Bolt 3–6 from the start (state machine + feature gates), but the MVP in Phase A3 may only support 4.4/5.x, with the rest added iteratively.
