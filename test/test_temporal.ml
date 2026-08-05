@@ -24,33 +24,27 @@ let date_round_trip () =
   (match D.of_iso8601 "2023-02-29" with
   | Some _ -> fail "invalid leap day should fail"
   | None -> ());
-  (match D.of_iso8601 "2024-13-01" with
-  | Some _ -> fail "invalid month should fail"
-  | None -> ());
+  (match D.of_iso8601 "2024-13-01" with Some _ -> fail "invalid month should fail" | None -> ());
   match D.of_ymd (2024, 1, 1) with
   | Some d ->
-      check string "ordinal round trip" "2024-01-01"
-        (D.to_string (D.of_ordinal (D.to_ordinal d)))
+      check string "ordinal round trip" "2024-01-01" (D.to_string (D.of_ordinal (D.to_ordinal d)))
   | None -> fail "2024-01-01"
 
 let date_arithmetic () =
   (match D.of_ymd (2024, 1, 31) with
   | Some d -> (
       match D.add_months 1 d with
-      | Some d' ->
-          check string "jan31 +1mo clamps" "2024-02-29" (D.to_string d')
+      | Some d' -> check string "jan31 +1mo clamps" "2024-02-29" (D.to_string d')
       | None -> fail "jan31 +1mo")
   | None -> fail "2024-01-31");
   (match D.of_ymd (2024, 3, 31) with
   | Some d -> (
       match D.add_months (-1) d with
-      | Some d' ->
-          check string "mar31 -1mo clamps" "2024-02-29" (D.to_string d')
+      | Some d' -> check string "mar31 -1mo clamps" "2024-02-29" (D.to_string d')
       | None -> fail "mar31 -1mo")
   | None -> fail "2024-03-31");
   match D.of_ymd (2024, 1, 1) with
-  | Some d ->
-      check string "add 1 day" "2024-01-02" (D.to_string (D.add_days 1 d))
+  | Some d -> check string "add 1 day" "2024-01-02" (D.to_string (D.add_days 1 d))
   | None -> fail "2024-01-01"
 
 let time_round_trip () =
@@ -63,9 +57,7 @@ let time_round_trip () =
   (match T.of_hms_ns 23 59 59 999999999 with
   | Some t -> check string "max" "23:59:59.999999999" (T.to_string t)
   | None -> fail "max");
-  (match T.of_hms_ns 24 0 0 0 with
-  | Some _ -> fail "hour 24 should fail"
-  | None -> ());
+  (match T.of_hms_ns 24 0 0 0 with Some _ -> fail "hour 24 should fail" | None -> ());
   (match T.of_iso8601 "12:34:56.123456789" with
   | Some t -> check string "iso round" "12:34:56.123456789" (T.to_string t)
   | None -> fail "iso");
@@ -85,26 +77,19 @@ let time_arithmetic () =
 
 let datetime_round_trip () =
   (match DT.of_ymd_hms (1970, 1, 1) (0, 0, 0) 0 with
-  | Some dt ->
-      check string "epoch naive" "1970-01-01T00:00:00" (DT.to_string dt)
+  | Some dt -> check string "epoch naive" "1970-01-01T00:00:00" (DT.to_string dt)
   | None -> fail "epoch");
   (match DT.of_ymd_hms ~tz:(Offset 7200) (1970, 1, 1) (0, 0, 0) 0 with
-  | Some dt ->
-      check int64 "offset epoch" (-7200L) (fst (DT.to_epoch_seconds dt))
+  | Some dt -> check int64 "offset epoch" (-7200L) (fst (DT.to_epoch_seconds dt))
   | None -> fail "offset epoch");
-  (match
-     DT.of_ymd_hms ~tz:(Zone_name "Europe/Warsaw") (2024, 1, 1) (12, 0, 0) 0
-   with
+  (match DT.of_ymd_hms ~tz:(Zone_name "Europe/Warsaw") (2024, 1, 1) (12, 0, 0) 0 with
   | Some _ -> fail "named zone of_ymd_hms should be None"
   | None -> ());
   (match DT.of_iso8601 "2024-01-01T12:34:56.123456789+02:00" with
-  | Some dt ->
-      check string "iso round" "2024-01-01T12:34:56.123456789+02:00"
-        (DT.to_string dt)
+  | Some dt -> check string "iso round" "2024-01-01T12:34:56.123456789+02:00" (DT.to_string dt)
   | None -> fail "iso round");
   (match DT.of_iso8601 "2024-01-01T00:00:00Z" with
-  | Some dt ->
-      check string "iso z" "2024-01-01T00:00:00+00:00" (DT.to_string dt)
+  | Some dt -> check string "iso z" "2024-01-01T00:00:00+00:00" (DT.to_string dt)
   | None -> fail "iso z");
   match DT.of_iso8601 "2024-01-01 12:00:00" with
   | Some dt -> check string "iso space" "2024-01-01T12:00:00" (DT.to_string dt)
@@ -122,9 +107,7 @@ let datetime_ptime () =
   match DT.of_ymd_hms (1970, 1, 1) (0, 0, 0) 0 with
   | Some dt -> (
       match DT.to_ptime dt with
-      | Some p ->
-          check bool "epoch ptime" true
-            (Ptime.equal p (Option.get (Ptime.of_float_s 0.)))
+      | Some p -> check bool "epoch ptime" true (Ptime.equal p (Option.get (Ptime.of_float_s 0.)))
       | None -> fail "epoch to_ptime")
   | None -> fail "epoch"
 
@@ -132,8 +115,7 @@ let duration_round_trip () =
   let d = DU.of_fields ~months:14 ~days:3 ~seconds:4L ~nanoseconds:500000000 in
   check string "iso" "P1Y2M3DT4.500000000S" (DU.to_string d);
   (match DU.of_iso8601 "P1Y2M3DT4H5M6.5S" with
-  | Some d ->
-      check string "iso round" "P1Y2M3DT4H5M6.500000000S" (DU.to_string d)
+  | Some d -> check string "iso round" "P1Y2M3DT4H5M6.500000000S" (DU.to_string d)
   | None -> fail "iso parse");
   (match DU.of_iso8601 "PT0S" with
   | Some d -> check string "zero" "PT0S" (DU.to_string d)
@@ -141,9 +123,7 @@ let duration_round_trip () =
   (match DU.of_iso8601 "P1DT2H" with
   | Some d -> check string "1dt2h" "P1DT2H" (DU.to_string d)
   | None -> fail "1dt2h");
-  match DU.of_iso8601 "garbage" with
-  | Some _ -> fail "garbage should fail"
-  | None -> ()
+  match DU.of_iso8601 "garbage" with Some _ -> fail "garbage should fail" | None -> ()
 
 let duration_arithmetic () =
   let a = DU.of_fields ~months:1 ~days:0 ~seconds:0L ~nanoseconds:500000000 in
@@ -169,20 +149,13 @@ let duration_span () =
 
 let tests =
   [
-    ( "[Temporal] Date round_trip",
-      [ test_case "round trip" `Quick date_round_trip ] );
-    ( "[Temporal] Date arithmetic",
-      [ test_case "arithmetic" `Quick date_arithmetic ] );
-    ( "[Temporal] Time round_trip",
-      [ test_case "round trip" `Quick time_round_trip ] );
-    ( "[Temporal] Time arithmetic",
-      [ test_case "arithmetic" `Quick time_arithmetic ] );
-    ( "[Temporal] DateTime round_trip",
-      [ test_case "round trip" `Quick datetime_round_trip ] );
+    ("[Temporal] Date round_trip", [ test_case "round trip" `Quick date_round_trip ]);
+    ("[Temporal] Date arithmetic", [ test_case "arithmetic" `Quick date_arithmetic ]);
+    ("[Temporal] Time round_trip", [ test_case "round trip" `Quick time_round_trip ]);
+    ("[Temporal] Time arithmetic", [ test_case "arithmetic" `Quick time_arithmetic ]);
+    ("[Temporal] DateTime round_trip", [ test_case "round trip" `Quick datetime_round_trip ]);
     ("[Temporal] DateTime ptime", [ test_case "ptime" `Quick datetime_ptime ]);
-    ( "[Temporal] Duration round_trip",
-      [ test_case "round trip" `Quick duration_round_trip ] );
-    ( "[Temporal] Duration arithmetic",
-      [ test_case "arithmetic" `Quick duration_arithmetic ] );
+    ("[Temporal] Duration round_trip", [ test_case "round trip" `Quick duration_round_trip ]);
+    ("[Temporal] Duration arithmetic", [ test_case "arithmetic" `Quick duration_arithmetic ]);
     ("[Temporal] Duration span", [ test_case "span" `Quick duration_span ]);
   ]

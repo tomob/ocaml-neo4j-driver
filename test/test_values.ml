@@ -11,8 +11,7 @@ let values () =
         properties = [ ("name", Values.String "Alice") ];
       }
   in
-  check string "node" "Node<1>{Person}{\"name\": \"Alice\"}"
-    (Values.to_string node);
+  check string "node" "Node<1>{Person}{\"name\": \"Alice\"}" (Values.to_string node);
   let rel =
     Values.Relationship
       {
@@ -47,15 +46,12 @@ let values () =
   let br = Values.Broken { error = "bad"; raw = Packstream.Null } in
   check string "broken" "<broken: bad>" (Values.to_string br);
   let duration =
-    Values.Duration
-      (Temporal.Duration.of_fields ~months:1 ~days:0 ~seconds:0L ~nanoseconds:0)
+    Values.Duration (Temporal.Duration.of_fields ~months:1 ~days:0 ~seconds:0L ~nanoseconds:0)
   in
   check string "duration" "P1M" (Values.to_string duration)
 
 let list_map () =
-  let v =
-    Values.List [ Values.Int 1L; Values.Map [ ("k", Values.String "v") ] ]
-  in
+  let v = Values.List [ Values.Int 1L; Values.Map [ ("k", Values.String "v") ] ] in
   check string "list/map" "[1, {\"k\": \"v\"}]" (Values.to_string v)
 
 let tests =

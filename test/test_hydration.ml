@@ -4,9 +4,7 @@ open Alcotest
 
 let scalar () =
   let h = Hydration.create Hydration.V2 in
-  (match Hydration.hydrate h Null with
-  | Values.Null -> ()
-  | v -> fail (Values.to_string v));
+  (match Hydration.hydrate h Null with Values.Null -> () | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (Int 42L) with
   | Values.Int n -> check int64 "int" 42L n
   | v -> fail (Values.to_string v));
@@ -14,12 +12,10 @@ let scalar () =
   | Values.String s -> check string "string" "hi" s
   | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (List [ Int 1L; Bool true ]) with
-  | Values.List l ->
-      check string "list" "[1, true]" (Values.to_string (Values.List l))
+  | Values.List l -> check string "list" "[1, true]" (Values.to_string (Values.List l))
   | v -> fail (Values.to_string v));
   match Hydration.hydrate h (Map [ ("a", Int 1L) ]) with
-  | Values.Map m ->
-      check string "map" "{\"a\": 1}" (Values.to_string (Values.Map m))
+  | Values.Map m -> check string "map" "{\"a\": 1}" (Values.to_string (Values.Map m))
   | v -> fail (Values.to_string v)
 
 let node () =
@@ -38,9 +34,7 @@ let node () =
       check string "element_id" "n1" n.element_id;
       check (list string) "labels" [ "Person"; "Employee" ] n.labels;
       check string "name prop" "Alice"
-        (match List.assoc_opt "name" n.properties with
-        | Some (Values.String s) -> s
-        | _ -> "?");
+        (match List.assoc_opt "name" n.properties with Some (Values.String s) -> s | _ -> "?");
       check int "graph nodes" 1 (List.length (Hydration.nodes h))
   | v -> fail (Values.to_string v)
 
@@ -58,14 +52,7 @@ let relationship () =
   let h = Hydration.create Hydration.V2 in
   let struct_ =
     Structure
-      ( 0x52,
-        [
-          String "r1";
-          String "n1";
-          String "n2";
-          String "KNOWS";
-          Map [ ("since", Int 2000L) ];
-        ] )
+      (0x52, [ String "r1"; String "n1"; String "n2"; String "KNOWS"; Map [ ("since", Int 2000L) ] ])
   in
   match Hydration.hydrate h struct_ with
   | Values.Relationship r ->
@@ -80,23 +67,15 @@ let node_dedup () =
   (* A relationship endpoint node first, then a full node with the same
      element_id: labels/properties must be merged. *)
   let h = Hydration.create Hydration.V2 in
-  let rel =
-    Structure
-      (0x52, [ String "r1"; String "n1"; String "n2"; String "X"; Map [] ])
-  in
+  let rel = Structure (0x52, [ String "r1"; String "n1"; String "n2"; String "X"; Map [] ]) in
   ignore (Hydration.hydrate h rel);
   let node_struct =
-    Structure
-      ( 0x4E,
-        [
-          String "n1"; List [ String "Person" ]; Map [ ("name", String "Bob") ];
-        ] )
+    Structure (0x4E, [ String "n1"; List [ String "Person" ]; Map [ ("name", String "Bob") ] ])
   in
   match Hydration.hydrate h node_struct with
   | Values.Node n ->
       check (list string) "merged labels" [ "Person" ] n.labels;
-      check string "merged props" "{\"name\": \"Bob\"}"
-        (Values.to_string (Values.Map n.properties));
+      check string "merged props" "{\"name\": \"Bob\"}" (Values.to_string (Values.Map n.properties));
       check int "graph nodes" 2 (List.length (Hydration.nodes h))
   | v -> fail (Values.to_string v)
 
@@ -136,42 +115,26 @@ let path () =
 let temporal () =
   let h = Hydration.create Hydration.V2 in
   (match Hydration.hydrate h (Structure (0x44, [ Int 19723L ])) with
-  | Values.Date d ->
-      check string "date" "2024-01-01" (Values.to_string (Values.Date d))
+  | Values.Date d -> check string "date" "2024-01-01" (Values.to_string (Values.Date d))
   | v -> fail (Values.to_string v));
-  (match
-     Hydration.hydrate h
-       (Structure (0x54, [ Int 43_200_000_000_000L; Int 7200L ]))
-   with
-  | Values.Time t ->
-      check string "time" "12:00:00+02:00" (Values.to_string (Values.Time t))
+  (match Hydration.hydrate h (Structure (0x54, [ Int 43_200_000_000_000L; Int 7200L ])) with
+  | Values.Time t -> check string "time" "12:00:00+02:00" (Values.to_string (Values.Time t))
   | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (Structure (0x64, [ Int 0L; Int 0L ])) with
   | Values.DateTime dt ->
-      check string "local dt" "1970-01-01T00:00:00"
-        (Values.to_string (Values.DateTime dt))
+      check string "local dt" "1970-01-01T00:00:00" (Values.to_string (Values.DateTime dt))
   | v -> fail (Values.to_string v));
-  (match
-     Hydration.hydrate h (Structure (0x49, [ Int (-7200L); Int 0L; Int 7200L ]))
-   with
+  (match Hydration.hydrate h (Structure (0x49, [ Int (-7200L); Int 0L; Int 7200L ])) with
   | Values.DateTime dt ->
-      check string "offset dt" "1970-01-01T00:00:00+02:00"
-        (Values.to_string (Values.DateTime dt))
+      check string "offset dt" "1970-01-01T00:00:00+02:00" (Values.to_string (Values.DateTime dt))
   | v -> fail (Values.to_string v));
-  (match
-     Hydration.hydrate h
-       (Structure (0x69, [ Int 0L; Int 0L; String "Europe/Warsaw" ]))
-   with
+  (match Hydration.hydrate h (Structure (0x69, [ Int 0L; Int 0L; String "Europe/Warsaw" ])) with
   | Values.DateTime dt ->
-      check string "zone dt" "1970-01-01T00:00:00"
-        (Values.to_string (Values.DateTime dt))
+      check string "zone dt" "1970-01-01T00:00:00" (Values.to_string (Values.DateTime dt))
   | v -> fail (Values.to_string v));
-  (match
-     Hydration.hydrate h (Structure (0x45, [ Int 2L; Int 3L; Int 4L; Int 5L ]))
-   with
+  (match Hydration.hydrate h (Structure (0x45, [ Int 2L; Int 3L; Int 4L; Int 5L ])) with
   | Values.Duration d ->
-      check string "duration" "P2M3DT4.000000005S"
-        (Values.to_string (Values.Duration d))
+      check string "duration" "P2M3DT4.000000005S" (Values.to_string (Values.Duration d))
   | v -> fail (Values.to_string v));
   (* 'F' is not valid in V2 *)
   match Hydration.hydrate h (Structure (0x46, [ Int 0L; Int 0L; Int 0L ])) with
@@ -180,34 +143,22 @@ let temporal () =
 
 let point_vector_unsupported () =
   let h = Hydration.create Hydration.V3 in
-  (match
-     Hydration.hydrate h (Structure (0x58, [ Int 4326L; Float 1.5; Float 2.5 ]))
-   with
+  (match Hydration.hydrate h (Structure (0x58, [ Int 4326L; Float 1.5; Float 2.5 ])) with
   | Values.Point p ->
       check bool "wgs84" true (Values.point_is_wgs84 p);
-      check string "point" "Point{4326:1.5, 2.5}"
-        (Values.to_string (Values.Point p))
+      check string "point" "Point{4326:1.5, 2.5}" (Values.to_string (Values.Point p))
   | v -> fail (Values.to_string v));
-  (match
-     Hydration.hydrate h
-       (Structure (0x56, [ Int 0xCBL; Bytes (Bytes.create 8) ]))
-   with
+  (match Hydration.hydrate h (Structure (0x56, [ Int 0xCBL; Bytes (Bytes.create 8) ])) with
   | Values.Vector v -> check int "vector len" 1 (Values.vector_length v)
   | v -> fail (Values.to_string v));
-  (match
-     Hydration.hydrate h
-       (Structure (0x3F, [ String "FancyType"; Int 6L; Int 0L; Map [] ]))
-   with
+  (match Hydration.hydrate h (Structure (0x3F, [ String "FancyType"; Int 6L; Int 0L; Map [] ])) with
   | Values.Unsupported u ->
       check string "unsupported name" "FancyType" u.name;
       check (pair int int) "min version" (6, 0) u.minimum_protocol_version
   | v -> fail (Values.to_string v));
   (* vector is not valid in V2 *)
   let h2 = Hydration.create Hydration.V2 in
-  match
-    Hydration.hydrate h2
-      (Structure (0x56, [ Int 0xCBL; Bytes (Bytes.create 8) ]))
-  with
+  match Hydration.hydrate h2 (Structure (0x56, [ Int 0xCBL; Bytes (Bytes.create 8) ])) with
   | Values.Broken _ -> ()
   | v -> fail (Values.to_string v)
 
@@ -236,12 +187,8 @@ let round_trip () =
       Values.Map [ ("k", Values.Bool false) ];
       Values.Date (Temporal.Date.of_days 19723);
       Values.Time (Temporal.Time.of_ticks 43_200_000_000_000L);
-      Values.DateTime
-        (Temporal.DateTime.of_epoch_seconds ~tz:(Temporal.Offset 7200) (-7200L)
-           0);
-      Values.Duration
-        (Temporal.Duration.of_fields ~months:2 ~days:3 ~seconds:4L
-           ~nanoseconds:5);
+      Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:(Temporal.Offset 7200) (-7200L) 0);
+      Values.Duration (Temporal.Duration.of_fields ~months:2 ~days:3 ~seconds:4L ~nanoseconds:5);
       Values.Point { srid = 4326; x = 1.5; y = 2.5; z = None };
       Values.Node
         {
@@ -266,8 +213,7 @@ let round_trip () =
       let packed = Hydration.dehydrate h v in
       match Hydration.hydrate h packed with
       | hydrated ->
-          check string (Values.to_string v) (Values.to_string v)
-            (Values.to_string hydrated))
+          check string (Values.to_string v) (Values.to_string v) (Values.to_string hydrated))
     values
 
 let vector_round_trip () =
@@ -282,20 +228,13 @@ let tests =
   [
     ("[Hydration] scalar", [ test_case "scalars" `Quick scalar ]);
     ("[Hydration] node", [ test_case "node" `Quick node ]);
-    ( "[Hydration] node_legacy_id",
-      [ test_case "legacy id" `Quick node_legacy_id ] );
-    ( "[Hydration] relationship",
-      [ test_case "relationship" `Quick relationship ] );
-    ( "[Hydration] node_dedup",
-      [ test_case "node dedup/merge" `Quick node_dedup ] );
+    ("[Hydration] node_legacy_id", [ test_case "legacy id" `Quick node_legacy_id ]);
+    ("[Hydration] relationship", [ test_case "relationship" `Quick relationship ]);
+    ("[Hydration] node_dedup", [ test_case "node dedup/merge" `Quick node_dedup ]);
     ("[Hydration] path", [ test_case "path stitching" `Quick path ]);
     ("[Hydration] temporal", [ test_case "temporal tags" `Quick temporal ]);
-    ( "[Hydration] point_vector_unsupported",
-      [ test_case "v3 tags" `Quick point_vector_unsupported ] );
-    ( "[Hydration] broken",
-      [ test_case "broken propagation" `Quick broken_propagation ] );
-    ( "[Hydration] round_trip",
-      [ test_case "hydrate<->dehydrate" `Quick round_trip ] );
-    ( "[Hydration] vector_round_trip",
-      [ test_case "vector round trip" `Quick vector_round_trip ] );
+    ("[Hydration] point_vector_unsupported", [ test_case "v3 tags" `Quick point_vector_unsupported ]);
+    ("[Hydration] broken", [ test_case "broken propagation" `Quick broken_propagation ]);
+    ("[Hydration] round_trip", [ test_case "hydrate<->dehydrate" `Quick round_trip ]);
+    ("[Hydration] vector_round_trip", [ test_case "vector round trip" `Quick vector_round_trip ]);
   ]

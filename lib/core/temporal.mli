@@ -48,9 +48,7 @@ type duration = { months : int; days : int; seconds : int64; nanoseconds : int }
 module Duration : sig
   type t = duration
 
-  val of_fields :
-    months:int -> days:int -> seconds:int64 -> nanoseconds:int -> t
-
+  val of_fields : months:int -> days:int -> seconds:int64 -> nanoseconds:int -> t
   val to_fields : t -> int * int * int64 * int
   val neg : t -> t
   val add : t -> t -> t
@@ -73,10 +71,7 @@ module DateTime : sig
   val of_epoch_seconds : ?tz:tz -> int64 -> int -> t
   val to_epoch_seconds : t -> int64 * int
   val tz : t -> tz option
-
-  val of_ymd_hms :
-    ?tz:tz -> int * int * int -> int * int * int -> int -> t option
-
+  val of_ymd_hms : ?tz:tz -> int * int * int -> int * int * int -> int -> t option
   val to_ymd_hms : t -> (int * int * int) * (int * int * int) * int
   val add : Duration.t -> t -> t option
   val sub : Duration.t -> t -> t option

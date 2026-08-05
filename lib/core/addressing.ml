@@ -9,30 +9,15 @@ let ( let* ) = Result.bind
 
 type t = IPv4 of string * int | IPv6 of string * int * int * int
 type resolved = { address : t; unresolved_host : string }
-
-type scheme =
-  | Bolt
-  | Bolt_secure
-  | Bolt_self_signed
-  | Neo4j
-  | Neo4j_secure
-  | Neo4j_self_signed
-
-type uri = {
-  scheme : scheme;
-  host : string;
-  port : int;
-  routing_context : (string * string) list;
-}
+type scheme = Bolt | Bolt_secure | Bolt_self_signed | Neo4j | Neo4j_secure | Neo4j_self_signed
+type uri = { scheme : scheme; host : string; port : int; routing_context : (string * string) list }
 
 let default_host = "localhost"
 let default_port = 7687
 let default_routing_targets = [ ":"; ":17601"; ":17687" ]
 
 let config_error fmt =
-  Printf.ksprintf
-    (fun message -> Error (Errors.Configuration_error message))
-    fmt
+  Printf.ksprintf (fun message -> Error (Errors.Configuration_error message)) fmt
 
 let host = function IPv4 (host, _) | IPv6 (host, _, _, _) -> host
 let port = function IPv4 (_, port) | IPv6 (_, port, _, _) -> port
@@ -68,30 +53,25 @@ let parse_ipv6 ?(default_host = default_host) ?(default_port = default_port) s =
   | None -> config_error "Invalid IPv6 address %S" s
   | Some close ->
       let host = String.sub rest 0 close in
-      let after =
-        String.trim
-          (String.sub rest (close + 1) (String.length rest - close - 1))
-      in
+      let after = String.trim (String.sub rest (close + 1) (String.length rest - close - 1)) in
       let host = if host = "" then default_host else host in
       let* port =
         if after = "" then Ok default_port
         else if String.starts_with ~prefix:":" after then
-          parse_port ~default_port
-            (String.sub after 1 (String.length after - 1))
+          parse_port ~default_port (String.sub after 1 (String.length after - 1))
         else config_error "Invalid IPv6 address %S" s
       in
       Ok (IPv6 (host, port, 0, 0))
 
 (* Parse a "host:port" or "[host]:port" string into an address. Empty host and
+
    port parts fall back to the provided defaults. *)
 let parse ?(default_host = default_host) ?(default_port = default_port) s =
-  if String.starts_with ~prefix:"[" s then
-    parse_ipv6 ~default_host ~default_port s
+  if String.starts_with ~prefix:"[" s then parse_ipv6 ~default_host ~default_port s
   else parse_ipv4 ~default_host ~default_port s
 
 (* Parse a whitespace-separated list of targets into addresses. *)
-let parse_list ?(default_host = default_host) ?(default_port = default_port)
-    targets =
+let parse_list ?(default_host = default_host) ?(default_port = default_port) targets =
   let rec go = function
     | [] -> Ok []
     | target :: rest ->
@@ -99,10 +79,7 @@ let parse_list ?(default_host = default_host) ?(default_port = default_port)
         let* addresses = go rest in
         Ok (address :: addresses)
   in
-  targets
-  |> List.concat_map (String.split_on_char ' ')
-  |> List.filter (fun s -> s <> "")
-  |> go
+  targets |> List.concat_map (String.split_on_char ' ') |> List.filter (fun s -> s <> "") |> go
 
 let make_resolved address unresolved_host = { address; unresolved_host }
 
@@ -124,8 +101,7 @@ let scheme_to_string = function
   | Neo4j_secure -> "neo4j+s"
   | Neo4j_self_signed -> "neo4j+ssc"
 
-let supported_schemes =
-  [ "bolt"; "bolt+s"; "bolt+ssc"; "neo4j"; "neo4j+s"; "neo4j+ssc" ]
+let supported_schemes = [ "bolt"; "bolt+s"; "bolt+ssc"; "neo4j"; "neo4j+s"; "neo4j+ssc" ]
 
 let scheme_of_string = function
   | "bolt" -> Some Bolt
@@ -139,8 +115,7 @@ let scheme_of_string = function
 (* Decode percent-encoded octets and '+' as space, as used in query strings.
    The percent-decoding is delegated to Uri.pct_decode; '+' is only special in
    the query component. *)
-let url_decode s =
-  Uri.pct_decode (String.map (fun c -> if c = '+' then ' ' else c) s)
+let url_decode s = Uri.pct_decode (String.map (fun c -> if c = '+' then ' ' else c) s)
 
 (* Parse the query portion of a URI into a routing context. Values must be
    non-empty and keys must not be duplicated. *)
@@ -150,20 +125,16 @@ let parse_routing_context query =
        (fun acc pair ->
          let* context = acc in
          match String.index_opt pair '=' with
-         | None ->
-             config_error "Invalid parameter %S in query string '%s'" pair query
+         | None -> config_error "Invalid parameter %S in query string '%s'" pair query
          | Some i ->
              let key = String.sub pair 0 i in
              let value = String.sub pair (i + 1) (String.length pair - i - 1) in
              let key = url_decode key in
              let value = url_decode value in
              if value = "" then
-               config_error "Invalid parameter '%s=%s' in query string '%s'" key
-                 value query
+               config_error "Invalid parameter '%s=%s' in query string '%s'" key value query
              else if List.mem_assoc key context then
-               config_error
-                 "Duplicated query parameter '%s' in query string '%s'" key
-                 query
+               config_error "Duplicated query parameter '%s' in query string '%s'" key query
              else Ok ((key, value) :: context))
        (Ok [])
   |> Result.map List.rev
@@ -182,21 +153,15 @@ let parse_uri uri_string =
         match scheme_of_string (String.lowercase_ascii scheme_str) with
         | Some scheme -> Ok scheme
         | None ->
-            config_error
-              "URI scheme %S is not supported. Supported URI schemes are %s"
-              scheme_str
+            config_error "URI scheme %S is not supported. Supported URI schemes are %s" scheme_str
               (String.concat ", " supported_schemes))
   in
   let* () =
     match Uri.userinfo parsed with
     | None -> Ok ()
-    | Some _ ->
-        config_error "Username and password are not supported in the URI %S"
-          uri_string
+    | Some _ -> config_error "Username and password are not supported in the URI %S" uri_string
   in
-  let host =
-    match Uri.host parsed with Some h when h <> "" -> h | _ -> default_host
-  in
+  let host = match Uri.host parsed with Some h when h <> "" -> h | _ -> default_host in
   let port = match Uri.port parsed with Some p -> p | None -> default_port in
   let* routing_context =
     match Uri.verbatim_query parsed with

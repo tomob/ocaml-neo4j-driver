@@ -3,40 +3,28 @@ open Alcotest
 
 let check_classification code expected =
   let error = Errors.of_neo4j_code ~code ~message:"msg" in
-  let actual =
-    Errors.classification error |> Option.map Errors.classification_to_string
-  in
+  let actual = Errors.classification error |> Option.map Errors.classification_to_string in
   check (option string) code expected actual
 
 let classification () =
-  check_classification "Neo.ClientError.Statement.SyntaxError"
-    (Some "ClientError");
-  check_classification "Neo.TransientError.General.DatabaseUnavailable"
-    (Some "TransientError");
-  check_classification "Neo.DatabaseError.General.UnknownError"
-    (Some "DatabaseError");
+  check_classification "Neo.ClientError.Statement.SyntaxError" (Some "ClientError");
+  check_classification "Neo.TransientError.General.DatabaseUnavailable" (Some "TransientError");
+  check_classification "Neo.DatabaseError.General.UnknownError" (Some "DatabaseError");
   check_classification "Neo.UnknownClassification.Foo.Bar" (Some "UnknownError");
   check_classification "garbage" (Some "DatabaseError")
 
 let retryable () =
   let transient =
-    Errors.of_neo4j_code ~code:"Neo.TransientError.General.DatabaseUnavailable"
-      ~message:""
+    Errors.of_neo4j_code ~code:"Neo.TransientError.General.DatabaseUnavailable" ~message:""
   in
   check bool "transient is retryable" true (Errors.is_retryable transient);
-  let client =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError"
-      ~message:""
-  in
+  let client = Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError" ~message:"" in
   check bool "client is not retryable" false (Errors.is_retryable client);
   let authz_expired =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Security.AuthorizationExpired"
-      ~message:""
+    Errors.of_neo4j_code ~code:"Neo.ClientError.Security.AuthorizationExpired" ~message:""
   in
-  check bool "authorization expired is retryable" true
-    (Errors.is_retryable authz_expired);
-  check bool "session expired is retryable" true
-    (Errors.is_retryable (Errors.Session_expired "x"));
+  check bool "authorization expired is retryable" true (Errors.is_retryable authz_expired);
+  check bool "session expired is retryable" true (Errors.is_retryable (Errors.Session_expired "x"));
   check bool "service unavailable is retryable" true
     (Errors.is_retryable (Errors.Service_unavailable "x"));
   check bool "read service unavailable is retryable" true
@@ -50,35 +38,25 @@ let retryable () =
 
 let rewrite () =
   let terminated =
-    Errors.of_neo4j_code ~code:"Neo.TransientError.Transaction.Terminated"
-      ~message:""
+    Errors.of_neo4j_code ~code:"Neo.TransientError.Transaction.Terminated" ~message:""
   in
-  check (option string) "terminated code rewritten"
-    (Some "Neo.ClientError.Transaction.Terminated") (Errors.code terminated);
+  check (option string) "terminated code rewritten" (Some "Neo.ClientError.Transaction.Terminated")
+    (Errors.code terminated);
   check (option string) "terminated reclassified as client" (Some "ClientError")
-    (Errors.classification terminated
-    |> Option.map Errors.classification_to_string);
+    (Errors.classification terminated |> Option.map Errors.classification_to_string);
   let lock_client_stopped =
-    Errors.of_neo4j_code
-      ~code:"Neo.TransientError.Transaction.LockClientStopped" ~message:""
+    Errors.of_neo4j_code ~code:"Neo.TransientError.Transaction.LockClientStopped" ~message:""
   in
   check (option string) "lock client stopped rewritten"
-    (Some "Neo.ClientError.Transaction.LockClientStopped")
-    (Errors.code lock_client_stopped)
+    (Some "Neo.ClientError.Transaction.LockClientStopped") (Errors.code lock_client_stopped)
 
 let security () =
   let token_expired =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Security.TokenExpired"
-      ~message:""
+    Errors.of_neo4j_code ~code:"Neo.ClientError.Security.TokenExpired" ~message:""
   in
-  check bool "token expired has security code" true
-    (Errors.has_security_code token_expired);
-  let syntax =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError"
-      ~message:""
-  in
-  check bool "syntax has no security code" false
-    (Errors.has_security_code syntax);
+  check bool "token expired has security code" true (Errors.has_security_code token_expired);
+  let syntax = Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError" ~message:"" in
+  check bool "syntax has no security code" false (Errors.has_security_code syntax);
   check bool "driver error has no security code" false
     (Errors.has_security_code (Errors.Service_unavailable "x"))
 
@@ -100,23 +78,17 @@ let fatal_during_discovery () =
       check bool code true (Errors.is_fatal_during_discovery error))
     fatal_codes;
   let authz_expired =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Security.AuthorizationExpired"
-      ~message:""
+    Errors.of_neo4j_code ~code:"Neo.ClientError.Security.AuthorizationExpired" ~message:""
   in
   check bool "authorization expired is not fatal" false
     (Errors.is_fatal_during_discovery authz_expired);
-  let syntax =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError"
-      ~message:""
-  in
-  check bool "syntax is not fatal" false
-    (Errors.is_fatal_during_discovery syntax)
+  let syntax = Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError" ~message:"" in
+  check bool "syntax is not fatal" false (Errors.is_fatal_during_discovery syntax)
 
 let specific () =
   let check code expected =
     let error = Errors.of_neo4j_code ~code ~message:"" in
-    check string code expected
-      (Errors.specific_to_string (Errors.specific error))
+    check string code expected (Errors.specific_to_string (Errors.specific error))
   in
   check "Neo.ClientError.Statement.SyntaxError" "CypherSyntax";
   check "Neo.ClientError.Statement.TypeError" "CypherType";
@@ -124,22 +96,19 @@ let specific () =
   check "Neo.ClientError.Security.Unauthorized" "Auth";
   check "Neo.ClientError.Security.TokenExpired" "TokenExpired";
   check "Neo.ClientError.Security.Forbidden" "Forbidden";
-  check "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase"
-    "ForbiddenOnReadOnlyDatabase";
+  check "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase" "ForbiddenOnReadOnlyDatabase";
   check "Neo.ClientError.Cluster.NotALeader" "NotALeader";
   check "Neo.TransientError.General.DatabaseUnavailable" "DatabaseUnavailable";
   check "Neo.ClientError.General.UnknownThing" "Other"
 
 let to_string () =
   let error =
-    Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError"
-      ~message:"bad query"
+    Errors.of_neo4j_code ~code:"Neo.ClientError.Statement.SyntaxError" ~message:"bad query"
   in
   check string "server error string"
     "{neo4j_code: Neo.ClientError.Statement.SyntaxError} {message: bad query}"
     (Errors.to_string error);
-  check string "driver error string" "boom"
-    (Errors.to_string (Errors.Service_unavailable "boom"))
+  check string "driver error string" "boom" (Errors.to_string (Errors.Service_unavailable "boom"))
 
 let tests =
   [

@@ -84,10 +84,8 @@ module Date = struct
   let to_days t = t
 
   let of_ymd (y, m, d) =
-    if
-      y < min_year || y > max_year || m < 1 || m > 12 || d < 1
-      || d > days_in_month (y, m)
-    then None
+    if y < min_year || y > max_year || m < 1 || m > 12 || d < 1 || d > days_in_month (y, m) then
+      None
     else Some (of_days (days_from_civil (y, m, d)))
 
   let to_ymd t = civil_from_days t
@@ -103,8 +101,7 @@ module Date = struct
     let total = (y * 12) + (m - 1) + n in
     let y' = total / 12 in
     let m' = (total mod 12) + 1 in
-    if y' < min_year || y' > max_year then None
-    else of_ymd (y', m', min d (days_in_month (y', m')))
+    if y' < min_year || y' > max_year then None else of_ymd (y', m', min d (days_in_month (y', m')))
 
   let to_iso8601 t =
     let y, m, d = to_ymd t in
@@ -113,9 +110,7 @@ module Date = struct
   let of_iso8601 s =
     match String.split_on_char '-' s with
     | [ y; m; d ] -> (
-        match
-          (int_of_string_opt y, int_of_string_opt m, int_of_string_opt d)
-        with
+        match (int_of_string_opt y, int_of_string_opt m, int_of_string_opt d) with
         | Some y, Some m, Some d -> of_ymd (y, m, d)
         | _ -> None)
     | _ -> None
@@ -135,19 +130,14 @@ module Time = struct
   let tz_offset_seconds t = t.tz_offset_seconds
 
   let of_hms_ns ?tz_offset_seconds h m s ns =
-    if
-      h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0
-      || ns > 999_999_999
-    then None
+    if h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0 || ns > 999_999_999 then None
     else
       let ticks =
         Int64.add
           (Int64.mul 3_600_000_000_000L (Int64.of_int h))
           (Int64.add
              (Int64.mul 60_000_000_000L (Int64.of_int m))
-             (Int64.add
-                (Int64.mul 1_000_000_000L (Int64.of_int s))
-                (Int64.of_int ns)))
+             (Int64.add (Int64.mul 1_000_000_000L (Int64.of_int s)) (Int64.of_int ns)))
       in
       Some { ticks; tz_offset_seconds }
 
@@ -204,16 +194,11 @@ module Time = struct
                   Some (Some (Offset 0))
               | '+' | '-' ->
                   if !i + 5 < len && s.[!i + 3] = ':' then
-                    match
-                      (int_sub (!i + 1) (!i + 3), int_sub (!i + 4) (!i + 6))
-                    with
+                    match (int_sub (!i + 1) (!i + 3), int_sub (!i + 4) (!i + 6)) with
                     | Some oh, Some om ->
                         incr i;
                         let offset = (oh * 3600) + (om * 60) in
-                        Some
-                          (Some
-                             (Offset
-                                (if s.[!i - 1] = '-' then -offset else offset)))
+                        Some (Some (Offset (if s.[!i - 1] = '-' then -offset else offset)))
                     | _ -> None
                   else None
               | _ -> None
@@ -224,17 +209,14 @@ module Time = struct
           | Some tz -> (
               match
                 of_hms_ns
-                  ?tz_offset_seconds:
-                    (match tz with Some (Offset o) -> Some o | _ -> None)
+                  ?tz_offset_seconds:(match tz with Some (Offset o) -> Some o | _ -> None)
                   h m sec !ns
               with
               | Some t -> Some (t, tz)
               | None -> None))
       | _ -> None
 
-  let of_iso8601 s =
-    match parse_time_of_day s with Some (t, _) -> Some t | None -> None
-
+  let of_iso8601 s = match parse_time_of_day s with Some (t, _) -> Some t | None -> None
   let to_string = to_iso8601
 end
 
@@ -245,9 +227,7 @@ type duration = { months : int; days : int; seconds : int64; nanoseconds : int }
 module Duration = struct
   type t = duration
 
-  let of_fields ~months ~days ~seconds ~nanoseconds =
-    { months; days; seconds; nanoseconds }
-
+  let of_fields ~months ~days ~seconds ~nanoseconds = { months; days; seconds; nanoseconds }
   let to_fields t = (t.months, t.days, t.seconds, t.nanoseconds)
 
   let neg t =
@@ -262,38 +242,25 @@ module Duration = struct
     let seconds = Int64.add a.seconds b.seconds in
     let nanoseconds = a.nanoseconds + b.nanoseconds in
     let seconds, nanoseconds =
-      if nanoseconds >= 1_000_000_000 then
-        (Int64.add seconds 1L, nanoseconds - 1_000_000_000)
-      else if nanoseconds < 0 then
-        (Int64.sub seconds 1L, nanoseconds + 1_000_000_000)
+      if nanoseconds >= 1_000_000_000 then (Int64.add seconds 1L, nanoseconds - 1_000_000_000)
+      else if nanoseconds < 0 then (Int64.sub seconds 1L, nanoseconds + 1_000_000_000)
       else (seconds, nanoseconds)
     in
-    {
-      months = a.months + b.months;
-      days = a.days + b.days;
-      seconds;
-      nanoseconds;
-    }
+    { months = a.months + b.months; days = a.days + b.days; seconds; nanoseconds }
 
   let sub a b = add a (neg b)
 
   let compare a b =
-    compare
-      (a.months, a.days, a.seconds, a.nanoseconds)
-      (b.months, b.days, b.seconds, b.nanoseconds)
+    compare (a.months, a.days, a.seconds, a.nanoseconds) (b.months, b.days, b.seconds, b.nanoseconds)
 
   let equal a b = compare a b = 0
 
   let to_total_seconds t =
-    Int64.add
-      (Int64.mul (Int64.of_int ((t.months * 30) + t.days)) seconds_per_day)
-      t.seconds
+    Int64.add (Int64.mul (Int64.of_int ((t.months * 30) + t.days)) seconds_per_day) t.seconds
 
   let to_iso8601 t =
     let negative =
-      t.months < 0 || t.days < 0
-      || Int64.compare t.seconds 0L < 0
-      || t.nanoseconds < 0
+      t.months < 0 || t.days < 0 || Int64.compare t.seconds 0L < 0 || t.nanoseconds < 0
     in
     let t = if negative then neg t else t in
     let years = t.months / 12 in
@@ -317,8 +284,7 @@ module Duration = struct
         Buffer.add_char buffer 'S'
       end
     end;
-    if Buffer.length buffer = 1 + if negative then 1 else 0 then
-      Buffer.add_string buffer "T0S";
+    if Buffer.length buffer = 1 + if negative then 1 else 0 then Buffer.add_string buffer "T0S";
     Buffer.contents buffer
 
   let of_iso8601 s =
@@ -340,8 +306,7 @@ module Duration = struct
         while !i < len && s.[!i] >= '0' && s.[!i] <= '9' do
           incr i
         done;
-        if !i = start then None
-        else int_of_string_opt (String.sub s start (!i - start))
+        if !i = start then None else int_of_string_opt (String.sub s start (!i - start))
       in
       while !ok && !i < len do
         if s.[!i] = 'T' then begin
@@ -384,12 +349,10 @@ module Duration = struct
                     days := !days + n
                 | 'H' when !time_part ->
                     incr i;
-                    seconds :=
-                      Int64.add !seconds (Int64.mul (Int64.of_int n) 3_600L)
+                    seconds := Int64.add !seconds (Int64.mul (Int64.of_int n) 3_600L)
                 | 'M' when !time_part ->
                     incr i;
-                    seconds :=
-                      Int64.add !seconds (Int64.mul (Int64.of_int n) 60L)
+                    seconds := Int64.add !seconds (Int64.mul (Int64.of_int n) 60L)
                 | 'S' when !time_part ->
                     incr i;
                     seconds := Int64.add !seconds (Int64.of_int n)
@@ -422,9 +385,7 @@ module Duration = struct
   let of_span span =
     let days, ps = Ptime.Span.to_d_ps span in
     let seconds = Int64.div ps 1_000_000_000_000L in
-    let nanoseconds =
-      Int64.to_int (Int64.div (Int64.rem ps 1_000_000_000_000L) 1_000L)
-    in
+    let nanoseconds = Int64.to_int (Int64.div (Int64.rem ps 1_000_000_000_000L) 1_000L) in
     { months = 0; days; seconds; nanoseconds }
 
   let to_string = to_iso8601
@@ -437,9 +398,7 @@ type datetime = { epoch_seconds : int64; nanoseconds : int; tz : tz option }
 module DateTime = struct
   type t = datetime
 
-  let of_epoch_seconds ?tz epoch_seconds nanoseconds =
-    { epoch_seconds; nanoseconds; tz }
-
+  let of_epoch_seconds ?tz epoch_seconds nanoseconds = { epoch_seconds; nanoseconds; tz }
   let to_epoch_seconds t = (t.epoch_seconds, t.nanoseconds)
   let tz t = t.tz
 
@@ -461,19 +420,15 @@ module DateTime = struct
     match Date.of_ymd (y, mo, d) with
     | None -> None
     | Some _ -> (
-        if
-          h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0
-          || ns > 999_999_999
-        then None
+        if h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0 || ns > 999_999_999 then
+          None
         else
           match tz with
           | Some (Zone_name _) -> None
           | _ ->
               let wall =
                 Int64.add
-                  (Int64.mul
-                     (Int64.of_int (days_from_civil (y, mo, d)))
-                     seconds_per_day)
+                  (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
                   (Int64.of_int ((h * 3600) + (m * 60) + s))
               in
               let epoch =
@@ -498,23 +453,15 @@ module DateTime = struct
         (Int64.mul 3_600_000_000_000L (Int64.of_int h))
         (Int64.add
            (Int64.mul 60_000_000_000L (Int64.of_int m))
-           (Int64.add
-              (Int64.mul 1_000_000_000L (Int64.of_int s))
-              (Int64.of_int ns)))
+           (Int64.add (Int64.mul 1_000_000_000L (Int64.of_int s)) (Int64.of_int ns)))
     in
     let total =
-      Int64.add total
-        (Int64.add (Int64.mul add_seconds 1_000_000_000L) (Int64.of_int add_ns))
+      Int64.add total (Int64.add (Int64.mul add_seconds 1_000_000_000L) (Int64.of_int add_ns))
     in
     let days, rem = floor_div_rem total ns_per_day in
     let h' = Int64.to_int (Int64.div rem 3_600_000_000_000L) in
-    let m' =
-      Int64.to_int
-        (Int64.div (Int64.rem rem 3_600_000_000_000L) 60_000_000_000L)
-    in
-    let s' =
-      Int64.to_int (Int64.div (Int64.rem rem 60_000_000_000L) 1_000_000_000L)
-    in
+    let m' = Int64.to_int (Int64.div (Int64.rem rem 3_600_000_000_000L) 60_000_000_000L) in
+    let s' = Int64.to_int (Int64.div (Int64.rem rem 60_000_000_000L) 1_000_000_000L) in
     let ns' = Int64.to_int (Int64.rem rem 1_000_000_000L) in
     (Int64.to_int days, (h', m', s', ns'))
 
@@ -523,12 +470,8 @@ module DateTime = struct
     | Some (Zone_name _) -> None
     | tz -> (
         let (y, mo, day), (h, m, s), ns = to_ymd_hms t in
-        let carry, (h', m', s', ns') =
-          normalize_time (h, m, s, ns) d.seconds d.nanoseconds
-        in
-        match
-          Date.add_months d.months (Date.of_days (days_from_civil (y, mo, day)))
-        with
+        let carry, (h', m', s', ns') = normalize_time (h, m, s, ns) d.seconds d.nanoseconds in
+        match Date.add_months d.months (Date.of_days (days_from_civil (y, mo, day))) with
         | None -> None
         | Some date ->
             let date = Date.add_days (d.days + carry) date in
@@ -553,8 +496,7 @@ module DateTime = struct
         let seconds = Int64.sub (wall_seconds a) (wall_seconds b) in
         let nanoseconds = a.nanoseconds - b.nanoseconds in
         let seconds, nanoseconds =
-          if nanoseconds < 0 then
-            (Int64.sub seconds 1L, nanoseconds + 1_000_000_000)
+          if nanoseconds < 0 then (Int64.sub seconds 1L, nanoseconds + 1_000_000_000)
           else (seconds, nanoseconds)
         in
         let days = Int64.div seconds seconds_per_day in
@@ -576,9 +518,7 @@ module DateTime = struct
 
   let of_iso8601 s =
     let sep =
-      match String.index_opt s 'T' with
-      | Some i -> Some i
-      | None -> String.index_opt s ' '
+      match String.index_opt s 'T' with Some i -> Some i | None -> String.index_opt s ' '
     in
     match sep with
     | None -> None
@@ -604,9 +544,7 @@ module DateTime = struct
         | None -> None
         | Some ptime ->
             let ns_span =
-              match
-                Ptime.Span.of_d_ps (0, Int64.mul (Int64.of_int ns) 1_000L)
-              with
+              match Ptime.Span.of_d_ps (0, Int64.mul (Int64.of_int ns) 1_000L) with
               | Some span -> span
               | None -> Ptime.Span.zero
             in
@@ -615,9 +553,7 @@ module DateTime = struct
   let of_ptime ?tz ptime =
     let (y, mo, d), ((h, m, s), _) = Ptime.to_date_time ptime in
     let _, ps = Ptime.Span.to_d_ps (Ptime.to_span ptime) in
-    let nanoseconds =
-      Int64.to_int (Int64.rem (Int64.div ps 1_000L) 1_000_000_000L)
-    in
+    let nanoseconds = Int64.to_int (Int64.rem (Int64.div ps 1_000L) 1_000_000_000L) in
     let epoch_seconds =
       Int64.add
         (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)

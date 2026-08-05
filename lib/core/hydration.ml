@@ -58,14 +58,12 @@ let hydrate_point fields =
   | [ srid; x; y ] -> (
       match (int_ srid, float_ x, float_ y) with
       | Some srid, Some x, Some y ->
-          Some
-            (Values.Point { Values.srid; Values.x; Values.y; Values.z = None })
+          Some (Values.Point { Values.srid; Values.x; Values.y; Values.z = None })
       | _ -> None)
   | [ srid; x; y; z ] -> (
       match (int_ srid, float_ x, float_ y, float_ z) with
       | Some srid, Some x, Some y, Some z ->
-          Some
-            (Values.Point { Values.srid; Values.x; Values.y; Values.z = Some z })
+          Some (Values.Point { Values.srid; Values.x; Values.y; Values.z = Some z })
       | _ -> None)
   | _ -> None
 
@@ -81,8 +79,7 @@ let hydrate_time fields =
   match fields with
   | [ nanoseconds; tz ] -> (
       match (int64_ nanoseconds, int_ tz) with
-      | Some ns, Some tz ->
-          Some (Values.Time (Temporal.Time.of_ticks ~tz_offset_seconds:tz ns))
+      | Some ns, Some tz -> Some (Values.Time (Temporal.Time.of_ticks ~tz_offset_seconds:tz ns))
       | _ -> None)
   | [ nanoseconds ] -> (
       match int64_ nanoseconds with
@@ -95,9 +92,7 @@ let hydrate_datetime_offset fields =
   | [ seconds; nanoseconds; tz ] -> (
       match (int64_ seconds, int_ nanoseconds, int_ tz) with
       | Some sec, Some ns, Some off ->
-          Some
-            (Values.DateTime
-               (Temporal.DateTime.of_epoch_seconds ~tz:(Offset off) sec ns))
+          Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:(Offset off) sec ns))
       | _ -> None)
   | _ -> None
 
@@ -106,9 +101,7 @@ let hydrate_datetime_zone fields =
   | [ seconds; nanoseconds; name ] -> (
       match (int64_ seconds, int_ nanoseconds, str name) with
       | Some sec, Some ns, Some name ->
-          Some
-            (Values.DateTime
-               (Temporal.DateTime.of_epoch_seconds ~tz:(Zone_name name) sec ns))
+          Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:(Zone_name name) sec ns))
       | _ -> None)
   | _ -> None
 
@@ -116,8 +109,7 @@ let hydrate_local_datetime fields =
   match fields with
   | [ seconds; nanoseconds ] -> (
       match (int64_ seconds, int_ nanoseconds) with
-      | Some sec, Some ns ->
-          Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds sec ns))
+      | Some sec, Some ns -> Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds sec ns))
       | _ -> None)
   | _ -> None
 
@@ -126,9 +118,7 @@ let hydrate_duration fields =
   | [ months; days; seconds; nanoseconds ] -> (
       match (int_ months, int_ days, int64_ seconds, int_ nanoseconds) with
       | Some months, Some days, Some seconds, Some nanoseconds ->
-          Some
-            (Values.Duration
-               (Temporal.Duration.of_fields ~months ~days ~seconds ~nanoseconds))
+          Some (Values.Duration (Temporal.Duration.of_fields ~months ~days ~seconds ~nanoseconds))
       | _ -> None)
   | _ -> None
 
@@ -175,11 +165,7 @@ let hydrate_unsupported fields =
           in
           Some
             (Values.Unsupported
-               {
-                 Values.name;
-                 Values.minimum_protocol_version = (major, minor);
-                 Values.message;
-               })
+               { Values.name; Values.minimum_protocol_version = (major, minor); Values.message })
       | _ -> None)
   | _ -> None
 
@@ -195,15 +181,12 @@ let rec hydrate t value =
   | Packstream.Bytes b -> Values.Bytes b
   | Packstream.List items ->
       let items = List.map (hydrate t) items in
-      if List.exists (function Values.Broken _ -> true | _ -> false) items
-      then Values.Broken { Values.error = "broken list"; Values.raw = value }
+      if List.exists (function Values.Broken _ -> true | _ -> false) items then
+        Values.Broken { Values.error = "broken list"; Values.raw = value }
       else Values.List items
   | Packstream.Map entries ->
       let entries = List.map (fun (k, v) -> (k, hydrate t v)) entries in
-      if
-        List.exists
-          (fun (_, v) -> match v with Values.Broken _ -> true | _ -> false)
-          entries
+      if List.exists (fun (_, v) -> match v with Values.Broken _ -> true | _ -> false) entries
       then Values.Broken { Values.error = "broken map"; Values.raw = value }
       else Values.Map entries
   | Packstream.Structure (tag, fields) -> (
@@ -213,26 +196,19 @@ let rec hydrate t value =
         | None ->
             Values.Broken
               {
-                Values.error =
-                  Printf.sprintf "Failed to hydrate structure tag 0x%02X" tag;
+                Values.error = Printf.sprintf "Failed to hydrate structure tag 0x%02X" tag;
                 Values.raw = value;
               }
       in
       match tag with
-      | 0x4E ->
-          wrap (Option.map (fun n -> Values.Node n) (hydrate_node t fields))
-      | 0x52 ->
-          wrap
-            (Option.map
-               (fun r -> Values.Relationship r)
-               (hydrate_relationship t fields))
+      | 0x4E -> wrap (Option.map (fun n -> Values.Node n) (hydrate_node t fields))
+      | 0x52 -> wrap (Option.map (fun r -> Values.Relationship r) (hydrate_relationship t fields))
       | 0x72 ->
           wrap
             (Option.map
                (fun r -> Values.Unbound_relationship r)
                (hydrate_unbound_relationship t fields))
-      | 0x50 ->
-          wrap (Option.map (fun p -> Values.Path p) (hydrate_path t fields))
+      | 0x50 -> wrap (Option.map (fun p -> Values.Path p) (hydrate_path t fields))
       | 0x58 | 0x59 -> wrap (hydrate_point fields)
       | 0x44 -> wrap (hydrate_date fields)
       | 0x54 | 0x74 -> wrap (hydrate_time fields)
@@ -246,25 +222,19 @@ let rec hydrate t value =
       | 0x64 -> wrap (hydrate_local_datetime fields)
       | 0x45 -> wrap (hydrate_duration fields)
       | (0x56 | 0x3F) when t.version = V3 ->
-          if tag = 0x56 then wrap (hydrate_vector fields)
-          else wrap (hydrate_unsupported fields)
+          if tag = 0x56 then wrap (hydrate_vector fields) else wrap (hydrate_unsupported fields)
       | 0x56 | 0x3F -> wrap None
       | _ ->
           Values.Broken
             {
-              Values.error =
-                Printf.sprintf "Unknown PackStream structure tag 0x%02X" tag;
+              Values.error = Printf.sprintf "Unknown PackStream structure tag 0x%02X" tag;
               Values.raw = value;
             })
 
 and hydrate_node t fields =
   match fields with
   | [ id_or_eid; labels; props ] -> (
-      match
-        ( id_or_element_id id_or_eid,
-          hydrate_labels labels,
-          hydrate_props t props )
-      with
+      match (id_or_element_id id_or_eid, hydrate_labels labels, hydrate_props t props) with
       | Some (element_id, legacy_id), Some labels, Some properties ->
           let node =
             match List.assoc_opt element_id t.nodes with
@@ -286,12 +256,7 @@ and get_or_create_node t element_id legacy_id =
   | Some node -> node
   | None ->
       let node =
-        {
-          Values.element_id;
-          Values.legacy_id;
-          Values.labels = [];
-          Values.properties = [];
-        }
+        { Values.element_id; Values.legacy_id; Values.labels = []; Values.properties = [] }
       in
       t.nodes <- (element_id, node) :: t.nodes;
       node
@@ -339,13 +304,7 @@ and hydrate_unbound_relationship t fields =
   | [ id_or_eid; type_; props ] -> (
       match (id_or_element_id id_or_eid, str type_, hydrate_props t props) with
       | Some (element_id, legacy_id), Some rel_type, Some properties ->
-          Some
-            {
-              Values.element_id;
-              Values.legacy_id;
-              Values.rel_type;
-              Values.properties;
-            }
+          Some { Values.element_id; Values.legacy_id; Values.rel_type; Values.properties }
       | _ -> None)
   | _ -> None
 
@@ -356,9 +315,7 @@ and hydrate_node_list t nodes =
       let rec go acc = function
         | [] -> Some (List.rev acc)
         | Packstream.Structure (0x4E, fields) :: rest -> (
-            match hydrate_node t fields with
-            | Some n -> go (n :: acc) rest
-            | None -> None)
+            match hydrate_node t fields with Some n -> go (n :: acc) rest | None -> None)
         | _ -> None
       in
       go [] ls
@@ -390,11 +347,7 @@ and int_list = function
 and hydrate_path t fields =
   match fields with
   | [ nodes; rels; sequence ] -> (
-      match
-        ( hydrate_node_list t nodes,
-          hydrate_unbound_list t rels,
-          int_list sequence )
-      with
+      match (hydrate_node_list t nodes, hydrate_unbound_list t rels, int_list sequence) with
       | Some node_list, Some rel_list, Some seq ->
           if List.length node_list < 1 || List.length seq mod 2 <> 0 then None
           else
@@ -402,19 +355,14 @@ and hydrate_path t fields =
                 (bound_rels : Values.relationship list) = function
               | [] ->
                   Some
-                    {
-                      Values.nodes = List.rev ordered_nodes;
-                      relationships = List.rev bound_rels;
-                    }
+                    { Values.nodes = List.rev ordered_nodes; relationships = List.rev bound_rels }
               | rel_idx :: node_idx :: rest -> (
                   match
-                    ( List.nth_opt node_list node_idx,
-                      List.nth_opt rel_list (abs rel_idx - 1) )
+                    (List.nth_opt node_list node_idx, List.nth_opt rel_list (abs rel_idx - 1))
                   with
                   | Some next_node, Some unbound when rel_idx <> 0 ->
                       let start_eid, end_eid =
-                        if rel_idx > 0 then
-                          (last.element_id, next_node.element_id)
+                        if rel_idx > 0 then (last.element_id, next_node.element_id)
                         else (next_node.element_id, last.element_id)
                       in
                       let bound =
@@ -427,9 +375,7 @@ and hydrate_path t fields =
                           Values.properties = unbound.properties;
                         }
                       in
-                      go next_node
-                        (next_node :: ordered_nodes)
-                        (bound :: bound_rels) rest
+                      go next_node (next_node :: ordered_nodes) (bound :: bound_rels) rest
                   | _ -> None)
               | _ -> None
             in
@@ -456,18 +402,14 @@ and hydrate_props t props =
       let rec go acc = function
         | [] -> Some (List.rev acc)
         | (k, v) :: rest -> (
-            match hydrate t v with
-            | Values.Broken _ -> None
-            | hv -> go ((k, hv) :: acc) rest)
+            match hydrate t v with Values.Broken _ -> None | hv -> go ((k, hv) :: acc) rest)
       in
       go [] entries
 
 and merge_labels a b =
-  List.fold_left (fun acc l -> if List.mem l acc then acc else l :: acc) a b
-  |> List.rev
+  List.fold_left (fun acc l -> if List.mem l acc then acc else l :: acc) a b |> List.rev
 
-and merge_props a b =
-  List.fold_left (fun acc (k, v) -> (k, v) :: List.remove_assoc k acc) a b
+and merge_props a b = List.fold_left (fun acc (k, v) -> (k, v) :: List.remove_assoc k acc) a b
 
 (* --- dehydration --- *)
 
@@ -480,8 +422,7 @@ let rec dehydrate t value =
   | Values.String s -> Packstream.String s
   | Values.Bytes b -> Packstream.Bytes b
   | Values.List items -> Packstream.List (List.map (dehydrate t) items)
-  | Values.Map entries ->
-      Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) entries)
+  | Values.Map entries -> Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) entries)
   | Values.Node n ->
       let id_field =
         match (n.legacy_id, t.version) with
@@ -517,12 +458,7 @@ let rec dehydrate t value =
         | _ -> Packstream.String r.element_id
       in
       Packstream.Structure
-        ( 0x72,
-          [
-            id_field;
-            Packstream.String r.rel_type;
-            dehydrate_props t r.properties;
-          ] )
+        (0x72, [ id_field; Packstream.String r.rel_type; dehydrate_props t r.properties ])
   | Values.Path p ->
       let nodes = List.map (fun n -> dehydrate t (Values.Node n)) p.nodes in
       let rels =
@@ -542,28 +478,18 @@ let rec dehydrate t value =
         List.concat
           (List.mapi
              (fun i _ ->
-               [
-                 Packstream.Int (Int64.of_int (i + 1));
-                 Packstream.Int (Int64.of_int (i + 1));
-               ])
+               [ Packstream.Int (Int64.of_int (i + 1)); Packstream.Int (Int64.of_int (i + 1)) ])
              p.relationships)
       in
       Packstream.Structure
-        ( 0x50,
-          [
-            Packstream.List nodes;
-            Packstream.List rels;
-            Packstream.List sequence;
-          ] )
+        (0x50, [ Packstream.List nodes; Packstream.List rels; Packstream.List sequence ])
   | Values.Point pt -> (
       match pt.z with
       | None ->
           Packstream.Structure
             ( 0x58,
               [
-                Packstream.Int (Int64.of_int pt.srid);
-                Packstream.Float pt.x;
-                Packstream.Float pt.y;
+                Packstream.Int (Int64.of_int pt.srid); Packstream.Float pt.x; Packstream.Float pt.y;
               ] )
       | Some z ->
           Packstream.Structure
@@ -575,25 +501,19 @@ let rec dehydrate t value =
                 Packstream.Float z;
               ] ))
   | Values.Date d ->
-      Packstream.Structure
-        (0x44, [ Packstream.Int (Int64.of_int (Temporal.Date.to_days d)) ])
+      Packstream.Structure (0x44, [ Packstream.Int (Int64.of_int (Temporal.Date.to_days d)) ])
   | Values.Time tm -> (
       let ns = Temporal.Time.to_ticks tm in
       match Temporal.Time.tz_offset_seconds tm with
       | None -> Packstream.Structure (0x74, [ Packstream.Int ns ])
       | Some off ->
-          Packstream.Structure
-            (0x54, [ Packstream.Int ns; Packstream.Int (Int64.of_int off) ]))
+          Packstream.Structure (0x54, [ Packstream.Int ns; Packstream.Int (Int64.of_int off) ]))
   | Values.DateTime dt -> (
       let seconds, nanoseconds = Temporal.DateTime.to_epoch_seconds dt in
       match Temporal.DateTime.tz dt with
       | None ->
           Packstream.Structure
-            ( 0x64,
-              [
-                Packstream.Int seconds;
-                Packstream.Int (Int64.of_int nanoseconds);
-              ] )
+            (0x64, [ Packstream.Int seconds; Packstream.Int (Int64.of_int nanoseconds) ])
       | Some (Offset offset) ->
           let tag = if t.version = V1 then 0x46 else 0x49 in
           Packstream.Structure
@@ -625,16 +545,12 @@ let rec dehydrate t value =
   | Values.Vector v ->
       Packstream.Structure
         ( 0x56,
-          [
-            Packstream.Int (Int64.of_int (vector_dtype_marker v.dtype));
-            Packstream.Bytes v.data;
-          ] )
+          [ Packstream.Int (Int64.of_int (vector_dtype_marker v.dtype)); Packstream.Bytes v.data ]
+        )
   | Values.Unsupported u ->
       let major, minor = u.minimum_protocol_version in
       let extra =
-        match u.message with
-        | Some m -> [ ("message", Packstream.String m) ]
-        | None -> []
+        match u.message with Some m -> [ ("message", Packstream.String m) ] | None -> []
       in
       Packstream.Structure
         ( 0x3F,

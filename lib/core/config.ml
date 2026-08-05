@@ -58,19 +58,15 @@ let default_pool_config =
   }
 
 let make_workspace_config
-    ?(connection_acquisition_timeout =
-      default_workspace_config.connection_acquisition_timeout)
-    ?(max_transaction_retry_time =
-      default_workspace_config.max_transaction_retry_time)
+    ?(connection_acquisition_timeout = default_workspace_config.connection_acquisition_timeout)
+    ?(max_transaction_retry_time = default_workspace_config.max_transaction_retry_time)
     ?(initial_retry_delay = default_workspace_config.initial_retry_delay)
     ?(retry_delay_multiplier = default_workspace_config.retry_delay_multiplier)
-    ?(retry_delay_jitter_factor =
-      default_workspace_config.retry_delay_jitter_factor)
+    ?(retry_delay_jitter_factor = default_workspace_config.retry_delay_jitter_factor)
     ?(fetch_size = default_workspace_config.fetch_size)
     ?(database = default_workspace_config.database)
     ?(impersonated_user = default_workspace_config.impersonated_user)
-    ?(disable_auto_commit_retries =
-      default_workspace_config.disable_auto_commit_retries) () =
+    ?(disable_auto_commit_retries = default_workspace_config.disable_auto_commit_retries) () =
   let invalid =
     List.filter_map
       (fun (name, valid) -> if valid then None else Some name)
@@ -98,12 +94,9 @@ let make_workspace_config
           disable_auto_commit_retries;
         }
   | names ->
-      Error
-        (Errors.Configuration_error
-           ("Invalid workspace config: " ^ String.concat ", " names))
+      Error (Errors.Configuration_error ("Invalid workspace config: " ^ String.concat ", " names))
 
-let make_pool_config
-    ?(max_connection_lifetime = default_pool_config.max_connection_lifetime)
+let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connection_lifetime)
     ?(liveness_check_timeout = default_pool_config.liveness_check_timeout)
     ?(max_connection_pool_size = default_pool_config.max_connection_pool_size)
     ?(connection_timeout = default_pool_config.connection_timeout)
@@ -132,7 +125,4 @@ let make_pool_config
           keep_alive;
           telemetry_disabled;
         }
-  | names ->
-      Error
-        (Errors.Configuration_error
-           ("Invalid pool config: " ^ String.concat ", " names))
+  | names -> Error (Errors.Configuration_error ("Invalid pool config: " ^ String.concat ", " names))

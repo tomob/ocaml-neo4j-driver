@@ -72,8 +72,7 @@ exception Unpack_error of error
 
 let error_to_string = function
   | Unexpected_end_of_data -> "Unexpected end of data"
-  | Unknown_marker marker ->
-      Printf.sprintf "Unknown PackStream marker 0x%02X" marker
+  | Unknown_marker marker -> Printf.sprintf "Unknown PackStream marker 0x%02X" marker
   | Map_key_not_string -> "Map key must be a string"
   | Depth_limit_exceeded depth ->
       Printf.sprintf "PackStream nesting depth exceeds the limit %d" depth
@@ -85,8 +84,7 @@ let uint32_to_int n = Int64.to_int (Int64.logand (Int64.of_int32 n) 0xFFFFFFFFL)
 
 type packer = { mutable data : bytes; mutable pos : int }
 
-let create_packer ?(initial_size = 256) () =
-  { data = Bytes.create initial_size; pos = 0 }
+let create_packer ?(initial_size = 256) () = { data = Bytes.create initial_size; pos = 0 }
 
 let ensure_capacity p n =
   let required = p.pos + n in
@@ -290,8 +288,7 @@ let read_string_raw u len =
   s
 
 let check_depth limits depth =
-  if depth >= limits.max_depth then
-    raise (Unpack_error (Depth_limit_exceeded limits.max_depth))
+  if depth >= limits.max_depth then raise (Unpack_error (Depth_limit_exceeded limits.max_depth))
 
 let rec unpack_value limits depth u =
   let marker = read_byte u in
@@ -309,25 +306,17 @@ let rec unpack_value limits depth u =
   | m when m = marker_int_32 -> Int (Int64.of_int32 (read_int32_be u))
   | m when m = marker_int_64 -> Int (read_int64_be u)
   | m when m = marker_bytes_8 -> Bytes (read_bytes u (read_byte u))
-  | m when m = marker_bytes_16 ->
-      Bytes (read_bytes u (read_int16_be u land 0xFFFF))
-  | m when m = marker_bytes_32 ->
-      Bytes (read_bytes u (uint32_to_int (read_int32_be u)))
+  | m when m = marker_bytes_16 -> Bytes (read_bytes u (read_int16_be u land 0xFFFF))
+  | m when m = marker_bytes_32 -> Bytes (read_bytes u (uint32_to_int (read_int32_be u)))
   | m when m = marker_string_8 -> String (read_string_raw u (read_byte u))
-  | m when m = marker_string_16 ->
-      String (read_string_raw u (read_int16_be u land 0xFFFF))
-  | m when m = marker_string_32 ->
-      String (read_string_raw u (uint32_to_int (read_int32_be u)))
+  | m when m = marker_string_16 -> String (read_string_raw u (read_int16_be u land 0xFFFF))
+  | m when m = marker_string_32 -> String (read_string_raw u (uint32_to_int (read_int32_be u)))
   | m when m = marker_list_8 -> List (unpack_list limits depth u (read_byte u))
-  | m when m = marker_list_16 ->
-      List (unpack_list limits depth u (read_int16_be u land 0xFFFF))
-  | m when m = marker_list_32 ->
-      List (unpack_list limits depth u (uint32_to_int (read_int32_be u)))
+  | m when m = marker_list_16 -> List (unpack_list limits depth u (read_int16_be u land 0xFFFF))
+  | m when m = marker_list_32 -> List (unpack_list limits depth u (uint32_to_int (read_int32_be u)))
   | m when m = marker_map_8 -> Map (unpack_map limits depth u (read_byte u))
-  | m when m = marker_map_16 ->
-      Map (unpack_map limits depth u (read_int16_be u land 0xFFFF))
-  | m when m = marker_map_32 ->
-      Map (unpack_map limits depth u (uint32_to_int (read_int32_be u)))
+  | m when m = marker_map_16 -> Map (unpack_map limits depth u (read_int16_be u land 0xFFFF))
+  | m when m = marker_map_32 -> Map (unpack_map limits depth u (uint32_to_int (read_int32_be u)))
   | m when m = marker_struct_8 ->
       let tag = read_byte u in
       Structure (tag, unpack_fields limits depth u (read_byte u))
@@ -347,8 +336,7 @@ let rec unpack_value limits depth u =
 and unpack_list limits depth u len =
   check_depth limits depth;
   let rec go acc n =
-    if n = 0 then List.rev acc
-    else go (unpack_value limits (depth + 1) u :: acc) (n - 1)
+    if n = 0 then List.rev acc else go (unpack_value limits (depth + 1) u :: acc) (n - 1)
   in
   go [] len
 
@@ -368,8 +356,7 @@ and unpack_map limits depth u len =
   go [] len
 
 let unpack ?(limits = default_limits) data =
-  try Ok (unpack_value limits 0 (create_unpacker data))
-  with Unpack_error e -> Error e
+  try Ok (unpack_value limits 0 (create_unpacker data)) with Unpack_error e -> Error e
 
 (* --- Pretty printing --- *)
 
@@ -384,10 +371,7 @@ let rec to_string = function
   | Map entries ->
       "{"
       ^ String.concat ", "
-          (List.map
-             (fun (k, v) -> Printf.sprintf "%S: %s" k (to_string v))
-             entries)
+          (List.map (fun (k, v) -> Printf.sprintf "%S: %s" k (to_string v)) entries)
       ^ "}"
   | Structure (tag, fields) ->
-      Printf.sprintf "Struct(%d, [%s])" tag
-        (String.concat ", " (List.map to_string fields))
+      Printf.sprintf "Struct(%d, [%s])" tag (String.concat ", " (List.map to_string fields))

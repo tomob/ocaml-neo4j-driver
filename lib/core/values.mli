@@ -29,13 +29,7 @@ and path = { nodes : node list; relationships : relationship list }
 and point = { srid : int; x : float; y : float; z : float option }
 and vector_dtype = I8 | I16 | I32 | I64 | F32 | F64
 and vector = { dtype : vector_dtype; data : bytes }
-
-and unsupported = {
-  name : string;
-  minimum_protocol_version : int * int;
-  message : string option;
-}
-
+and unsupported = { name : string; minimum_protocol_version : int * int; message : string option }
 and broken = { error : string; raw : Neodriver_packstream.Packstream.value }
 
 and t =

@@ -62,12 +62,11 @@ let is_retryable = function
   | Session_expired _ | Service_unavailable _ | Routing_service_unavailable _
   | Write_service_unavailable _ | Read_service_unavailable _ ->
       true
-  | Incomplete_commit _ | Session_error _ | Transaction_error _
-  | Transaction_nesting_error _ | Result_failed_error _
-  | Result_consumed_error _ | Result_not_single_error _ | Broken_record_error _
-  | Configuration_error _ | Auth_configuration_error _
-  | Certificate_configuration_error _ | Unsupported_server_product _
-  | Connection_pool_error _ | Connection_acquisition_timeout _ ->
+  | Incomplete_commit _ | Session_error _ | Transaction_error _ | Transaction_nesting_error _
+  | Result_failed_error _ | Result_consumed_error _ | Result_not_single_error _
+  | Broken_record_error _ | Configuration_error _ | Auth_configuration_error _
+  | Certificate_configuration_error _ | Unsupported_server_product _ | Connection_pool_error _
+  | Connection_acquisition_timeout _ ->
       false
 
 let unknown_code = "Neo.DatabaseError.General.UnknownError"
@@ -107,8 +106,7 @@ let classification_of_code code =
 let rewrite code classification =
   match code with
   | "Neo.ClientError.Security.AuthorizationExpired" -> (Transient, code)
-  | "Neo.TransientError.Transaction.Terminated" ->
-      (Client, "Neo.ClientError.Transaction.Terminated")
+  | "Neo.TransientError.Transaction.Terminated" -> (Client, "Neo.ClientError.Transaction.Terminated")
   | "Neo.TransientError.Transaction.LockClientStopped" ->
       (Client, "Neo.ClientError.Transaction.LockClientStopped")
   | _ -> (classification, code)
@@ -119,24 +117,17 @@ let specific_of_code = function
   | "Neo.ClientError.Statement.ConstraintVerificationFailed"
   | "Neo.ClientError.Statement.ConstraintViolation" ->
       Constraint
-  | "Neo.ClientError.Statement.InvalidSyntax"
-  | "Neo.ClientError.Statement.SyntaxError" ->
+  | "Neo.ClientError.Statement.InvalidSyntax" | "Neo.ClientError.Statement.SyntaxError" ->
       Cypher_syntax
-  | "Neo.ClientError.Procedure.TypeError"
-  | "Neo.ClientError.Statement.InvalidType"
+  | "Neo.ClientError.Procedure.TypeError" | "Neo.ClientError.Statement.InvalidType"
   | "Neo.ClientError.Statement.TypeError" ->
       Cypher_type
-  | "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase" ->
-      Forbidden_on_read_only_database
-  | "Neo.ClientError.General.ReadOnly"
-  | "Neo.ClientError.Schema.ForbiddenOnConstraintIndex"
-  | "Neo.ClientError.Schema.IndexBelongsToConstraint"
-  | "Neo.ClientError.Security.Forbidden"
+  | "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase" -> Forbidden_on_read_only_database
+  | "Neo.ClientError.General.ReadOnly" | "Neo.ClientError.Schema.ForbiddenOnConstraintIndex"
+  | "Neo.ClientError.Schema.IndexBelongsToConstraint" | "Neo.ClientError.Security.Forbidden"
   | "Neo.ClientError.Transaction.ForbiddenDueToTransactionType" ->
       Forbidden
-  | "Neo.ClientError.Security.AuthorizationFailed"
-  | "Neo.ClientError.Security.Unauthorized" ->
-      Auth
+  | "Neo.ClientError.Security.AuthorizationFailed" | "Neo.ClientError.Security.Unauthorized" -> Auth
   | "Neo.ClientError.Security.TokenExpired" -> Token_expired
   | "Neo.ClientError.Cluster.NotALeader" -> Not_a_leader
   | "Neo.TransientError.General.DatabaseUnavailable" -> Database_unavailable
@@ -175,32 +166,23 @@ let message = function
   | Connection_acquisition_timeout m ->
       m
 
-let classification = function
-  | Neo4j server -> Some server.classification
-  | _ -> None
-
-let specific = function
-  | Neo4j server -> specific_of_code server.code
-  | _ -> Other
+let classification = function Neo4j server -> Some server.classification | _ -> None
+let specific = function Neo4j server -> specific_of_code server.code | _ -> Other
 
 let unauthenticates_all_connections = function
   | Neo4j { code; _ } -> code = "Neo.ClientError.Security.AuthorizationExpired"
   | _ -> false
 
 let has_security_code = function
-  | Neo4j { code; _ } ->
-      String.starts_with ~prefix:"Neo.ClientError.Security." code
+  | Neo4j { code; _ } -> String.starts_with ~prefix:"Neo.ClientError.Security." code
   | _ -> false
 
 let is_fatal_during_discovery = function
   | Neo4j { code; _ } -> (
       match code with
-      | "Neo.ClientError.Database.DatabaseNotFound"
-      | "Neo.ClientError.Transaction.InvalidBookmark"
-      | "Neo.ClientError.Transaction.InvalidBookmarkMixture"
-      | "Neo.ClientError.Statement.TypeError"
-      | "Neo.ClientError.Statement.ArgumentError"
-      | "Neo.ClientError.Request.Invalid" ->
+      | "Neo.ClientError.Database.DatabaseNotFound" | "Neo.ClientError.Transaction.InvalidBookmark"
+      | "Neo.ClientError.Transaction.InvalidBookmarkMixture" | "Neo.ClientError.Statement.TypeError"
+      | "Neo.ClientError.Statement.ArgumentError" | "Neo.ClientError.Request.Invalid" ->
           true
       | _ ->
           String.starts_with ~prefix:"Neo.ClientError.Security." code
@@ -208,6 +190,5 @@ let is_fatal_during_discovery = function
   | _ -> false
 
 let to_string = function
-  | Neo4j server ->
-      Printf.sprintf "{neo4j_code: %s} {message: %s}" server.code server.message
+  | Neo4j server -> Printf.sprintf "{neo4j_code: %s} {message: %s}" server.code server.message
   | error -> message error
