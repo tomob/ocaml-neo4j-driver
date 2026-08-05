@@ -46,6 +46,7 @@
   (neodriver_core (= :version))
   (eio (>= 1.0))
   (eio_main (>= 1.0))
+  (ipaddr (>= 5.5))
   (alcotest :with-test)))
 
 (package
