@@ -1,4 +1,4 @@
-(* Minimal Bolt connection: TCP connect (+ optional TLS) + handshake + HELLO/auth.
+(* Minimal Bolt connection: TCP connect (+ optional TLS) + handshake + HELLO/auth + state machine.
 
    See conn.ml for the implementation. *)
 
@@ -20,9 +20,9 @@ type config = {
     certificate validation, [Bolt_self_signed] TLS without validation. Routing schemes ([Neo4j*])
     are rejected until routing is implemented. *)
 
-type t = { transport : Transport.t; major : int; minor : int }
-(** An established, authenticated Bolt connection: the transport plus the negotiated protocol
-    version. *)
+type t
+(** An established, authenticated Bolt connection: the transport, the negotiated protocol version
+    and the tracked server state. *)
 
 val default_user_agent : string
 (** Default [user_agent] header for HELLO. *)
@@ -41,12 +41,23 @@ val connect :
       [Error _] for connection/handshake failures, for routing schemes (unsupported until routing is
       implemented), or for an authentication failure reported by the server. *)
 
+val version : t -> int * int
+(** The negotiated protocol version [(major, minor)]. *)
+
+val server_state : t -> State.t
+(** The tracked server protocol state. *)
+
+val reset : t -> (unit, Errors.t) result
+(** Send a RESET and wait for the response; the server returns to [Ready]. *)
+
 val logon : t -> auth -> (unit, Errors.t) result
-(** Re-authenticate with [auth] via LOGON (Bolt >= 5.1 only).
+(** Re-authenticate with [auth] via LOGON (Bolt >= 5.1 only). A RESET is sent first if the server is
+    in the [Failed] state.
     @return [Error _] for older protocol versions or on server failure. *)
 
 val logoff : t -> (unit, Errors.t) result
-(** De-authenticate via LOGOFF (Bolt >= 5.1 only).
+(** De-authenticate via LOGOFF (Bolt >= 5.1 only). A RESET is sent first if the server is in the
+    [Failed] state.
     @return [Error _] for older protocol versions or on server failure. *)
 
 val close : t -> unit

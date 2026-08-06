@@ -3,7 +3,7 @@
 
 open Eio.Std
 
-type response = Success | Failure of string * string
+type response = Success | Failure of string * string | Ignored
 
 type behavior =
   | V1 of int * int
@@ -73,6 +73,11 @@ let reply_message flow = function
                          ("message", Neodriver.Packstream.String message);
                        ];
                    ] ))))
+  | Ignored ->
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure (0x7E, [ Neodriver.Packstream.Map [] ]))))
 
 let rec serve_behavior behavior flow =
   match behavior with

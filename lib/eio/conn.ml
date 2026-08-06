@@ -21,7 +21,7 @@ type config = {
   auth : auth;
 }
 
-type t = { transport : Transport.t; major : int; minor : int }
+type t = { transport : Transport.t; major : int; minor : int; state : State.t ref }
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
 
@@ -74,6 +74,30 @@ let hello_headers (config : config) major minor =
   in
   Packstream.Map headers
 
+let version t = (t.major, t.minor)
+let server_state t = !(t.state)
+
+(* Send a RESET and read the response; the server returns to READY. *)
+let reset t =
+  let* () = Bolt.send t.transport ~tag:Bolt.reset_tag [] in
+  match Bolt.respond t.transport with
+  | Ok _ ->
+      t.state := State.Ready;
+      Ok ()
+  | Error _ as error -> error
+
+(* Send [action] (a Bolt message that already reads its response) and update the
+   server state. If the server is in the FAILED state, a RESET is sent first. *)
+let request t ~message ~re_auth action =
+  let* () = if State.failed !(t.state) then reset t else Ok () in
+  match action () with
+  | Ok metadata ->
+      t.state := State.server_transition ~re_auth !(t.state) message;
+      Ok metadata
+  | Error _ as error ->
+      t.state := State.Failed;
+      error
+
 let connect net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in
   let* address =
@@ -86,27 +110,40 @@ let connect net clock sw config =
   in
   let* transport = Transport.connect net sw ~timeout ~tls address in
   let* major, minor = Handshake.negotiate transport in
-  let* _ = Bolt.hello transport ~headers:(hello_headers config major minor) in
+  let conn = { transport; major; minor; state = ref State.Connected } in
+  let re_auth = supports_re_auth major minor in
+  let* _ =
+    request conn ~message:State.Hello ~re_auth (fun () ->
+        Bolt.hello conn.transport ~headers:(hello_headers config major minor))
+  in
   let* () =
-    if supports_re_auth major minor then
-      let* _ = Bolt.logon transport ~auth:(auth_map config.auth) in
+    if re_auth then
+      let* _ =
+        request conn ~message:State.Logon ~re_auth (fun () ->
+            Bolt.logon conn.transport ~auth:(auth_map config.auth))
+      in
       Ok ()
     else Ok ()
   in
-  Ok { transport; major; minor }
+  Ok conn
 
 let logon t auth =
-  if not (supports_re_auth t.major t.minor) then
+  let re_auth = supports_re_auth t.major t.minor in
+  if not re_auth then
     Error (Errors.Service_unavailable "LOGON is not supported by this protocol version")
   else
-    let* _ = Bolt.logon t.transport ~auth:(auth_map auth) in
+    let* _ =
+      request t ~message:State.Logon ~re_auth (fun () ->
+          Bolt.logon t.transport ~auth:(auth_map auth))
+    in
     Ok ()
 
 let logoff t =
-  if not (supports_re_auth t.major t.minor) then
+  let re_auth = supports_re_auth t.major t.minor in
+  if not re_auth then
     Error (Errors.Service_unavailable "LOGOFF is not supported by this protocol version")
   else
-    let* _ = Bolt.logoff t.transport in
+    let* _ = request t ~message:State.Logoff ~re_auth (fun () -> Bolt.logoff t.transport) in
     Ok ()
 
 let close t = Transport.close t.transport

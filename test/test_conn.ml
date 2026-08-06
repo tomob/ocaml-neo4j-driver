@@ -36,6 +36,17 @@ let unpack_message bytes =
 let map_value fields key =
   match List.assoc_opt key fields with Some (Packstream.String value) -> value | _ -> ""
 
+let show_state = function
+  | State.Connected -> "Connected"
+  | State.Ready -> "Ready"
+  | State.Streaming -> "Streaming"
+  | State.Tx_ready_or_tx_streaming -> "Tx_ready_or_tx_streaming"
+  | State.Failed -> "Failed"
+  | State.Authentication -> "Authentication"
+
+let check_state conn expected =
+  check string "server state" expected (show_state (Conn.server_state conn))
+
 (* Conn.connect negotiates the version reported by the mock server (inline auth,
    Bolt 5.0). *)
 let connect_via_mock () =
@@ -45,7 +56,7 @@ let connect_via_mock () =
       let config = config "127.0.0.1" port Addressing.Bolt in
       match Conn.connect net clock sw config with
       | Ok conn ->
-          check (pair int int) "conn version" (5, 0) (conn.major, conn.minor);
+          check (pair int int) "conn version" (5, 0) (Conn.version conn);
           Conn.close conn
       | Error error -> fail (Errors.to_string error))
 
@@ -57,7 +68,7 @@ let connect_via_mock_tls () =
       let config = config "127.0.0.1" port Addressing.Bolt_self_signed in
       match Conn.connect net clock sw config with
       | Ok conn ->
-          check (pair int int) "conn tls version" (5, 4) (conn.major, conn.minor);
+          check (pair int int) "conn tls version" (5, 4) (Conn.version conn);
           Conn.close conn
       | Error error -> fail (Errors.to_string error))
 
@@ -162,6 +173,97 @@ let logon_unsupported () =
           | Error _ -> ());
           Conn.close conn)
 
+(* The server state is Ready after a successful connect. *)
+let connect_ready () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          check_state conn "Ready";
+          Conn.close conn)
+
+(* logoff/logon move the server state between Ready and Authentication. *)
+let state_logoff_logon () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         ref [],
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.logoff conn with
+          | Ok () -> (
+              check_state conn "Authentication";
+              match Conn.logon conn (auth ()) with
+              | Ok () -> check_state conn "Ready"
+              | Error error -> fail (Errors.to_string error))
+          | Error error -> fail (Errors.to_string error));
+          Conn.close conn)
+
+(* A FAILURE moves the server to Failed; the next request issues a RESET first
+   (the wire order is HELLO, LOGON, LOGON, RESET, LOGOFF). *)
+let auto_reset_after_failure () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad");
+           Test_mock.Success;
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.logon conn (auth ~credentials:"wrong" ()) with
+          | Ok () -> fail "bad re-auth should fail"
+          | Error _ -> check_state conn "Failed");
+          (match Conn.logoff conn with
+          | Error error -> fail (Errors.to_string error)
+          | Ok () ->
+              let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
+              check (list int) "wire sequence" [ 0x01; 0x6A; 0x6A; 0x0F; 0x6B ] tags);
+          Conn.close conn)
+
+(* An IGNORED response also moves the server to Failed. *)
+let ignored_fails () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success; Test_mock.Ignored ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.logoff conn with
+          | Ok () -> fail "IGNORED should fail"
+          | Error _ -> check_state conn "Failed");
+          Conn.close conn)
+
+(* A reset returns the server to Ready. *)
+let reset_round_trip () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.reset conn with
+          | Ok () -> check_state conn "Ready"
+          | Error error -> fail (Errors.to_string error));
+          Conn.close conn)
+
 let tests =
   [
     ( "[Conn] routing_not_supported",
@@ -174,4 +276,11 @@ let tests =
     ("[Conn] hello_failure", [ test_case "auth failure maps to Neo4j error" `Quick hello_failure ]);
     ("[Conn] logoff_logon", [ test_case "LOGOFF/LOGON round trip" `Quick logoff_logon ]);
     ("[Conn] logon_unsupported", [ test_case "LOGON unsupported for 5.0" `Quick logon_unsupported ]);
+    ("[Conn] connect_ready", [ test_case "state Ready after connect" `Quick connect_ready ]);
+    ( "[Conn] state_logoff_logon",
+      [ test_case "state across logoff/logon" `Quick state_logoff_logon ] );
+    ( "[Conn] auto_reset_after_failure",
+      [ test_case "FAILURE triggers auto RESET" `Quick auto_reset_after_failure ] );
+    ("[Conn] ignored_fails", [ test_case "IGNORED moves to Failed" `Quick ignored_fails ]);
+    ("[Conn] reset_round_trip", [ test_case "reset returns to Ready" `Quick reset_round_trip ]);
   ]

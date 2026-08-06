@@ -17,7 +17,8 @@ let handshake () =
               match Conn.connect net clock sw (Test_env.conn_config env) with
               | Error error -> fail (Errors.to_string error)
               | Ok conn ->
-                  check bool "handshake negotiated a supported version" true (conn.major >= 3);
+                  check bool "handshake negotiated a supported version" true
+                    (fst (Conn.version conn) >= 3);
                   Conn.close conn)))
 
 (* A wrong password is rejected by the server as a Neo4j error. *)

@@ -14,3 +14,9 @@ module Handshake = Handshake
 
 module Conn = Conn
 (** Minimal Bolt connection (TCP connect + handshake). *)
+
+module Bolt = Bolt
+(** Bolt protocol messages (send/receive and response interpretation). *)
+
+module State = State
+(** Bolt server-state machine. *)

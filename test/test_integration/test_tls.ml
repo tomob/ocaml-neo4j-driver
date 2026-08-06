@@ -23,7 +23,8 @@ let bolt_ssc () =
               match Conn.connect net clock sw (Test_env.conn_config env) with
               | Error error -> fail (Errors.to_string error)
               | Ok conn ->
-                  check bool "handshake negotiated a supported version" true (conn.major >= 3);
+                  check bool "handshake negotiated a supported version" true
+                    (fst (Conn.version conn) >= 3);
                   Conn.close conn)))
 
 (* bolt+s: the self-signed certificate is rejected against the system trust store. *)

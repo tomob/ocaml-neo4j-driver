@@ -6,3 +6,5 @@ module Driver = Driver
 module Transport = Transport
 module Handshake = Handshake
 module Conn = Conn
+module Bolt = Bolt
+module State = State

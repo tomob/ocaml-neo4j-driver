@@ -17,6 +17,7 @@ let ( let* ) = Result.bind
 let hello_tag = 0x01
 let logon_tag = 0x6A
 let logoff_tag = 0x6B
+let reset_tag = 0x0F
 let success_tag = 0x70
 let failure_tag = 0x7F
 let ignored_tag = 0x7E

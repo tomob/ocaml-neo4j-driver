@@ -14,6 +14,9 @@ val logon_tag : int
 val logoff_tag : int
 (** Message tag of LOGOFF (0x6B). *)
 
+val reset_tag : int
+(** Message tag of RESET (0x0F). *)
+
 val success_tag : int
 (** Message tag of SUCCESS (0x70). *)
 
