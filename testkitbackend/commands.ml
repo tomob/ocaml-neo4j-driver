@@ -68,7 +68,7 @@ let get_features _fields =
 
 let new_driver fields =
   let uri_string = string "uri" fields in
-  let user_agent = string "userAgent" fields in
+  let user_agent = Option.value ~default:"ocaml-neo4j-driver" (opt_string "userAgent" fields) in
   let auth = auth_of fields in
   match Addressing.parse_uri uri_string with
   | Error error -> raise (Backend_error (Errors.to_string error))
