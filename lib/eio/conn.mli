@@ -62,3 +62,40 @@ val logoff : t -> (unit, Errors.t) result
 
 val close : t -> unit
 (** Close the connection. *)
+
+val hydration : t -> Hydration.t
+(** A fresh hydration scope for the connection's protocol version. *)
+
+type run_metadata = { fields : string list; qid : int option }
+(** Metadata of a RUN response: the result's field names and, for multiple results, the query id. *)
+
+val run :
+  t ->
+  hydration:Hydration.t ->
+  query:string ->
+  parameters:(string * Values.t) list ->
+  ?mode:Config.access_mode ->
+  ?db:string ->
+  unit ->
+  (run_metadata, Errors.t) result
+(** Send a RUN message for [query]. [parameters] are dehydrated with [hydration]. The optional
+    [mode] and [db] go into the request's [extra] map (transaction-level extras such as bookmarks,
+    metadata and timeout arrive with transactions).
+    @return
+      [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
+      the next request). *)
+
+val pull :
+  t ->
+  hydration:Hydration.t ->
+  ?n:int ->
+  ?qid:int ->
+  unit ->
+  (Values.t list list * bool, Errors.t) result
+(** Send a PULL message, fetching up to [n] records (all by default) of the result [qid]. Records
+    are hydrated with [hydration]. Returns the records and whether the server has more ([has_more]);
+    when true, another PULL continues the stream. *)
+
+val discard : t -> ?n:int -> ?qid:int -> unit -> (unit, Errors.t) result
+(** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
+    [qid]. *)

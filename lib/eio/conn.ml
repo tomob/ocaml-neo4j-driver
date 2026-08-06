@@ -77,6 +77,14 @@ let hello_headers (config : config) major minor =
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
 
+(* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
+   V2 = Bolt 5, V3 = Bolt 6). *)
+let hydration t =
+  let version =
+    match t.major with 3 | 4 -> Hydration.V1 | 5 -> Hydration.V2 | _ -> Hydration.V3
+  in
+  Hydration.create version
+
 (* Send a RESET and read the response; the server returns to READY. *)
 let reset t =
   let* () = Bolt.send t.transport ~tag:Bolt.reset_tag [] in
@@ -87,13 +95,15 @@ let reset t =
   | Error _ as error -> error
 
 (* Send [action] (a Bolt message that already reads its response) and update the
-   server state. If the server is in the FAILED state, a RESET is sent first. *)
-let request t ~message ~re_auth action =
+   server state. If the server is in the FAILED state, a RESET is sent first.
+   [has_more result] decides whether the state stays in STREAMING after the
+   message (used by PULL/DISCARD). *)
+let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
   let* () = if State.failed !(t.state) then reset t else Ok () in
   match action () with
-  | Ok metadata ->
-      t.state := State.server_transition ~re_auth !(t.state) message;
-      Ok metadata
+  | Ok result ->
+      t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
+      Ok result
   | Error _ as error ->
       t.state := State.Failed;
       error
@@ -145,5 +155,75 @@ let logoff t =
   else
     let* _ = request t ~message:State.Logoff ~re_auth (fun () -> Bolt.logoff t.transport) in
     Ok ()
+
+type run_metadata = { fields : string list; qid : int option }
+
+let map_fields key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
+
+let string_list = function
+  | Packstream.List values ->
+      List.fold_right
+        (fun v acc -> match v with Packstream.String s -> s :: acc | _ -> acc)
+        values []
+  | _ -> []
+
+let int_opt = function Some (Packstream.Int v) -> Some (Int64.to_int v) | _ -> None
+
+let run_metadata_of metadata =
+  let fields =
+    match map_fields "fields" metadata with Some value -> string_list value | None -> []
+  in
+  let qid = map_fields "qid" metadata |> int_opt in
+  { fields; qid }
+
+let run_extra ?mode ?db () =
+  let extra =
+    match mode with
+    | Some Config.Read -> [ ("mode", Packstream.String "r") ]
+    | Some Config.Write | None -> []
+  in
+  let extra = match db with Some db -> ("db", Packstream.String db) :: extra | None -> extra in
+  Packstream.Map extra
+
+let run t ~hydration ~query ~parameters ?mode ?db () =
+  let parameters =
+    Packstream.Map
+      (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)) parameters)
+  in
+  let* metadata =
+    request t ~message:State.Run ~re_auth:(supports_re_auth t.major t.minor) (fun () ->
+        Bolt.run t.transport ~query ~parameters ~extra:(run_extra ?mode ?db ()))
+  in
+  Ok (run_metadata_of metadata)
+
+let pull_extra ?(n = -1) ?qid () =
+  let extra = [ ("n", Packstream.Int (Int64.of_int n)) ] in
+  let extra =
+    match qid with Some qid -> ("qid", Packstream.Int (Int64.of_int qid)) :: extra | None -> extra
+  in
+  Packstream.Map extra
+
+let pull t ~hydration ?n ?qid () =
+  let re_auth = supports_re_auth t.major t.minor in
+  match
+    request
+      ~has_more:(fun (_, summary) -> Bolt.metadata_has_more summary)
+      t ~message:State.Pull ~re_auth
+      (fun () -> Bolt.pull t.transport ~extra:(pull_extra ?n ?qid ()))
+  with
+  | Error _ as error -> error
+  | Ok (records, summary) ->
+      let records = List.map (List.map (Hydration.hydrate hydration)) records in
+      Ok (records, Bolt.metadata_has_more summary)
+
+let discard t ?n ?qid () =
+  let re_auth = supports_re_auth t.major t.minor in
+  let* _ =
+    request
+      ~has_more:(fun (_, summary) -> Bolt.metadata_has_more summary)
+      t ~message:State.Discard ~re_auth
+      (fun () -> Bolt.discard t.transport ~extra:(pull_extra ?n ?qid ()))
+  in
+  Ok ()
 
 let close t = Transport.close t.transport

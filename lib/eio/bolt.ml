@@ -18,6 +18,10 @@ let hello_tag = 0x01
 let logon_tag = 0x6A
 let logoff_tag = 0x6B
 let reset_tag = 0x0F
+let run_tag = 0x10
+let discard_tag = 0x2F
+let pull_tag = 0x3F
+let record_tag = 0x71
 let success_tag = 0x70
 let failure_tag = 0x7F
 let ignored_tag = 0x7E
@@ -25,14 +29,17 @@ let ignored_tag = 0x7E
 let send transport ~tag fields =
   Packstream.pack (Packstream.Structure (tag, fields)) |> Transport.write_message transport
 
-let recv transport =
+let recv_fields transport =
   let* message = Transport.read_message transport in
   match Packstream.unpack message with
   | Error error -> Error (Errors.Service_unavailable (Packstream.error_to_string error))
-  | Ok (Packstream.Structure (tag, fields)) ->
-      let payload = match fields with [] -> None | field :: _ -> Some field in
-      Ok (tag, payload)
+  | Ok (Packstream.Structure (tag, fields)) -> Ok (tag, fields)
   | Ok _ -> Error (Errors.Service_unavailable "Expected a Bolt message structure")
+
+let recv transport =
+  let* tag, fields = recv_fields transport in
+  let payload = match fields with [] -> None | field :: _ -> Some field in
+  Ok (tag, payload)
 
 let field_string key = function
   | Packstream.Map fields -> (
@@ -64,3 +71,42 @@ let logon transport ~auth =
 let logoff transport =
   let* () = send transport ~tag:logoff_tag [] in
   respond transport
+
+let run transport ~query ~parameters ~extra =
+  let* () = send transport ~tag:run_tag [ Packstream.String query; parameters; extra ] in
+  respond transport
+
+(* Read the RECORD messages of a result up to its summary (SUCCESS/FAILURE/IGNORED).
+   A RECORD carries its values as a single List field. *)
+let rec collect_records acc transport =
+  let* tag, fields = recv_fields transport in
+  match tag with
+  | t when t = record_tag ->
+      let record = match fields with [ Packstream.List values ] -> values | _ -> fields in
+      collect_records (record :: acc) transport
+  | t when t = success_tag ->
+      let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
+      Ok (List.rev acc, metadata)
+  | t when t = failure_tag ->
+      let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
+      let code = Option.value ~default:"" (field_string "code" metadata) in
+      let message = Option.value ~default:"" (field_string "message" metadata) in
+      Error (Errors.of_neo4j_code ~code ~message)
+  | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")
+  | tag ->
+      Error (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
+
+let pull transport ~extra =
+  let* () = send transport ~tag:pull_tag [ extra ] in
+  collect_records [] transport
+
+let discard transport ~extra =
+  let* () = send transport ~tag:discard_tag [ extra ] in
+  collect_records [] transport
+
+let metadata_bool key = function
+  | Packstream.Map fields -> (
+      match List.assoc_opt key fields with Some (Packstream.Bool value) -> value | _ -> false)
+  | _ -> false
+
+let metadata_has_more = metadata_bool "has_more"

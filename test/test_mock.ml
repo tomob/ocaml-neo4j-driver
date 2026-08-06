@@ -3,7 +3,12 @@
 
 open Eio.Std
 
-type response = Success | Failure of string * string | Ignored
+type response =
+  | Success
+  | Success_meta of (string * Neodriver.Packstream.value) list
+  | Failure of string * string
+  | Ignored
+  | Records of Neodriver.Packstream.value list list * bool
 
 type behavior =
   | V1 of int * int
@@ -60,6 +65,11 @@ let reply_message flow = function
         (Bytes.to_string
            (Neodriver.Packstream.pack
               (Neodriver.Packstream.Structure (0x70, [ Neodriver.Packstream.Map [] ]))))
+  | Success_meta metadata ->
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure (0x70, [ Neodriver.Packstream.Map metadata ]))))
   | Failure (code, message) ->
       write_message flow
         (Bytes.to_string
@@ -78,6 +88,21 @@ let reply_message flow = function
         (Bytes.to_string
            (Neodriver.Packstream.pack
               (Neodriver.Packstream.Structure (0x7E, [ Neodriver.Packstream.Map [] ]))))
+  | Records (records, has_more) ->
+      List.iter
+        (fun values ->
+          write_message flow
+            (Bytes.to_string
+               (Neodriver.Packstream.pack
+                  (Neodriver.Packstream.Structure (0x71, [ Neodriver.Packstream.List values ])))))
+        records;
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure
+                 ( 0x70,
+                   [ Neodriver.Packstream.Map [ ("has_more", Neodriver.Packstream.Bool has_more) ] ]
+                 ))))
 
 let rec serve_behavior behavior flow =
   match behavior with
