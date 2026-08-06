@@ -68,7 +68,7 @@ ocaml-neo4j-driver/            # this repo
 
 ### Phase A3 — Single connection: HELLO, auth, state machine
 
-- HELLO with `user_agent`/`bolt_agent`/`routing`; inline auth (≤5.0) and **`LOGON/LOGOFF`** (≥5.1).
+- HELLO with `user_agent`/`bolt_agent`/`routing`; inline auth (≤5.0) and **`LOGON/LOGOFF`** (≥5.1). **Done** (commit "step A3-1"): `bolt.ml` (message layer — `send`/`recv`/`respond` with SUCCESS/FAILURE/IGNORED interpretation, plus `hello`/`logon`/`logoff`), `conn.ml` (`auth`/`user_agent` in the config; `connect` authenticates — inline auth for ≤5.0, HELLO+LOGON for ≥5.1; `bolt_agent` header for 5.3+; `logon`/`logoff` gated on `supports_re_auth`). Unit-tested via a mock Bolt session server; integration-tested against a live Neo4j (auth OK + wrong-password rejection).
 - **State machine** (`state.ml`): `CONNECTED/READY/STREAMING/TX_READY|TX_STREAMING/FAILED/AUTHENTICATION`, `IGNORED` handling, **automatic RESET after FAILURE**.
 - **RUN/PULL/DISCARD**: streaming PULL with `fetch_size` and `has_more`, `DISCARD` of the remainder, `qid` (multiple results).
 - Per-version feature gates: `supports_multiple_results`, `supports_multiple_databases`, `supports_re_auth`, `supports_notification_filtering`, `supports_ssr`, `supports_telemetry` → a `capabilities` variant.

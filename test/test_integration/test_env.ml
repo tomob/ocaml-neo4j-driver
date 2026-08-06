@@ -31,11 +31,18 @@ let of_env () =
         }
 
 (* A Conn.config for [env], using the env scheme unless overridden. *)
-let conn_config ?scheme (env : t) =
+let conn_config ?scheme ?password (env : t) =
   Neodriver_eio.Conn.
     {
       host = env.host;
       port = env.port;
       scheme = Option.value ~default:(scheme_of_string env.scheme) scheme;
       connection_timeout = 10.0;
+      user_agent = Neodriver_eio.Conn.default_user_agent;
+      auth =
+        {
+          scheme = "basic";
+          principal = env.user;
+          credentials = Option.value ~default:env.password password;
+        };
     }

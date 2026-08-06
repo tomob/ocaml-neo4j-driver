@@ -3,12 +3,17 @@
 
 open Eio.Std
 
+type response = Success | Failure of string * string
+
 type behavior =
   | V1 of int * int
   | Reject
   | Http
   | Manifest_unknown
   | Manifest of (int * int * int) list
+  | Session of (int * int) * Bytes.t list ref * response list
+(* handshake at the given version, then read one Bolt message per
+         [response], recording each in [received] and replying accordingly *)
 
 type flow = [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r
 
@@ -28,7 +33,48 @@ let read_exact flow n =
 let write flow s = Eio.Flow.write flow [ Cstruct.of_string s ]
 let varint n = String.make 1 (Char.chr n)
 
-let serve_behavior behavior flow =
+(* Read one Bolt message (chunk framing) from the flow. *)
+let read_message flow =
+  let buffer = Buffer.create 256 in
+  let rec loop () =
+    let size_bytes = read_exact flow 2 in
+    let size = (Char.code size_bytes.[0] * 256) + Char.code size_bytes.[1] in
+    if size = 0 then if Buffer.length buffer = 0 then loop () else Buffer.contents buffer
+    else begin
+      Buffer.add_string buffer (read_exact flow size);
+      loop ()
+    end
+  in
+  loop ()
+
+(* Write one Bolt message (single chunk + terminator). *)
+let write_message flow s =
+  write flow
+    (String.make 1 (Char.chr (String.length s lsr 8))
+    ^ String.make 1 (Char.chr (String.length s land 0xff))
+    ^ s ^ "\x00\x00")
+
+let reply_message flow = function
+  | Success ->
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure (0x70, [ Neodriver.Packstream.Map [] ]))))
+  | Failure (code, message) ->
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure
+                 ( 0x7F,
+                   [
+                     Neodriver.Packstream.Map
+                       [
+                         ("code", Neodriver.Packstream.String code);
+                         ("message", Neodriver.Packstream.String message);
+                       ];
+                   ] ))))
+
+let rec serve_behavior behavior flow =
   match behavior with
   | V1 (major, minor) ->
       write flow ("\x00\x00" ^ String.make 1 (Char.chr minor) ^ String.make 1 (Char.chr major))
@@ -49,6 +95,17 @@ let serve_behavior behavior flow =
       write flow "\x00";
       (* The client replies with its chosen version and capabilities. *)
       ignore (read_exact flow 5)
+  | Session (version, received, responses) ->
+      (* Consume the client's handshake (magic + 16-byte proposal); the V1
+         response below does not itself read it. *)
+      ignore (read_exact flow 20);
+      serve_behavior (V1 (fst version, snd version)) flow;
+      List.iter
+        (fun response ->
+          let message = read_message flow in
+          received := Bytes.of_string message :: !received;
+          reply_message flow response)
+        responses
 
 let with_server handler client =
   Eio_main.run (fun env ->
