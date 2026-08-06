@@ -18,6 +18,8 @@
 
 open Neodriver_packstream
 
+let ( let* ) o f = match o with Some v -> f v | None -> None
+
 type version = V1 | V2 | V3
 
 type t = {
@@ -46,10 +48,21 @@ let bytes_ = function Packstream.Bytes b -> Some b | _ -> None
 let list_ = function Packstream.List l -> Some l | _ -> None
 let map_ = function Packstream.Map m -> Some m | _ -> None
 
-let id_or_element_id = function
+(* The identity (element_id, legacy_id) of a graph entity from its single id
+   field: a String is the element_id (Bolt 5.0+), an Int is the legacy id (used
+   as the element_id fallback for Bolt 3/4). *)
+let identity = function
   | Packstream.String s -> Some (s, None)
   | Packstream.Int n -> Some (Int64.to_string n, Some (Int64.to_int n))
   | _ -> None
+
+(* Identity for the Bolt 5.1+/6 formats, where the legacy id and the element_id
+   are separate fields: [?element_id] is the trailing String and [id_field] the
+   leading legacy id. *)
+let identity_of ?element_id id_field =
+  match (element_id, id_field) with
+  | Some (Packstream.String eid), Packstream.Int id -> Some (eid, Some (Int64.to_int id))
+  | _ -> identity id_field
 
 (* --- scalar structure hydrators (no graph state, non-recursive) --- *)
 
@@ -231,25 +244,38 @@ let rec hydrate t value =
               Values.raw = value;
             })
 
+(* Add a node to the graph, deduplicated by [element_id] (labels/properties are
+   merged when the node was first seen as a relationship endpoint). *)
+and upsert_node t ~element_id ~legacy_id ~labels ~properties =
+  let node =
+    match List.assoc_opt element_id t.nodes with
+    | Some existing ->
+        {
+          existing with
+          labels = merge_labels existing.labels labels;
+          properties = merge_props existing.properties properties;
+        }
+    | None -> { Values.element_id; Values.legacy_id; Values.labels; Values.properties }
+  in
+  t.nodes <- (element_id, node) :: List.remove_assoc element_id t.nodes;
+  node
+
 and hydrate_node t fields =
   match fields with
-  | [ id_or_eid; labels; props ] -> (
-      match (id_or_element_id id_or_eid, hydrate_labels labels, hydrate_props t props) with
-      | Some (element_id, legacy_id), Some labels, Some properties ->
-          let node =
-            match List.assoc_opt element_id t.nodes with
-            | Some existing ->
-                {
-                  existing with
-                  labels = merge_labels existing.labels labels;
-                  properties = merge_props existing.properties properties;
-                }
-            | None -> { element_id; legacy_id; labels; properties }
-          in
-          t.nodes <- (element_id, node) :: List.remove_assoc element_id t.nodes;
-          Some node
-      | _ -> None)
+  (* Bolt <= 5.0: [id; labels; properties] with a legacy int or an element_id string. *)
+  | [ id_field; labels; props ] ->
+      let* element_id, legacy_id = identity id_field in
+      hydrate_node_body t ~element_id ~legacy_id ~labels ~props
+  (* Bolt 5.1+/6: [id; labels; properties; element_id]. *)
+  | [ id_field; labels; props; element_id ] ->
+      let* element_id, legacy_id = identity_of ~element_id id_field in
+      hydrate_node_body t ~element_id ~legacy_id ~labels ~props
   | _ -> None
+
+and hydrate_node_body t ~element_id ~legacy_id ~labels ~props =
+  let* labels = hydrate_labels labels in
+  let* properties = hydrate_props t props in
+  Some (upsert_node t ~element_id ~legacy_id ~labels ~properties)
 
 and get_or_create_node t element_id legacy_id =
   match List.assoc_opt element_id t.nodes with
@@ -261,51 +287,81 @@ and get_or_create_node t element_id legacy_id =
       t.nodes <- (element_id, node) :: t.nodes;
       node
 
+(* Add a relationship to the graph, deduplicated by [element_id]. *)
+and upsert_relationship t (rel : Values.relationship) =
+  match List.assoc_opt rel.Values.element_id t.relationships with
+  | Some existing -> existing
+  | None ->
+      t.relationships <- (rel.Values.element_id, rel) :: t.relationships;
+      rel
+
+(* Add a relationship to the graph, deduplicated by [element_id]. The endpoint
+   nodes are created first so the relationship references them. *)
+and build_relationship t ~element_id ~legacy_id ~start ~end_ ~start_legacy ~end_legacy ~type_ ~props
+    =
+  match (str type_, hydrate_props t props) with
+  | Some rel_type, Some properties ->
+      ignore (get_or_create_node t start start_legacy);
+      ignore (get_or_create_node t end_ end_legacy);
+      let rel =
+        {
+          Values.element_id;
+          Values.legacy_id;
+          Values.rel_type;
+          Values.start;
+          Values.end_;
+          Values.start_legacy_id = start_legacy;
+          Values.end_legacy_id = end_legacy;
+          Values.properties;
+        }
+      in
+      Some (upsert_relationship t rel)
+  | _ -> None
+
 and hydrate_relationship t fields =
   match fields with
-  | [ id_or_eid; start_id; end_id; type_; props ] -> (
-      match
-        ( id_or_element_id id_or_eid,
-          id_or_element_id start_id,
-          id_or_element_id end_id,
-          str type_,
-          hydrate_props t props )
-      with
-      | ( Some (element_id, legacy_id),
-          Some (start_eid, start_legacy),
-          Some (end_eid, end_legacy),
-          Some rel_type,
-          Some properties ) ->
-          ignore (get_or_create_node t start_eid start_legacy);
-          ignore (get_or_create_node t end_eid end_legacy);
-          let rel =
-            {
-              Values.element_id;
-              Values.legacy_id;
-              Values.rel_type;
-              Values.start = start_eid;
-              Values.end_ = end_eid;
-              Values.properties;
-            }
-          in
-          let rel =
-            match List.assoc_opt element_id t.relationships with
-            | Some existing -> existing
-            | None ->
-                t.relationships <- (element_id, rel) :: t.relationships;
-                rel
-          in
-          Some rel
-      | _ -> None)
+  (* Bolt <= 5.0: [id; start; end; type; properties]. *)
+  | [ id_field; start_id; end_id; type_; props ] ->
+      let* element_id, legacy_id = identity id_field in
+      let* start_eid, start_legacy = identity start_id in
+      let* end_eid, end_legacy = identity end_id in
+      build_relationship t ~element_id ~legacy_id ~start:start_eid ~end_:end_eid ~start_legacy
+        ~end_legacy ~type_ ~props
+  (* Bolt 5.1+/6: [id; start; end; type; properties; element_id; start_element_id; end_element_id]. *)
+  | [
+   Packstream.Int id;
+   Packstream.Int start_id;
+   Packstream.Int end_id;
+   type_;
+   props;
+   Packstream.String element_id;
+   Packstream.String start_eid;
+   Packstream.String end_eid;
+  ] ->
+      build_relationship t ~element_id
+        ~legacy_id:(Some (Int64.to_int id))
+        ~start:start_eid ~end_:end_eid
+        ~start_legacy:(Some (Int64.to_int start_id))
+        ~end_legacy:(Some (Int64.to_int end_id))
+        ~type_ ~props
   | _ -> None
 
 and hydrate_unbound_relationship t fields =
   match fields with
-  | [ id_or_eid; type_; props ] -> (
-      match (id_or_element_id id_or_eid, str type_, hydrate_props t props) with
-      | Some (element_id, legacy_id), Some rel_type, Some properties ->
-          Some { Values.element_id; Values.legacy_id; Values.rel_type; Values.properties }
-      | _ -> None)
+  (* Bolt <= 5.0: [id; type; properties]. *)
+  | [ id_field; type_; props ] ->
+      let* element_id, legacy_id = identity id_field in
+      build_unbound t ~element_id ~legacy_id ~type_ ~props
+  (* Bolt 5.1+/6: [id; type; properties; element_id]. *)
+  | [ id_field; type_; props; element_id ] ->
+      let* element_id, legacy_id = identity_of ~element_id id_field in
+      build_unbound t ~element_id ~legacy_id ~type_ ~props
+  | _ -> None
+
+and build_unbound t ~element_id ~legacy_id ~type_ ~props =
+  match (str type_, hydrate_props t props) with
+  | Some rel_type, Some properties ->
+      Some { Values.element_id; Values.legacy_id; Values.rel_type; Values.properties }
   | _ -> None
 
 and hydrate_node_list t nodes =
@@ -346,43 +402,57 @@ and int_list = function
 
 and hydrate_path t fields =
   match fields with
-  | [ nodes; rels; sequence ] -> (
-      match (hydrate_node_list t nodes, hydrate_unbound_list t rels, int_list sequence) with
-      | Some node_list, Some rel_list, Some seq ->
-          if List.length node_list < 1 || List.length seq mod 2 <> 0 then None
-          else
-            let rec go (last : Values.node) (ordered_nodes : Values.node list)
-                (bound_rels : Values.relationship list) = function
-              | [] ->
-                  Some
-                    { Values.nodes = List.rev ordered_nodes; relationships = List.rev bound_rels }
-              | rel_idx :: node_idx :: rest -> (
-                  match
-                    (List.nth_opt node_list node_idx, List.nth_opt rel_list (abs rel_idx - 1))
-                  with
-                  | Some next_node, Some unbound when rel_idx <> 0 ->
-                      let start_eid, end_eid =
-                        if rel_idx > 0 then (last.element_id, next_node.element_id)
-                        else (next_node.element_id, last.element_id)
-                      in
-                      let bound =
-                        {
-                          Values.element_id = unbound.element_id;
-                          Values.legacy_id = unbound.legacy_id;
-                          Values.rel_type = unbound.rel_type;
-                          Values.start = start_eid;
-                          Values.end_ = end_eid;
-                          Values.properties = unbound.properties;
-                        }
-                      in
-                      go next_node (next_node :: ordered_nodes) (bound :: bound_rels) rest
-                  | _ -> None)
-              | _ -> None
-            in
-            let first = List.hd node_list in
-            go first [ first ] [] seq
-      | _ -> None)
+  | [ nodes; rels; sequence ] ->
+      let* node_list = hydrate_node_list t nodes in
+      let* rel_list = hydrate_unbound_list t rels in
+      let* seq = int_list sequence in
+      if List.length node_list < 1 || List.length seq mod 2 <> 0 then None
+      else stitch_path node_list rel_list seq
   | _ -> None
+
+(* Endpoint identities of a bound relationship, oriented by the sign of the
+   path sequence entry: positive travels last -> next, negative next -> last. *)
+and endpoints rel_idx (last : Values.node) (next_node : Values.node) =
+  if rel_idx > 0 then
+    ( last.Values.element_id,
+      next_node.Values.element_id,
+      last.Values.legacy_id,
+      next_node.Values.legacy_id )
+  else
+    ( next_node.Values.element_id,
+      last.Values.element_id,
+      next_node.Values.legacy_id,
+      last.Values.legacy_id )
+
+(* Bind an unbound relationship (from a path's relationship list) to its
+   endpoint nodes, whose identities come from the path sequence. *)
+and bound unbound ~start ~end_ ~start_legacy ~end_legacy =
+  {
+    Values.element_id = unbound.Values.element_id;
+    Values.legacy_id = unbound.Values.legacy_id;
+    Values.rel_type = unbound.Values.rel_type;
+    Values.start;
+    Values.end_;
+    Values.start_legacy_id = start_legacy;
+    Values.end_legacy_id = end_legacy;
+    Values.properties = unbound.Values.properties;
+  }
+
+and stitch_path node_list rel_list seq =
+  let rec go (last : Values.node) (ordered_nodes : Values.node list)
+      (bound_rels : Values.relationship list) = function
+    | [] -> Some { Values.nodes = List.rev ordered_nodes; relationships = List.rev bound_rels }
+    | rel_idx :: node_idx :: rest -> (
+        match (List.nth_opt node_list node_idx, List.nth_opt rel_list (abs rel_idx - 1)) with
+        | Some next_node, Some unbound when rel_idx <> 0 ->
+            let start_eid, end_eid, start_legacy, end_legacy = endpoints rel_idx last next_node in
+            let b = bound unbound ~start:start_eid ~end_:end_eid ~start_legacy ~end_legacy in
+            go next_node (next_node :: ordered_nodes) (b :: bound_rels) rest
+        | _ -> None)
+    | _ -> None
+  in
+  let first = List.hd node_list in
+  go first [ first ] [] seq
 
 and hydrate_labels labels =
   match list_ labels with

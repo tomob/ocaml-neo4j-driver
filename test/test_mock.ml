@@ -7,6 +7,7 @@ type response =
   | Success
   | Success_meta of (string * Neodriver.Packstream.value) list
   | Failure of string * string
+  | Failure_gql of string * string
   | Ignored
   | Records of Neodriver.Packstream.value list list * bool
 
@@ -80,6 +81,20 @@ let reply_message flow = function
                      Neodriver.Packstream.Map
                        [
                          ("code", Neodriver.Packstream.String code);
+                         ("message", Neodriver.Packstream.String message);
+                       ];
+                   ] ))))
+  | Failure_gql (code, message) ->
+      (* Bolt 6 FAILURE carries the code under [neo4j_code]. *)
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure
+                 ( 0x7F,
+                   [
+                     Neodriver.Packstream.Map
+                       [
+                         ("neo4j_code", Neodriver.Packstream.String code);
                          ("message", Neodriver.Packstream.String message);
                        ];
                    ] ))))

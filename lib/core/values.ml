@@ -18,6 +18,8 @@ and relationship = {
   rel_type : string;
   start : string;
   end_ : string;
+  start_legacy_id : int option;
+  end_legacy_id : int option;
   properties : (string * t) list;
 }
 

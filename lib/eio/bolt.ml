@@ -48,12 +48,19 @@ let field_string key = function
       | _ -> None)
   | _ -> None
 
+(* Bolt 6 renamed the FAILURE code key to [neo4j_code]; older versions use
+   [code]. *)
+let failure_code payload =
+  match field_string "neo4j_code" payload with
+  | Some code -> code
+  | None -> Option.value ~default:"" (field_string "code" payload)
+
 let respond transport =
   let* tag, payload = recv transport in
   match tag with
   | t when t = success_tag -> Ok (Option.value ~default:(Packstream.Map []) payload)
   | t when t = failure_tag ->
-      let code = Option.value ~default:"" (Option.bind payload (field_string "code")) in
+      let code = failure_code (Option.value ~default:(Packstream.Map []) payload) in
       let message = Option.value ~default:"" (Option.bind payload (field_string "message")) in
       Error (Errors.of_neo4j_code ~code ~message)
   | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")
@@ -89,7 +96,7 @@ let rec collect_records acc transport =
       Ok (List.rev acc, metadata)
   | t when t = failure_tag ->
       let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
-      let code = Option.value ~default:"" (field_string "code" metadata) in
+      let code = failure_code metadata in
       let message = Option.value ~default:"" (field_string "message" metadata) in
       Error (Errors.of_neo4j_code ~code ~message)
   | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")

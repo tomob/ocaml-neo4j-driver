@@ -12,6 +12,7 @@ open Neodriver
 open Neodriver_eio
 
 exception Backend_error of string
+exception Driver_error of Errors.t
 
 (* --- Connection context --- *)
 
@@ -178,9 +179,7 @@ let ensure_conn ctx (driver : driver) =
           Ok conn)
 
 let conn_of ctx (driver : driver) =
-  match ensure_conn ctx driver with
-  | Ok conn -> conn
-  | Error error -> raise (Backend_error (Errors.to_string error))
+  match ensure_conn ctx driver with Ok conn -> conn | Error error -> raise (Driver_error error)
 
 (* --- Handlers --- *)
 
@@ -204,7 +203,7 @@ let new_driver fields =
     | _ -> 30.0
   in
   match Addressing.parse_uri uri_string with
-  | Error error -> raise (Backend_error (Errors.to_string error))
+  | Error error -> raise (Driver_error error)
   | Ok uri ->
       let id = new_id () in
       Hashtbl.add drivers id
@@ -284,10 +283,10 @@ let session_run ctx fields =
   in
   let hydration = Conn.hydration conn in
   match Conn.run conn ~hydration ~query:cypher ~parameters ?metadata () with
-  | Error error -> raise (Backend_error (Errors.to_string error))
+  | Error error -> raise (Driver_error error)
   | Ok run_metadata -> (
       match Conn.pull conn ~hydration () with
-      | Error error -> raise (Backend_error (Errors.to_string error))
+      | Error error -> raise (Driver_error error)
       | Ok (records, summary) ->
           let id = new_id () in
           Hashtbl.add results id
@@ -424,6 +423,7 @@ let handle ctx name data =
   in
   match name with
   | "StartTest" -> Some (start_test fields)
+  | "StartSubTest" -> Some (start_test fields)
   | "GetFeatures" -> Some (get_features fields)
   | "NewDriver" -> Some (new_driver fields)
   | "DriverClose" -> Some (driver_close fields)
@@ -439,6 +439,29 @@ let handle ctx name data =
   | "ResolverResolutionCompleted" -> resolver_resolution_completed fields
   | _ -> raise (Backend_error ("No request handler for " ^ name))
 
+(* A driver error surfaced to the harness (analog of the Python driver_exc):
+   a Neo4j error carries its [code]; other driver errors carry just a message. *)
+let driver_error_json error =
+  let retryable = Errors.is_retryable error in
+  match error with
+  | Errors.Neo4j server ->
+      ( "DriverError",
+        `Assoc
+          [
+            ("retryable", `Bool retryable);
+            ("errorType", `String "neodriver.Neo4jError");
+            ("msg", `String server.message);
+            ("code", `String server.code);
+          ] )
+  | _ ->
+      ( "DriverError",
+        `Assoc
+          [
+            ("retryable", `Bool retryable);
+            ("errorType", `String "neodriver.DriverError");
+            ("msg", `String (Errors.to_string error));
+          ] )
+
 (* Parse a request JSON and dispatch it. *)
 let dispatch ctx json =
   try
@@ -452,4 +475,5 @@ let dispatch ctx json =
     | _ -> raise (Backend_error "Request is not an object")
   with
   | Backend_error message -> Some ("BackendError", `Assoc [ ("msg", `String message) ])
+  | Driver_error error -> Some (driver_error_json error)
   | exn -> Some ("BackendError", `Assoc [ ("msg", `String (Printexc.to_string exn)) ])

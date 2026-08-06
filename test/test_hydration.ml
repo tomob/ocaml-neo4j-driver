@@ -204,6 +204,8 @@ let round_trip () =
           rel_type = "KNOWS";
           start = "n1";
           end_ = "n2";
+          start_legacy_id = None;
+          end_legacy_id = None;
           properties = [];
         };
     ]
@@ -224,12 +226,65 @@ let vector_round_trip () =
   | Values.Vector v' -> check int "vector len" 2 (Values.vector_length v')
   | x -> fail (Values.to_string x)
 
+(* Bolt 5.1+/6 node: [id; labels; properties; element_id]. *)
+let node_element_id () =
+  let h = Hydration.create Hydration.V3 in
+  let struct_ = Structure (0x4E, [ Int 7L; List [ String "Person" ]; Map []; String "4:db:7" ]) in
+  match Hydration.hydrate h struct_ with
+  | Values.Node n ->
+      check string "element_id" "4:db:7" n.element_id;
+      check (option int) "legacy_id" (Some 7) n.legacy_id
+  | v -> fail (Values.to_string v)
+
+(* Bolt 5.1+/6 relationship: [id; start; end; type; props; element_id;
+   start_element_id; end_element_id]. *)
+let relationship_element_id () =
+  let h = Hydration.create Hydration.V3 in
+  let struct_ =
+    Structure
+      ( 0x52,
+        [
+          Int 1L;
+          Int 4L;
+          Int 5L;
+          String "KNOWS";
+          Map [ ("since", Int 1999L) ];
+          String "5:rel:1";
+          String "4:n4";
+          String "4:n5";
+        ] )
+  in
+  match Hydration.hydrate h struct_ with
+  | Values.Relationship r ->
+      check string "element_id" "5:rel:1" r.element_id;
+      check (option int) "legacy_id" (Some 1) r.legacy_id;
+      check string "start" "4:n4" r.start;
+      check string "end" "4:n5" r.end_;
+      check (option int) "start_legacy" (Some 4) r.start_legacy_id;
+      check (option int) "end_legacy" (Some 5) r.end_legacy_id
+  | v -> fail (Values.to_string v)
+
+(* Bolt 5.1+/6 unbound relationship in a path: [id; type; props; element_id]. *)
+let unbound_element_id () =
+  let h = Hydration.create Hydration.V3 in
+  let struct_ = Structure (0x72, [ Int 0L; String "KNOWS"; Map []; String "5:rel:0" ]) in
+  match Hydration.hydrate h struct_ with
+  | Values.Unbound_relationship r ->
+      check string "element_id" "5:rel:0" r.element_id;
+      check (option int) "legacy_id" (Some 0) r.legacy_id
+  | v -> fail (Values.to_string v)
+
 let tests =
   [
     ("[Hydration] scalar", [ test_case "scalars" `Quick scalar ]);
     ("[Hydration] node", [ test_case "node" `Quick node ]);
     ("[Hydration] node_legacy_id", [ test_case "legacy id" `Quick node_legacy_id ]);
+    ("[Hydration] node_element_id", [ test_case "node with element_id" `Quick node_element_id ]);
     ("[Hydration] relationship", [ test_case "relationship" `Quick relationship ]);
+    ( "[Hydration] relationship_element_id",
+      [ test_case "relationship with element_ids" `Quick relationship_element_id ] );
+    ( "[Hydration] unbound_element_id",
+      [ test_case "unbound relationship with element_id" `Quick unbound_element_id ] );
     ("[Hydration] node_dedup", [ test_case "node dedup/merge" `Quick node_dedup ]);
     ("[Hydration] path", [ test_case "path stitching" `Quick path ]);
     ("[Hydration] temporal", [ test_case "temporal tags" `Quick temporal ]);

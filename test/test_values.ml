@@ -20,6 +20,8 @@ let values () =
         rel_type = "KNOWS";
         start = "1";
         end_ = "2";
+        start_legacy_id = None;
+        end_legacy_id = None;
         properties = [];
       }
   in

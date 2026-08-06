@@ -63,6 +63,10 @@ and node n =
     ]
 
 and relationship r =
+  let node_id = function
+    | Some id -> field "CypherInt" (`Intlit (string_of_int id))
+    | None -> field "CypherString" (`String "")
+  in
   `Assoc
     [
       ("name", `String "Relationship");
@@ -70,8 +74,8 @@ and relationship r =
         `Assoc
           [
             ("id", legacy_id r.legacy_id);
-            ("startNodeId", field "CypherString" (`String r.start));
-            ("endNodeId", field "CypherString" (`String r.end_));
+            ("startNodeId", node_id r.start_legacy_id);
+            ("endNodeId", node_id r.end_legacy_id);
             ("type", field "CypherString" (`String r.rel_type));
             ( "props",
               field "CypherMap" (`Assoc (List.map (fun (k, v) -> (k, to_yojson v)) r.properties)) );

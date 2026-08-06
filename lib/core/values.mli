@@ -16,9 +16,11 @@ and relationship = {
   rel_type : string;
   start : string;
   end_ : string;
+  start_legacy_id : int option;
+  end_legacy_id : int option;
   properties : (string * t) list;
 }
-(** A directed relationship with its endpoints' [element_id]s. *)
+(** A directed relationship with its endpoints' [element_id]s (and legacy ids when known). *)
 
 and unbound_relationship = {
   element_id : string;

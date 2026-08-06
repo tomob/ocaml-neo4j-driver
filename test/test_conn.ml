@@ -351,6 +351,30 @@ let re_auth_after_mark () =
           check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
           Conn.close conn)
 
+(* A Bolt 6 FAILURE carries its code under neo4j_code. *)
+let failure_gql_code () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         ref [],
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure_gql ("Neo.ClientError.Statement.SyntaxError", "bad");
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          let hydration = Conn.hydration conn in
+          (match Conn.run conn ~hydration ~query:"BAD" ~parameters:[] () with
+          | Ok _ -> fail "bad query should fail"
+          | Error (Errors.Neo4j server) ->
+              check string "code" "Neo.ClientError.Statement.SyntaxError" server.code
+          | Error error -> fail (Errors.to_string error));
+          Conn.close conn)
+
 let tests =
   [
     ( "[Conn] routing_not_supported",
@@ -377,4 +401,5 @@ let tests =
       [ test_case "changed token does LOGOFF + LOGON" `Quick re_auth_changed_token ] );
     ( "[Conn] re_auth_after_mark",
       [ test_case "mark_unauthenticated forces LOGON" `Quick re_auth_after_mark ] );
+    ("[Conn] failure_gql_code", [ test_case "FAILURE neo4j_code extracted" `Quick failure_gql_code ]);
   ]
