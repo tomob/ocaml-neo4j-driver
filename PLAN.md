@@ -135,12 +135,7 @@ gating (the `test_subtest_skips.ml` analog).
     harness run additionally needs a driver Docker image + a `testkit/backend.py` glue that spawns
     our binary; that is part of B0b/B10 (with an empty feature list every test would be skipped
     anyway). The protocol is validated by `backend_smoke.sh`.
-- **Phase B0b** — query path (Phase A3 is done, so this is within reach):
-  - `NewDriver` gains a lazily-created connection via `Conn` (A2/A3) — one connection per driver,
-    no pool yet.
-  - `SessionRun` (RUN/PULL), `ResultNext`/`ResultList`/`ResultPeek`/`ResultConsume` (result
-    iteration + TestKit record encoding via `testkit_values`), `VerifyConnectivity`.
-  - Enlarge the reported feature set; run the basic testkit query suite against the harness.
+- **Phase B0b** — query path. **Done** (commit "step B0b"): `NewDriver` holds a **lazily created connection** (via `Conn`, one per driver, no pool) and `DriverClose` closes it; `VerifyConnectivity` / `GetServerInfo` connect on demand; `SessionRun` decodes `params`/`txMeta` (new `testkit_values.of_yojson` decoder, round-trip tested), runs RUN+PULL and stores the result (fields/records/summary/cursor); `ResultNext`/`ResultPeek`/`ResultList` stream records (`Record`/`NullRecord`/`RecordList`); `ResultConsume` returns a minimal `Summary` (serverInfo, counters from PULL `stats`, queryType, database, query, available/consumed-after). `Conn.pull` now returns the PULL summary metadata (not just `has_more`), `Conn.run` gained `?metadata` (tx_metadata) and `Conn.server_agent` reads the HELLO agent. Features enlarged (Bolt 4.4/5.x/6.x + implemented API). Against a live Neo4j (2026.06): **12 tests pass** (authentication, basic/streamed queries, iteration, session reuse, long strings, regex params, tx_metadata echo); 1 real failure (`test_custom_resolver` — needs resolver support, deferred); the remaining errors are transaction commands (`SessionBeginTransaction`/`SessionReadTransaction`/`SessionWriteTransaction`), which are **Phase B1**.
 - **Phases B1–B5**: extending command coverage as the API matures: transactions
   (RetryablePositive/Negative, TxBegin/Commit/Rollback), sessions (`SessionBeginTransaction`,
   `SessionLastBookmarks`, access mode), routing (`NewDriver` with `neo4j://`, `DriverSession`...),

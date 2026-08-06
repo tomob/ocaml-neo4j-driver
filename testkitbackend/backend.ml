@@ -17,12 +17,12 @@ let write_response flow (name, data) =
   let json = Yojson.Safe.to_string (`Assoc [ ("name", `String name); ("data", data) ]) in
   Eio.Flow.write flow [ Cstruct.of_string ("#response begin\n" ^ json ^ "\n#response end\n") ]
 
-let handle_request flow json =
-  let response = Commands.dispatch json in
+let handle_request net clock sw flow json =
+  let response = Commands.dispatch net clock sw json in
   write_response flow response
 
 (* Serve one connection: read requests until end-of-file. *)
-let handle_connection flow =
+let handle_connection net clock sw flow =
   let reader = Eio.Buf_read.of_flow ~max_size:max_request_size flow in
   let lines = Eio.Buf_read.lines reader in
   let buffer = Buffer.create 256 in
@@ -35,7 +35,7 @@ let handle_connection flow =
           loop rest
         end
         else if line = "#request end" then begin
-          handle_request flow (Buffer.contents buffer);
+          handle_request net clock sw flow (Buffer.contents buffer);
           loop rest
         end
         else begin
@@ -48,13 +48,14 @@ let handle_connection flow =
 let run () =
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
+      let clock = Eio.Stdenv.mono_clock env in
       Eio.Switch.run (fun sw ->
           let listening =
             Eio.Net.listen ~reuse_addr:true ~backlog:16 ~sw net (`Tcp (Eio.Net.Ipaddr.V4.any, port))
           in
           let rec serve () =
             let flow, _ = Eio.Net.accept ~sw listening in
-            Eio.Fiber.fork ~sw (fun () -> handle_connection flow);
+            Eio.Fiber.fork ~sw (fun () -> handle_connection net clock sw flow);
             serve ()
           in
           serve ()))

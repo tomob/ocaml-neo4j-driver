@@ -21,7 +21,13 @@ type config = {
   auth : auth;
 }
 
-type t = { transport : Transport.t; major : int; minor : int; state : State.t ref }
+type t = {
+  transport : Transport.t;
+  major : int;
+  minor : int;
+  state : State.t ref;
+  server_agent : string option ref;
+}
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
 
@@ -120,12 +126,18 @@ let connect net clock sw config =
   in
   let* transport = Transport.connect net sw ~timeout ~tls address in
   let* major, minor = Handshake.negotiate transport in
-  let conn = { transport; major; minor; state = ref State.Connected } in
+  let conn = { transport; major; minor; state = ref State.Connected; server_agent = ref None } in
   let re_auth = supports_re_auth major minor in
-  let* _ =
+  let* hello_metadata =
     request conn ~message:State.Hello ~re_auth (fun () ->
         Bolt.hello conn.transport ~headers:(hello_headers config major minor))
   in
+  (match hello_metadata with
+  | Packstream.Map fields -> (
+      match List.assoc_opt "server" fields with
+      | Some (Packstream.String agent) -> conn.server_agent := Some agent
+      | _ -> ())
+  | _ -> ());
   let* () =
     if re_auth then
       let* _ =
@@ -176,25 +188,35 @@ let run_metadata_of metadata =
   let qid = map_fields "qid" metadata |> int_opt in
   { fields; qid }
 
-let run_extra ?mode ?db () =
+let run_extra ?mode ?db ?metadata () =
   let extra =
     match mode with
     | Some Config.Read -> [ ("mode", Packstream.String "r") ]
     | Some Config.Write | None -> []
   in
   let extra = match db with Some db -> ("db", Packstream.String db) :: extra | None -> extra in
+  let extra =
+    match metadata with
+    | Some metadata -> ("tx_metadata", Packstream.Map metadata) :: extra
+    | None -> extra
+  in
   Packstream.Map extra
 
-let run t ~hydration ~query ~parameters ?mode ?db () =
+let run t ~hydration ~query ~parameters ?mode ?db ?metadata () =
   let parameters =
     Packstream.Map
       (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)) parameters)
   in
-  let* metadata =
-    request t ~message:State.Run ~re_auth:(supports_re_auth t.major t.minor) (fun () ->
-        Bolt.run t.transport ~query ~parameters ~extra:(run_extra ?mode ?db ()))
+  let metadata =
+    Option.map
+      (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)))
+      metadata
   in
-  Ok (run_metadata_of metadata)
+  let* metadata_response =
+    request t ~message:State.Run ~re_auth:(supports_re_auth t.major t.minor) (fun () ->
+        Bolt.run t.transport ~query ~parameters ~extra:(run_extra ?mode ?db ?metadata ()))
+  in
+  Ok (run_metadata_of metadata_response)
 
 let pull_extra ?(n = -1) ?qid () =
   let extra = [ ("n", Packstream.Int (Int64.of_int n)) ] in
@@ -214,7 +236,9 @@ let pull t ~hydration ?n ?qid () =
   | Error _ as error -> error
   | Ok (records, summary) ->
       let records = List.map (List.map (Hydration.hydrate hydration)) records in
-      Ok (records, Bolt.metadata_has_more summary)
+      Ok (records, summary)
+
+let server_agent t = !(t.server_agent)
 
 let discard t ?n ?qid () =
   let re_auth = supports_re_auth t.major t.minor in

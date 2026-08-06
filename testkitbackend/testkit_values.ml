@@ -200,3 +200,139 @@ and unsupported u =
 and legacy_id = function
   | Some i -> field "CypherInt" (`Intlit (string_of_int i))
   | None -> field "CypherString" (`String "")
+
+(* --- Decoding (TestKit JSON -> Values.t) --- *)
+
+let member key = function `Assoc fields -> List.assoc_opt key fields | _ -> None
+
+let int_field key data =
+  match member key data with
+  | Some (`Int n) -> n
+  | Some (`Intlit s) -> (
+      match int_of_string_opt s with Some n -> n | None -> invalid_arg ("bad int " ^ key))
+  | _ -> invalid_arg ("missing int " ^ key)
+
+let int64_field key data =
+  match member key data with
+  | Some (`Int n) -> Int64.of_int n
+  | Some (`Intlit s) -> (
+      match Int64.of_string_opt s with Some n -> n | None -> invalid_arg ("bad int64 " ^ key))
+  | _ -> invalid_arg ("missing int64 " ^ key)
+
+let float_field key data =
+  match member key data with
+  | Some (`Float f) -> f
+  | Some (`Int n) -> float_of_int n
+  | _ -> invalid_arg ("missing float " ^ key)
+
+let bytes_of_hex s =
+  let parts = String.split_on_char ' ' (String.trim s) |> List.filter (fun p -> p <> "") in
+  let b = Bytes.create (List.length parts) in
+  List.iteri (fun i hex -> Bytes.set b i (Char.chr (int_of_string ("0x" ^ hex)))) parts;
+  b
+
+let date_of data =
+  match
+    Temporal.Date.of_ymd (int_field "year" data, int_field "month" data, int_field "day" data)
+  with
+  | Some d -> d
+  | None -> invalid_arg "bad CypherDate"
+
+let time_of data =
+  let tz_offset_seconds =
+    match member "utc_offset_s" data with Some (`Int n) -> Some n | _ -> None
+  in
+  match
+    Temporal.Time.of_hms_ns ?tz_offset_seconds (int_field "hour" data) (int_field "minute" data)
+      (int_field "second" data) (int_field "nanosecond" data)
+  with
+  | Some t -> t
+  | None -> invalid_arg "bad CypherTime"
+
+let datetime_of data =
+  let tz =
+    match member "utc_offset_s" data with
+    | Some (`Int n) -> Some (Temporal.Offset n)
+    | _ -> (
+        match member "timezone_id" data with
+        | Some (`String zone) -> Some (Temporal.Zone_name zone)
+        | _ -> None)
+  in
+  match
+    Temporal.DateTime.of_ymd_hms ?tz
+      (int_field "year" data, int_field "month" data, int_field "day" data)
+      (int_field "hour" data, int_field "minute" data, int_field "second" data)
+      (int_field "nanosecond" data)
+  with
+  | Some dt -> dt
+  | None -> invalid_arg "bad CypherDateTime"
+
+let duration_of data =
+  Temporal.Duration.of_fields ~months:(int_field "months" data) ~days:(int_field "days" data)
+    ~seconds:(int64_field "seconds" data) ~nanoseconds:(int_field "nanoseconds" data)
+
+let point_of data =
+  let system =
+    match member "system" data with
+    | Some (`String s) -> s
+    | _ -> invalid_arg "missing point system"
+  in
+  let z =
+    match member "z" data with
+    | Some (`Float f) -> Some f
+    | Some (`Int n) -> Some (float_of_int n)
+    | _ -> None
+  in
+  let srid =
+    match (system, z) with
+    | "cartesian", None -> 7203
+    | "cartesian", Some _ -> 9157
+    | "wgs84", None -> 4326
+    | "wgs84", Some _ -> 4979
+    | _ -> invalid_arg ("unknown point system " ^ system)
+  in
+  { Values.srid; x = float_field "x" data; y = float_field "y" data; z }
+
+let rec of_yojson json =
+  let name =
+    match member "name" json with Some (`String n) -> n | _ -> invalid_arg "missing value name"
+  in
+  let data = match member "data" json with Some d -> d | None -> `Assoc [] in
+  let value = match member "value" data with Some v -> v | None -> `Null in
+  match name with
+  | "CypherNull" -> Values.Null
+  | "CypherBool" -> (
+      match value with `Bool b -> Values.Bool b | _ -> invalid_arg "bad CypherBool")
+  | "CypherInt" -> (
+      match value with
+      | `Int n -> Values.Int (Int64.of_int n)
+      | `Intlit s -> Values.Int (Int64.of_string s)
+      | _ -> invalid_arg "bad CypherInt")
+  | "CypherFloat" -> (
+      match value with
+      | `Float f -> Values.Float f
+      | `Int n -> Values.Float (float_of_int n)
+      | `String "NaN" -> Values.Float nan
+      | `String "+Infinity" -> Values.Float infinity
+      | `String "-Infinity" -> Values.Float neg_infinity
+      | _ -> invalid_arg "bad CypherFloat")
+  | "CypherString" -> (
+      match value with `String s -> Values.String s | _ -> invalid_arg "bad CypherString")
+  | "CypherBytes" -> (
+      match value with
+      | `String hex -> Values.Bytes (bytes_of_hex hex)
+      | _ -> invalid_arg "bad CypherBytes")
+  | "CypherList" -> (
+      match value with
+      | `List l -> Values.List (List.map of_yojson l)
+      | _ -> invalid_arg "bad CypherList")
+  | "CypherMap" -> (
+      match value with
+      | `Assoc m -> Values.Map (List.map (fun (k, v) -> (k, of_yojson v)) m)
+      | _ -> invalid_arg "bad CypherMap")
+  | "CypherDate" -> Values.Date (date_of data)
+  | "CypherTime" -> Values.Time (time_of data)
+  | "CypherDateTime" -> Values.DateTime (datetime_of data)
+  | "CypherDuration" -> Values.Duration (duration_of data)
+  | "CypherPoint" -> Values.Point (point_of data)
+  | _ -> invalid_arg ("unsupported TestKit value " ^ name)

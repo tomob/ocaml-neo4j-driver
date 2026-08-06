@@ -193,6 +193,71 @@ let point () =
   in
   check_yojson "point" json (Testkit_values.to_yojson p)
 
+(* Decode TestKit JSON back to Values.t. *)
+let decoding () =
+  let decode name value expected =
+    match
+      Testkit_values.of_yojson
+        (`Assoc [ ("name", `String name); ("data", `Assoc [ ("value", value) ]) ])
+    with
+    | v
+      when match (v, expected) with
+           | Values.Float a, Values.Float b -> (Float.is_nan a && Float.is_nan b) || a = b
+           | _ -> v = expected ->
+        ()
+    | v -> fail (name ^ ": got " ^ Values.to_string v)
+  in
+  decode "CypherNull" `Null Values.Null;
+  decode "CypherBool" (`Bool true) (Values.Bool true);
+  decode "CypherInt" (`Intlit "42") (Values.Int 42L);
+  decode "CypherFloat" (`Float 1.5) (Values.Float 1.5);
+  decode "CypherFloat" (`String "NaN") (Values.Float nan);
+  decode "CypherString" (`String "hi") (Values.String "hi");
+  decode "CypherList"
+    (`List [ `Assoc [ ("name", `String "CypherInt"); ("data", `Assoc [ ("value", `Intlit "1") ]) ] ])
+    (Values.List [ Values.Int 1L ]);
+  decode "CypherMap"
+    (`Assoc
+       [
+         ("a", `Assoc [ ("name", `String "CypherInt"); ("data", `Assoc [ ("value", `Intlit "2") ]) ]);
+       ])
+    (Values.Map [ ("a", Values.Int 2L) ]);
+  let date =
+    `Assoc
+      [
+        ("name", `String "CypherDate");
+        ("data", `Assoc [ ("year", `Int 2026); ("month", `Int 8); ("day", `Int 6) ]);
+      ]
+  in
+  match Testkit_values.of_yojson date with
+  | Values.Date d ->
+      let y, m, day = Temporal.Date.to_ymd d in
+      check (pair (pair int int) int) "date decoded" ((2026, 8), 6) ((y, m), day)
+  | v -> fail (Values.to_string v)
+
+(* Encoding then decoding round-trips. *)
+let round_trip () =
+  let check_rt v =
+    check bool (Values.to_string v) true (Testkit_values.of_yojson (Testkit_values.to_yojson v) = v)
+  in
+  check_rt Values.Null;
+  check_rt (Values.Bool false);
+  check_rt (Values.Int (-7L));
+  check_rt (Values.Float 3.25);
+  check_rt (Values.String "text");
+  check_rt (Values.List [ Values.Int 1L; Values.String "x" ]);
+  check_rt (Values.Map [ ("k", Values.Bool true) ]);
+  let date = Values.Date (Temporal.Date.of_ymd (2020, 2, 29) |> Option.get) in
+  check_rt date;
+  let time = Values.Time (Temporal.Time.of_hms_ns 1 2 3 4 |> Option.get) in
+  check_rt time;
+  let duration =
+    Values.Duration (Temporal.Duration.of_fields ~months:1 ~days:2 ~seconds:3L ~nanoseconds:4)
+  in
+  check_rt duration;
+  let point = Values.Point { srid = 9157; x = 1.0; y = 2.0; z = Some 3.0 } in
+  check_rt point
+
 let tests =
   [
     ("[Testkit > Values] scalars", [ test_case "scalar encoding" `Quick scalars ]);
@@ -200,6 +265,8 @@ let tests =
     ("[Testkit > Values] node", [ test_case "node encoding" `Quick node ]);
     ("[Testkit > Values] temporal", [ test_case "temporal encoding" `Quick temporal ]);
     ("[Testkit > Values] point", [ test_case "point encoding" `Quick point ]);
+    ("[Testkit > Values] decoding", [ test_case "decode TestKit JSON" `Quick decoding ]);
+    ("[Testkit > Values] round_trip", [ test_case "encode then decode" `Quick round_trip ]);
   ]
 
 let () = Alcotest.run "testkit-values" tests

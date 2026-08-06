@@ -70,9 +70,9 @@ let run_pull_single () =
       | Ok metadata -> check (list string) "fields" [ "x" ] metadata.fields
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration () with
-      | Ok (records, has_more) ->
+      | Ok (records, summary) ->
           check string "records" "[[1]]" (records_to_string records);
-          check bool "has_more" false has_more;
+          check bool "has_more" false (Bolt.metadata_has_more summary);
           check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       Conn.close conn)
@@ -96,20 +96,20 @@ let streaming_has_more () =
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 () with
-      | Ok (records, has_more) ->
+      | Ok (records, summary) ->
           check string "batch1" "[[1];[2]]" (records_to_string records);
-          check bool "more1" true has_more;
+          check bool "more1" true (Bolt.metadata_has_more summary);
           check_state conn "Streaming"
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 () with
-      | Ok (records, has_more) ->
+      | Ok (records, summary) ->
           check string "batch2" "[[3];[4]]" (records_to_string records);
-          check bool "more2" true has_more
+          check bool "more2" true (Bolt.metadata_has_more summary)
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 () with
-      | Ok (records, has_more) ->
+      | Ok (records, summary) ->
           check string "batch3" "[[5]]" (records_to_string records);
-          check bool "more3" false has_more;
+          check bool "more3" false (Bolt.metadata_has_more summary);
           check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       Conn.close conn)

@@ -2,6 +2,7 @@
 
    See conn.ml for the implementation. *)
 
+open Neodriver_packstream
 open Neodriver_core
 
 type auth = { scheme : string; principal : string; credentials : string }
@@ -76,11 +77,11 @@ val run :
   parameters:(string * Values.t) list ->
   ?mode:Config.access_mode ->
   ?db:string ->
+  ?metadata:(string * Values.t) list ->
   unit ->
   (run_metadata, Errors.t) result
 (** Send a RUN message for [query]. [parameters] are dehydrated with [hydration]. The optional
-    [mode] and [db] go into the request's [extra] map (transaction-level extras such as bookmarks,
-    metadata and timeout arrive with transactions).
+    [mode], [db] and [metadata] ([tx_metadata]) go into the request's [extra] map.
     @return
       [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
       the next request). *)
@@ -91,11 +92,14 @@ val pull :
   ?n:int ->
   ?qid:int ->
   unit ->
-  (Values.t list list * bool, Errors.t) result
+  (Values.t list list * Packstream.value, Errors.t) result
 (** Send a PULL message, fetching up to [n] records (all by default) of the result [qid]. Records
-    are hydrated with [hydration]. Returns the records and whether the server has more ([has_more]);
-    when true, another PULL continues the stream. *)
+    are hydrated with [hydration]. Returns the records and the full PULL summary metadata (its
+    [has_more] flag, readable via [Bolt.metadata_has_more], says whether more records remain). *)
 
 val discard : t -> ?n:int -> ?qid:int -> unit -> (unit, Errors.t) result
 (** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
     [qid]. *)
+
+val server_agent : t -> string option
+(** The server agent string reported in the HELLO response, if any. *)
