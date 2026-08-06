@@ -24,7 +24,11 @@ let connect net clock sw config =
     Addressing.parse ~default_host:"localhost" ~default_port:7687
       (Printf.sprintf "%s:%d" config.host config.port)
   in
-  let* transport = Transport.connect net clock sw ~timeout:config.connection_timeout ~tls address in
+  let timeout =
+    if config.connection_timeout = infinity then Eio.Time.Timeout.none
+    else Eio.Time.Timeout.seconds clock config.connection_timeout
+  in
+  let* transport = Transport.connect net sw ~timeout ~tls address in
   let* major, minor = Handshake.negotiate transport in
   Ok { transport; major; minor }
 

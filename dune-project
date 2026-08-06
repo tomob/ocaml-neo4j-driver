@@ -53,6 +53,7 @@
    (ca-certs (>= 1.0))
    (domain-name (>= 0.4))
    (mirage-crypto-rng (>= 1.2))
+   (mtime (>= 2.0))
    (alcotest :with-test)))
 
 (package

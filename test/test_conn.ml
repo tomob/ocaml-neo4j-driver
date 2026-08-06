@@ -8,7 +8,7 @@ open Alcotest
 let routing_not_supported () =
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
-      let clock = Eio.Stdenv.clock env in
+      let clock = Eio.Stdenv.mono_clock env in
       Eio.Switch.run (fun sw ->
           let config =
             Conn.

@@ -20,18 +20,18 @@ type tls_mode =
 
 val connect :
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
-  float Eio.Time.clock_ty Eio.Resource.t ->
   Eio.Switch.t ->
-  ?timeout:float ->
+  ?timeout:Eio.Time.Timeout.t ->
   ?tls:tls_mode ->
   Addressing.t ->
   (t, Errors.t) result
 (** Open a TCP connection to [address] (resolving host names as needed) and return a transport. If
-    [tls] is [Verify _] or [Trust_all _], the connection is wrapped in TLS before returning.
-    Reads/writes on the result are bounded by [timeout] seconds (no timeout if omitted).
+    [tls] is [Verify _] or [Trust_all _], the connection is wrapped in TLS before returning. The TCP
+    connect and TLS handshake share a single [timeout] deadline; reads/writes on the result are
+    bounded by the same deadline. The default ([Eio.Time.Timeout.none]) imposes no deadline.
     @return
       [Error _] if the address cannot be resolved, the connection or TLS handshake fails, or the
-      connection times out. *)
+      operation times out. *)
 
 val read_exact : t -> Bytes.t -> int -> int -> (unit, Errors.t) result
 (** Read exactly [len] bytes into [buf] starting at offset [off].

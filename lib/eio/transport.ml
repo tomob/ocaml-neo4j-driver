@@ -17,8 +17,7 @@ type tls_mode = Plain | Verify of string | Trust_all of string
 
 type t = {
   socket : [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r;
-  clock : [ `Clock of float ] r;
-  timeout : float option;
+  timeout : Eio.Time.Timeout.t;
 }
 
 (* Bolt messages are sent in chunks of at most 64 KiB; the drivers use 16 KiB. *)
@@ -32,51 +31,34 @@ let resolve_host net host port =
 let sockaddr_of_address net = function
   | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) -> resolve_host net host port
 
-let connect net clock sw ?(timeout = infinity) ?(tls = Plain) address =
-  let timeout = if timeout = infinity then None else Some timeout in
+let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
+  (* One total deadline covering the TCP connect and the TLS handshake. *)
   let with_timeout f =
-    match timeout with None -> f () | Some timeout -> Eio.Time.with_timeout_exn clock timeout f
+    try Eio.Time.Timeout.run_exn timeout f with
+    | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
+    | exn ->
+        if cancelled exn then raise exn
+        else
+          Error
+            (Errors.Service_unavailable
+               (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
   in
   match sockaddr_of_address net address with
   | None ->
       Error
         (Errors.Service_unavailable
            (Printf.sprintf "Could not resolve address %s" (Addressing.to_string address)))
-  | Some sockaddr -> (
-      let connect () =
-        match timeout with
-        | None -> Eio.Net.connect ~sw net sockaddr
-        | Some timeout ->
-            Eio.Time.with_timeout_exn clock timeout (fun () -> Eio.Net.connect ~sw net sockaddr)
-      in
-      let secure socket =
-        match tls with
-        | Plain -> Ok socket
-        | Verify host -> Tls_client.wrap { Tls_client.mode = Verify; host } socket
-        | Trust_all host -> Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
-      in
-      let wrap socket =
-        let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
-        let* socket = with_timeout (fun () -> secure socket) in
-        Ok { socket; clock; timeout }
-      in
-      match connect () with
-      | exception Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
-      | exception exn ->
-          Error
-            (Errors.Service_unavailable
-               (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
-      | socket -> (
-          match wrap socket with
-          | exception Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
-          | exception exn ->
-              if cancelled exn then raise exn
-              else
-                Error
-                  (Errors.Service_unavailable
-                     (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
-          | Ok transport -> Ok transport
-          | Error _ as error -> error))
+  | Some sockaddr ->
+      with_timeout (fun () ->
+          let socket = Eio.Net.connect ~sw net sockaddr in
+          let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
+          let* socket =
+            match tls with
+            | Plain -> Ok socket
+            | Verify host -> Tls_client.wrap { Tls_client.mode = Verify; host } socket
+            | Trust_all host -> Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
+          in
+          Ok { socket; timeout })
 
 let read_exact t buf off len =
   let buffer = Cstruct.create len in
@@ -88,9 +70,7 @@ let read_exact t buf off len =
       if n = 0 then raise End_of_file else go (n_read + n)
   in
   try
-    (match t.timeout with
-    | None -> go 0
-    | Some timeout -> Eio.Time.with_timeout_exn t.clock timeout (fun () -> go 0));
+    Eio.Time.Timeout.run_exn t.timeout (fun () -> go 0);
     Bytes.blit (Cstruct.to_bytes buffer) 0 buf off len;
     Ok ()
   with
@@ -100,11 +80,7 @@ let read_exact t buf off len =
 let write t buf =
   let buffer = Cstruct.of_bytes buf in
   let write () = Eio.Flow.write t.socket [ buffer ] in
-  try
-    match t.timeout with
-    | None -> Ok (write ())
-    | Some timeout -> Ok (Eio.Time.with_timeout_exn t.clock timeout write)
-  with
+  try Ok (Eio.Time.Timeout.run_exn t.timeout write) with
   | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Write timed out")
   | exn ->
       Error

@@ -6,7 +6,7 @@ open Alcotest
 
 let negotiate_tls tls net clock sw port =
   let address = Addressing.IPv4 ("127.0.0.1", port) in
-  match Transport.connect net clock sw ~timeout:5.0 ~tls address with
+  match Transport.connect net sw ~timeout:(Eio.Time.Timeout.seconds clock 1.0) ~tls address with
   | Error error -> Error error
   | Ok transport ->
       let result = Handshake.negotiate transport in

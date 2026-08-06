@@ -18,7 +18,7 @@ let bolt_ssc () =
   with_tls_env (fun env ->
       Eio_main.run (fun e ->
           let net = Eio.Stdenv.net e in
-          let clock = Eio.Stdenv.clock e in
+          let clock = Eio.Stdenv.mono_clock e in
           Eio.Switch.run (fun sw ->
               match Conn.connect net clock sw (Test_env.conn_config env) with
               | Error error -> fail (Errors.to_string error)
@@ -31,7 +31,7 @@ let bolt_s_rejects_self_signed () =
   with_tls_env (fun env ->
       Eio_main.run (fun e ->
           let net = Eio.Stdenv.net e in
-          let clock = Eio.Stdenv.clock e in
+          let clock = Eio.Stdenv.mono_clock e in
           Eio.Switch.run (fun sw ->
               let config = Test_env.conn_config ~scheme:Addressing.Bolt_secure env in
               match Conn.connect net clock sw config with

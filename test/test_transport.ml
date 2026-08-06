@@ -6,7 +6,7 @@ open Alcotest
 
 let connect net clock sw port =
   let address = Addressing.IPv4 ("127.0.0.1", port) in
-  Transport.connect net clock sw ~timeout:5.0 address
+  Transport.connect net sw ~timeout:(Eio.Time.Timeout.seconds clock 1.0) address
 
 (* write then read back the same bytes through the mock (echo). *)
 let echo () =
