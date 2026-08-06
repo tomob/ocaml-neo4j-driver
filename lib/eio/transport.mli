@@ -25,13 +25,15 @@ val connect :
   ?tls:tls_mode ->
   Addressing.t ->
   (t, Errors.t) result
-(** Open a TCP connection to [address] (resolving host names as needed) and return a transport. If
-    [tls] is [Verify _] or [Trust_all _], the connection is wrapped in TLS before returning. The TCP
-    connect and TLS handshake share a single [timeout] deadline; reads/writes on the result are
-    bounded by the same deadline. The default ([Eio.Time.Timeout.none]) imposes no deadline.
+(** Open a TCP connection to [address] (resolving host names as needed) and return a transport. Each
+    resolved address (IPv4 and IPv6) is tried in turn until one connects. If [tls] is [Verify _] or
+    [Trust_all _], the connection is wrapped in TLS before returning. The TCP connect and TLS
+    handshake share a single [timeout] deadline; reads/writes on the result are bounded by the same
+    deadline. The default ([Eio.Time.Timeout.none]) imposes no deadline.
     @return
-      [Error _] if the address cannot be resolved, the connection or TLS handshake fails, or the
-      operation times out. *)
+      [Error _] if the address cannot be resolved, if every resolved address fails to connect or
+      complete the TLS handshake (all failures are aggregated into the [Service_unavailable]
+      message), or if the operation times out. *)
 
 val read_exact : t -> Bytes.t -> int -> int -> (unit, Errors.t) result
 (** Read exactly [len] bytes into [buf] starting at offset [off].

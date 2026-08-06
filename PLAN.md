@@ -42,6 +42,7 @@ ocaml-neo4j-driver/            # this repo
 ## TRACK A — Library core
 
 ### Phase A0 — Foundations
+
 - Repo initialization: `dune-project` (lang 3.13+, `ocaml >= 5.2.0`), opam packages (`neodriver_packstream`, `neodriver_core`, `neodriver_eio`, `neodriver`; later `neodriver_lwt`), CI (OCaml 5.2–5.5 matrix, `ocamlformat` lint). **Done** (commit "step A0-1").
 - **`errors.ml`** (modeled on `exceptions.py`): type
   `type error = ...` with constructors for client errors (`ClientError`, `TransientError`, `DatabaseError`, `ServiceUnavailable`, `SessionExpired`, `PoolTimeout`, ...) and `of_neo4j_code : code:string -> message:string -> t`. This is the anchor for retry/deactivation/re-auth. Includes the `classification`/`specific` sub-types, the `_ERROR_REWRITE_MAP` port, `is_retryable`, `unauthenticates_all_connections`, `has_security_code` and `is_fatal_during_discovery`. **Done** (commit "step A0-2").
@@ -50,6 +51,7 @@ ocaml-neo4j-driver/            # this repo
 - **Deadline**: `deadline.ml` (monotonic via Mtime + min-timeout) — one unified timing mechanism. **Done** (commit "step A0-3").
 
 ### Phase A1 — PackStream + hydration (port of reference, improvements)
+
 - Port `packstream.ml` → `neo4j_packstream` with fixes: marker validation → `ProtocolError` instead of `failwith`, bounds, a safe `unpack` with depth/size limits. **Done** (commit "step A1-1"): `unpack` returns `(value, error) result`, `max_depth` limit (default 256), containers built incrementally, 16/32-bit lengths read as unsigned, dedicated `error` type + `.mli`.
 - **`values.ml` + `hydration.ml`** (modeled on `_codec/hydration/`):
   - tag descriptors: `N/R/r/P` → Node/Rel/Path; `X/Y` → Point (SRID 4326/4979/7203/9157); `D/T/t/F/f/d` → Date/Time/DateTime; `I/i` (offset / zone name, Bolt 5.2+); `E` → Duration; `V` → Vector; `?` → UnsupportedType.
@@ -58,12 +60,14 @@ ocaml-neo4j-driver/            # this repo
   - a `Broken` variant (analog of `BrokenHydrationObject`) propagated through lists/maps. **Done** (A1-2/A1-3): `Values.Broken` + propagation in `hydration.ml`; surfacing as a record-access error belongs to Phase A4 (Result layer).
 
 ### Phase A2 — Eio transport + handshake + TLS
+
 - **`transport_eio.ml`**: `Eio.Net` + fibers, `SO_KEEPALIVE`, reads/writes with deadlines, 16 KiB chunks + `0x0000`, coalescing. **Done** (commit "step A2-1"): `transport.ml` (TCP via `Eio.Net`, deadline-bounded reads/writes, chunk framing + NOOP skip), `handshake.ml` (v1 + manifest `0xFF`, highest supported version), `conn.ml` (`Conn.connect`, TLS schemes rejected until A2-2). `SO_KEEPALIVE` deferred (Eio's portable Net API does not expose socket options).
 - **Handshake**: v1 (proposing Bolt 3/4/5) **and manifest `0xFF`** (Bolt 5.4+ and 6.0/6.1) — selecting the highest supported version within the server's range; negotiation in `handshake.ml`. **Done** (commit "step A2-1"), unit-tested via a mock server; integration handshake test gated on `TEST_NEO4J_*` env vars.
 - **TLS via `tls-eio`**: trust modes (system CAs / custom CAs / TrustAll), **hostname verification + SNI from the unresolved host**, TLS ≥ 1.2, mTLS with client certificate. **Done** (commit "step A2-2"): `tls_client.ml` (Verify = system CAs via `ca-certs`, TrustAll = no validation), `transport.ml` gains `?tls` (`Plain | Verify host | Trust_all host`), `conn.ml` maps `bolt://`→Plain, `bolt+s://`→Verify, `bolt+ssc://`→TrustAll; TLS ≥ 1.2 enforced, SNI + hostname verification via `Domain_name`. Unit-tested with a mock TLS server (`Tls_eio.server_of_flow` + committed self-signed fixture); integration-tested against a real Neo4j container with the Bolt SSL policy enabled (`tls_level=OPTIONAL`). Custom CAs and mTLS client certificates are **deferred** (no config surface yet). ⚠️ **Risk resolved**: `tls-eio` 2.0.4 is usable (needs `Mirage_crypto_rng_unix.use_default ()`).
-- **Address iteration**: `getaddrinfo`, trying all addresses (IPv4+IPv6), error aggregation (the `ExceptionGroup` equivalent — in OCaml a chained record `{last; all}`), timeouts clamped to the deadline.
+- **Address iteration**: `getaddrinfo`, trying all addresses (IPv4+IPv6), error aggregation (the `ExceptionGroup` equivalent — in OCaml a chained record `{last; all}`), timeouts clamped to the deadline. **Done** (commit "step A2-3"): `transport.ml` resolves every `getaddrinfo_stream` address and tries each in turn under a single `Eio.Time.Timeout.t` deadline; on total failure it aggregates all errors into `Errors.failures` (`{ last; all }`) and reports a Python-style `Service_unavailable` ("Couldn't connect to <addr> (resolved to <addrs>):\n<errors>", built by `Addressing.connect_failure_message`). Unit-tested (`connect_failure_message`, closed-port aggregation). **Phase A2 complete.**
 
 ### Phase A3 — Single connection: HELLO, auth, state machine
+
 - HELLO with `user_agent`/`bolt_agent`/`routing`; inline auth (≤5.0) and **`LOGON/LOGOFF`** (≥5.1).
 - **State machine** (`state.ml`): `CONNECTED/READY/STREAMING/TX_READY|TX_STREAMING/FAILED/AUTHENTICATION`, `IGNORED` handling, **automatic RESET after FAILURE**.
 - **RUN/PULL/DISCARD**: streaming PULL with `fetch_size` and `has_more`, `DISCARD` of the remainder, `qid` (multiple results).
@@ -71,29 +75,35 @@ ocaml-neo4j-driver/            # this repo
 - **Re-auth on a connection** (LOGON/LOGOFF when the token changes) — integration point for the pool.
 
 ### Phase A4 — Result + summary + notifications
+
 - **`result.ml`**: lazy streaming (in Eio: direct iteration), `consume/single/fetch/peek/value(s)/data`, states `_attached/_streaming/_exhausted`, semantics after transaction close.
 - **`summary.ml`**: `SummaryCounters`, `plan/profile`, `query_type`, `result_available_after/consumed_after` (`t_first/t_last`), **`gql_status_objects`** polyfilled from legacy notifications, `ServerInfo` (address/agent/protocol_version).
 
 ### Phase A5 — Sessions and transactions + retry
+
 - `session.ml`: `run` (auto-commit) with `database`, `impersonated_user`, `access_mode`, timeouts, notification filters, bookmarks; auto-commit retry (1 attempt) unless `disable_auto_commit_retries`.
 - `tx.ml`: `begin_transaction/commit/rollback/close`, context-manager semantics, consumption of pending results, bookmark capture from COMMIT metadata.
 - **Managed transactions**: `execute_read/execute_write` + `unit_of_work` — retry loop within the `max_transaction_retry_time` budget, jittered backoff, decision via `error.retryable`, fresh connection between attempts, `TX_FUNC` telemetry once.
 - **⚠️ Checkpoint**: after A5 we have a full, correctly streaming single-connection client — the best first release.
 
 ### Phase A6 — Pool
+
 - `pool.ml`: address→queue mapping + reservation counter, `max_connection_pool_size`, waiting on `Eio.Semaphore`/mutex+cond with `connection_acquisition_timeout`, release with RESET (or kill for defunct), **liveness check**, `max_connection_lifetime`/`stale`, `deactivate`, **`IncompleteCommit`** (ambiguous commit).
 
 ### Phase A7 — Routing + home db + SSR
+
 - **ROUTE** (`0x66`) with routing_context/bookmarks/db; fallback to the procedures `dbms.routing.getRoutingTable` (Bolt 4.0) and `dbms.cluster.routing.getRoutingTable` (Bolt 3).
 - `routing_table.ml` per database: `routers/readers/writers` + TTL + `is_fresh`, refresh under lock, "initial address first" rediscovery, **load balancing** on the least-loaded address.
 - Error reactions: `ServiceUnavailable/DatabaseUnavailable → deactivate`; `NotALeader/ForbiddenOnReadOnlyDatabase → remove writer`.
 - Home db cache (TTL, keyed by `impersonated_user`/token), `ssr.enabled` hint, pinning after the first result, fallback when SSR is unavailable.
 
 ### Phase A8 — Bookmarks and auth management
+
 - `bookmarks.ml` (immutable set + union), `last_bookmarks`, `bookmark_manager` (supplier/consumer) with a default implementation.
 - **Auth managers**: `static/basic/bearer` with refresh on `Unauthorized`/`TokenExpired` + `ExpiringAuth`; `handle_security_exception` via `on_neo4j_error` on the pool; `_unauthenticates_all_connections`.
 
 ### Phase A9 — High-level API
+
 - `execute_query` + `EagerResult` (records/summary/keys), `verify_connectivity`, `verify_authentication`, `supports_multi_db`, `TELEMETRY` telemetry, `warn_notification_severity` (warnings at the calling code level).
 
 ---

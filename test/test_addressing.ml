@@ -100,6 +100,25 @@ let resolved () =
   check string "unresolved6" "[db.example.com]:7687"
     (Addressing.to_string (Addressing.unresolved resolved6))
 
+let failures =
+  Errors.
+    {
+      last = Service_unavailable "second";
+      all = [ Service_unavailable "first"; Service_unavailable "second" ];
+    }
+
+let connect_failure_message () =
+  let address = Addressing.IPv4 ("localhost", 7687) in
+  let msg = Addressing.connect_failure_message ~address ~resolved:[ "127.0.0.1:7687" ] ~failures in
+  check string "aggregated"
+    "Couldn't connect to localhost:7687 (resolved to 127.0.0.1:7687):\nfirst\nsecond" msg;
+  let none = Errors.{ last = Service_unavailable "x"; all = [] } in
+  let msg = Addressing.connect_failure_message ~address ~resolved:[] ~failures:none in
+  check string "no errors" "Couldn't connect to localhost:7687 (resolved to )" msg;
+  let address6 = Addressing.IPv6 ("::1", 7687, 0, 0) in
+  let msg = Addressing.connect_failure_message ~address:address6 ~resolved:[] ~failures:none in
+  check string "ipv6" "Couldn't connect to [::1]:7687 (resolved to )" msg
+
 let tests =
   [
     ("[Adressing] parse", [ test_case "address parsing" `Quick parse ]);
@@ -107,4 +126,6 @@ let tests =
     ("[Adressing] uri", [ test_case "uri parsing" `Quick uri ]);
     ("[Adressing] routing_context", [ test_case "routing context" `Quick routing_context ]);
     ("[Adressing] resolved", [ test_case "resolved address" `Quick resolved ]);
+    ( "[Adressing] connect_failure_message",
+      [ test_case "aggregated connection error message" `Quick connect_failure_message ] );
   ]

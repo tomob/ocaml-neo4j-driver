@@ -93,6 +93,19 @@ let unresolved resolved =
   | IPv4 (_, port) -> IPv4 (resolved.unresolved_host, port)
   | IPv6 (_, port, _, _) -> IPv6 (resolved.unresolved_host, port, 0, 0)
 
+(* Render a message for a connection attempt that failed on every resolved
+   address, mirroring the Python driver's _bolt_socket.py. [resolved] are the
+   rendered resolved addresses that failed and [failures] aggregates the
+   individual errors. *)
+let connect_failure_message ~address ~resolved ~(failures : Errors.failures) =
+  let address_strs = String.concat ", " resolved in
+  match failures.all with
+  | [] -> Printf.sprintf "Couldn't connect to %s (resolved to %s)" (to_string address) address_strs
+  | errors ->
+      let error_strs = String.concat "\n" (List.map Errors.to_string errors) in
+      Printf.sprintf "Couldn't connect to %s (resolved to %s):\n%s" (to_string address) address_strs
+        error_strs
+
 let scheme_to_string = function
   | Bolt -> "bolt"
   | Bolt_secure -> "bolt+s"

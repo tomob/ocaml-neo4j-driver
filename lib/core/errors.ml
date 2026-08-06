@@ -57,6 +57,11 @@ type t =
   | Connection_pool_error of string
   | Connection_acquisition_timeout of string
 
+type failures = { last : t; all : t list }
+(** All errors from a failed multi-address connection attempt: [last] is the most recent failure and
+    [all] lists every failure in order of occurrence. The OCaml analogue of the Python driver's
+    exception aggregation when no resolved address can be connected. *)
+
 let is_retryable = function
   | Neo4j server -> server.retryable
   | Session_expired _ | Service_unavailable _ | Routing_service_unavailable _

@@ -23,16 +23,12 @@ type t = {
 (* Bolt messages are sent in chunks of at most 64 KiB; the drivers use 16 KiB. *)
 let chunk_size = 16384
 
-let resolve_host net host port =
-  match Eio.Net.getaddrinfo_stream net ~service:(string_of_int port) host with
-  | sockaddr :: _ -> Some sockaddr
-  | [] -> None
-
-let sockaddr_of_address net = function
-  | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) -> resolve_host net host port
+let sockaddrs_of_address net = function
+  | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) ->
+      Eio.Net.getaddrinfo_stream net ~service:(string_of_int port) host
 
 let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
-  (* One total deadline covering the TCP connect and the TLS handshake. *)
+  (* One total deadline covering every TCP connect / TLS handshake attempt. *)
   let with_timeout f =
     try Eio.Time.Timeout.run_exn timeout f with
     | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
@@ -43,22 +39,44 @@ let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
             (Errors.Service_unavailable
                (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
   in
-  match sockaddr_of_address net address with
-  | None ->
+  let secure socket =
+    let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
+    match tls with
+    | Plain -> Ok socket
+    | Verify host -> Tls_client.wrap { Tls_client.mode = Verify; host } socket
+    | Trust_all host -> Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
+  in
+  let sockaddr_str sockaddr = Format.asprintf "%a" Eio.Net.Sockaddr.pp sockaddr in
+  (* getaddrinfo_stream never returns an empty list; a failed lookup raises
+     Eio.Io (Eio.Net.E _, _), which we report as an unresolvable address. *)
+  match sockaddrs_of_address net address with
+  | exception Eio.Io (Eio.Net.E _, _) ->
       Error
         (Errors.Service_unavailable
            (Printf.sprintf "Could not resolve address %s" (Addressing.to_string address)))
-  | Some sockaddr ->
+  | sockaddrs ->
+      (* Try each resolved address in turn; a connection or TLS failure moves on
+         to the next, and all failures are aggregated into the final error. *)
       with_timeout (fun () ->
-          let socket = Eio.Net.connect ~sw net sockaddr in
-          let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
-          let* socket =
-            match tls with
-            | Plain -> Ok socket
-            | Verify host -> Tls_client.wrap { Tls_client.mode = Verify; host } socket
-            | Trust_all host -> Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
+          let rec go failed errors = function
+            | [] ->
+                let failures = { Errors.last = List.hd errors; all = List.rev errors } in
+                Error
+                  (Errors.Service_unavailable
+                     (Addressing.connect_failure_message ~address ~resolved:failed ~failures))
+            | sockaddr :: rest -> (
+                match try Ok (Eio.Net.connect ~sw net sockaddr) with exn -> Error exn with
+                | Error exn ->
+                    if cancelled exn then raise exn;
+                    go (sockaddr_str sockaddr :: failed)
+                      (Errors.Service_unavailable (Printexc.to_string exn) :: errors)
+                      rest
+                | Ok socket -> (
+                    match secure socket with
+                    | Ok socket -> Ok { socket; timeout }
+                    | Error error -> go (sockaddr_str sockaddr :: failed) (error :: errors) rest))
           in
-          Ok { socket; timeout })
+          go [] [] sockaddrs)
 
 let read_exact t buf off len =
   let buffer = Cstruct.create len in

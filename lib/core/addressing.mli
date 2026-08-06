@@ -40,6 +40,12 @@ val port : t -> int
 val to_string : t -> string
 (** Render an address as "host:port" (IPv6 host in brackets). *)
 
+val connect_failure_message :
+  address:t -> resolved:string list -> failures:Errors.failures -> string
+(** Render the message for a connection attempt that failed on every resolved address, mirroring the
+    Python driver ("Couldn't connect to <address> (resolved to <addrs>):\n<errors>"). [resolved] are
+    the rendered addresses that failed and [failures] aggregates the individual errors. *)
+
 val parse : ?default_host:string -> ?default_port:int -> string -> (t, Errors.t) result
 (** Parse a "host:port" or "[host]:port" string, applying the given defaults to empty host/port
     parts. *)
