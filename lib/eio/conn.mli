@@ -35,7 +35,7 @@ val connect :
   (t, Errors.t) result
 (** Establish a connection (over TLS when the scheme requires it), negotiate the Bolt protocol
     version and authenticate. For Bolt >= 5.1 the authentication is sent via LOGON after HELLO; for
-    older versions it is inline in HELLO. [mono_clock] bounds the whole attempt and subsequent
+    older versions it is inline in HELLO. [clock] bounds the whole attempt and subsequent
     reads/writes by [config.connection_timeout].
     @return
       [Error _] for connection/handshake failures, for routing schemes (unsupported until routing is
