@@ -27,6 +27,7 @@ type t = {
   minor : int;
   state : State.t ref;
   server_agent : string option ref;
+  address : Addressing.t;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
@@ -82,6 +83,7 @@ let hello_headers (config : config) major minor =
 
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
+let address t = t.address
 
 (* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
    V2 = Bolt 5, V3 = Bolt 6). *)
@@ -114,19 +116,38 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
       t.state := State.Failed;
       error
 
-let connect net clock sw config =
+let connect ?resolver net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in
-  let* address =
+  let* initial =
     Addressing.parse ~default_host:"localhost" ~default_port:7687
       (Printf.sprintf "%s:%d" config.host config.port)
   in
+  let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in
   let timeout =
     if config.connection_timeout = infinity then Eio.Time.Timeout.none
     else Eio.Time.Timeout.seconds clock config.connection_timeout
   in
-  let* transport = Transport.connect net sw ~timeout ~tls address in
-  let* major, minor = Handshake.negotiate transport in
-  let conn = { transport; major; minor; state = ref State.Connected; server_agent = ref None } in
+  (* One connection attempt (TCP + TLS + handshake) for a single address. *)
+  let connect_single address =
+    let* transport = Transport.connect net sw ~timeout ~tls address in
+    let* major, minor = Handshake.negotiate transport in
+    Ok (transport, major, minor, address)
+  in
+  let rec attempt failed errors = function
+    | [] ->
+        let failures = { Errors.last = List.hd errors; all = List.rev errors } in
+        Error
+          (Errors.Service_unavailable
+             (Addressing.connect_failure_message ~address:initial ~resolved:failed ~failures))
+    | address :: rest -> (
+        match connect_single address with
+        | Ok connected -> Ok connected
+        | Error error -> attempt (Addressing.to_string address :: failed) (error :: errors) rest)
+  in
+  let* transport, major, minor, address = attempt [] [] addresses in
+  let conn =
+    { transport; major; minor; state = ref State.Connected; server_agent = ref None; address }
+  in
   let re_auth = supports_re_auth major minor in
   let* hello_metadata =
     request conn ~message:State.Hello ~re_auth (fun () ->

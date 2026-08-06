@@ -1,9 +1,10 @@
 (* TestKit command handlers.
 
    Dispatch a request ({"name": ..., "data": {...}}) to a handler and return the
-   response (name, data). B0b adds the query path: drivers hold a lazily created
-   connection (Conn), sessions run queries, and results stream records and a
-   minimal summary. Transactions and routing are still unsupported.
+   response (name, data), or [None] for handlers that are silent (the harness
+   sends no response expected, e.g. ResolverResolutionCompleted). The context
+   provides the network resources and lets handlers push unsolicited messages to
+   the harness and read the follow-up request (custom address resolution).
 
    Modeled on the Python driver's testkitbackend/_async/requests.py. *)
 
@@ -11,6 +12,16 @@ open Neodriver
 open Neodriver_eio
 
 exception Backend_error of string
+
+(* --- Connection context --- *)
+
+type 'tag ctx = {
+  net : [ `Network | `Platform of 'tag ] Eio.Resource.t;
+  clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
+  sw : Eio.Switch.t;
+  send : string -> Yojson.Safe.t -> unit;
+  read : unit -> string option;
+}
 
 (* --- JSON helpers --- *)
 
@@ -42,6 +53,7 @@ type driver = {
   auth : auth;
   user_agent : string;
   connection_timeout : float;
+  resolver_registered : bool;
   conn : Conn.t option ref;
 }
 
@@ -55,12 +67,12 @@ type result = {
   query : string;
   parameters : (string * Values.t) list;
   conn : Conn.t;
-  address : string;
 }
 
 let drivers : (int, driver) Hashtbl.t = Hashtbl.create 16
 let sessions : (int, session) Hashtbl.t = Hashtbl.create 16
 let results : (int, result) Hashtbl.t = Hashtbl.create 16
+let custom_resolutions : (int, string list) Hashtbl.t = Hashtbl.create 16
 let next_id = ref 0
 
 let new_id () =
@@ -110,19 +122,63 @@ let conn_config driver =
         };
     }
 
+(* Ask the harness to resolve an address (custom resolver) and return the
+   addresses to try. The follow-up ResolverResolutionCompleted request is
+   consumed and processed here (it is not dispatched through the normal loop). *)
+let resolver ctx address =
+  let id = new_id () in
+  ctx.send "ResolverResolutionRequired"
+    (`Assoc [ ("id", `Int id); ("address", `String (Addressing.to_string address)) ]);
+  let resolution =
+    match ctx.read () with
+    | None -> None
+    | Some json -> (
+        match Yojson.Safe.from_string json with
+        | `Assoc fields -> (
+            match List.assoc_opt "data" fields with
+            | Some (`Assoc data) -> (
+                match (List.assoc_opt "requestId" data, List.assoc_opt "addresses" data) with
+                | Some (`Int request_id), Some (`List addresses) when request_id = id ->
+                    Some
+                      (List.map
+                         (function `String s -> s | _ -> raise (Backend_error "bad address"))
+                         addresses)
+                | Some (`Intlit request_id), Some (`List addresses)
+                  when match int_of_string_opt request_id with Some n -> n = id | None -> false ->
+                    Some
+                      (List.map
+                         (function `String s -> s | _ -> raise (Backend_error "bad address"))
+                         addresses)
+                | _ -> None)
+            | _ -> None)
+        | _ -> None)
+  in
+  let rec parse = function
+    | [] -> Ok []
+    | s :: rest -> (
+        match Addressing.parse s with
+        | Error _ -> Error (Errors.Service_unavailable ("bad resolved address " ^ s))
+        | Ok address -> (
+            match parse rest with Ok addresses -> Ok (address :: addresses) | Error _ as e -> e))
+  in
+  match resolution with
+  | Some addresses -> parse addresses
+  | None -> Error (Errors.Service_unavailable "no resolver resolution received")
+
 (* Open the driver's connection on first use. *)
-let ensure_conn net clock sw (driver : driver) =
+let ensure_conn ctx (driver : driver) =
   match !(driver.conn) with
   | Some conn -> Ok conn
   | None -> (
-      match Conn.connect net clock sw (conn_config driver) with
+      let custom = if driver.resolver_registered then Some (resolver ctx) else None in
+      match Conn.connect ?resolver:custom ctx.net ctx.clock ctx.sw (conn_config driver) with
       | Error error -> Error error
       | Ok conn ->
           driver.conn := Some conn;
           Ok conn)
 
-let conn_of net clock sw (driver : driver) =
-  match ensure_conn net clock sw driver with
+let conn_of ctx (driver : driver) =
+  match ensure_conn ctx driver with
   | Ok conn -> conn
   | Error error -> raise (Backend_error (Errors.to_string error))
 
@@ -137,6 +193,9 @@ let new_driver fields =
   let uri_string = string "uri" fields in
   let user_agent = Option.value ~default:"ocaml-neo4j-driver" (opt_string "userAgent" fields) in
   let auth = auth_of fields in
+  let resolver_registered =
+    match List.assoc_opt "resolverRegistered" fields with Some (`Bool b) -> b | _ -> false
+  in
   let connection_timeout =
     match List.assoc_opt "connectionTimeoutMs" fields with
     | Some (`Int ms) -> float_of_int ms /. 1000.0
@@ -148,7 +207,8 @@ let new_driver fields =
   | Error error -> raise (Backend_error (Errors.to_string error))
   | Ok uri ->
       let id = new_id () in
-      Hashtbl.add drivers id { uri; auth; user_agent; connection_timeout; conn = ref None };
+      Hashtbl.add drivers id
+        { uri; auth; user_agent; connection_timeout; resolver_registered; conn = ref None };
       ("Driver", `Assoc [ ("id", `Int id) ])
 
 let driver_close fields =
@@ -173,22 +233,34 @@ let session_close fields =
   Hashtbl.remove sessions id;
   ("Session", `Assoc [ ("id", `Int id) ])
 
-let verify_connectivity net clock sw fields =
+(* Stores a custom resolution; the harness sends no response is expected. *)
+let resolver_resolution_completed fields =
+  let request_id = int "requestId" fields in
+  let addresses =
+    match List.assoc_opt "addresses" fields with
+    | Some (`List l) ->
+        List.map (function `String s -> s | _ -> raise (Backend_error "bad address")) l
+    | _ -> raise (Backend_error "missing addresses")
+  in
+  Hashtbl.add custom_resolutions request_id addresses;
+  None
+
+let verify_connectivity ctx fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  ignore (conn_of net clock sw driver);
+  ignore (conn_of ctx driver);
   ("Driver", `Assoc [ ("id", `Int id) ])
 
-let get_server_info net clock sw fields =
+let get_server_info ctx fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  let conn = conn_of net clock sw driver in
+  let conn = conn_of ctx driver in
   let major, minor = Conn.version conn in
   let agent = Option.value ~default:"" (Conn.server_agent conn) in
   ( "ServerInfo",
     `Assoc
       [
-        ("address", `String (Printf.sprintf "%s:%d" driver.uri.host driver.uri.port));
+        ("address", `String (Addressing.to_string (Conn.address conn)));
         ("agent", `String agent);
         ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
       ] )
@@ -198,10 +270,10 @@ let decode_params fields =
   | Some (`Assoc params) -> List.map (fun (k, v) -> (k, Testkit_values.of_yojson v)) params
   | _ -> []
 
-let session_run net clock sw fields =
+let session_run ctx fields =
   let session = get_session (int "sessionId" fields) in
   let driver = get_driver session.driver_id in
-  let conn = conn_of net clock sw driver in
+  let conn = conn_of ctx driver in
   let cypher = string "cypher" fields in
   let parameters = decode_params fields in
   let metadata =
@@ -218,7 +290,6 @@ let session_run net clock sw fields =
       | Error error -> raise (Backend_error (Errors.to_string error))
       | Ok (records, summary) ->
           let id = new_id () in
-          let address = Printf.sprintf "%s:%d" driver.uri.host driver.uri.port in
           Hashtbl.add results id
             {
               fields = run_metadata.fields;
@@ -228,7 +299,6 @@ let session_run net clock sw fields =
               query = cypher;
               parameters;
               conn;
-              address;
             };
           ( "Result",
             `Assoc
@@ -319,7 +389,7 @@ let summary_of r =
       ( "serverInfo",
         `Assoc
           [
-            ("address", `String r.address);
+            ("address", `String (Addressing.to_string (Conn.address r.conn)));
             ("agent", `String agent);
             ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
           ] );
@@ -348,28 +418,29 @@ let result_consume fields =
   Hashtbl.remove results id;
   ("Summary", summary)
 
-let handle net clock sw name data =
+let handle ctx name data =
   let fields =
     match data with `Assoc fields -> fields | _ -> raise (Backend_error "data is not an object")
   in
   match name with
-  | "StartTest" -> start_test fields
-  | "GetFeatures" -> get_features fields
-  | "NewDriver" -> new_driver fields
-  | "DriverClose" -> driver_close fields
-  | "NewSession" -> new_session fields
-  | "SessionClose" -> session_close fields
-  | "VerifyConnectivity" -> verify_connectivity net clock sw fields
-  | "GetServerInfo" -> get_server_info net clock sw fields
-  | "SessionRun" -> session_run net clock sw fields
-  | "ResultNext" -> result_next fields
-  | "ResultPeek" -> result_peek fields
-  | "ResultList" -> result_list fields
-  | "ResultConsume" -> result_consume fields
+  | "StartTest" -> Some (start_test fields)
+  | "GetFeatures" -> Some (get_features fields)
+  | "NewDriver" -> Some (new_driver fields)
+  | "DriverClose" -> Some (driver_close fields)
+  | "NewSession" -> Some (new_session fields)
+  | "SessionClose" -> Some (session_close fields)
+  | "VerifyConnectivity" -> Some (verify_connectivity ctx fields)
+  | "GetServerInfo" -> Some (get_server_info ctx fields)
+  | "SessionRun" -> Some (session_run ctx fields)
+  | "ResultNext" -> Some (result_next fields)
+  | "ResultPeek" -> Some (result_peek fields)
+  | "ResultList" -> Some (result_list fields)
+  | "ResultConsume" -> Some (result_consume fields)
+  | "ResolverResolutionCompleted" -> resolver_resolution_completed fields
   | _ -> raise (Backend_error ("No request handler for " ^ name))
 
 (* Parse a request JSON and dispatch it. *)
-let dispatch net clock sw json =
+let dispatch ctx json =
   try
     match Yojson.Safe.from_string json with
     | `Assoc fields ->
@@ -377,8 +448,8 @@ let dispatch net clock sw json =
         let data =
           match List.assoc_opt "data" fields with Some data -> data | None -> `Assoc []
         in
-        handle net clock sw name data
+        handle ctx name data
     | _ -> raise (Backend_error "Request is not an object")
   with
-  | Backend_error message -> ("BackendError", `Assoc [ ("msg", `String message) ])
-  | exn -> ("BackendError", `Assoc [ ("msg", `String (Printexc.to_string exn)) ])
+  | Backend_error message -> Some ("BackendError", `Assoc [ ("msg", `String message) ])
+  | exn -> Some ("BackendError", `Assoc [ ("msg", `String (Printexc.to_string exn)) ])

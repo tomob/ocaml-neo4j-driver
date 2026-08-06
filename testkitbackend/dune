@@ -1,7 +1,7 @@
 (executable
  (name testkitbackend)
  (modules testkitbackend backend commands features testkit_values)
- (libraries neodriver yojson eio eio_main))
+ (libraries neodriver yojson eio eio_main mtime))
 
 (test
  (name test_values)

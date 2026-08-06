@@ -264,6 +264,33 @@ let reset_round_trip () =
           | Error error -> fail (Errors.to_string error));
           Conn.close conn)
 
+(* A custom resolver supplies addresses to try; the first (closed) address is
+   skipped and the second (the mock server) connects. *)
+let connect_with_resolver () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      Eio.Switch.run (fun sw2 ->
+          let listening =
+            Eio.Net.listen ~reuse_addr:true ~backlog:1 ~sw:sw2 net
+              (`Tcp (Eio.Net.Ipaddr.V4.loopback, 0))
+          in
+          let closed_port =
+            match Eio.Net.listening_addr listening with `Tcp (_, p) -> p | _ -> assert false
+          in
+          Eio.Resource.close listening;
+          let resolver _address =
+            Ok [ Addressing.IPv4 ("127.0.0.1", closed_port); Addressing.IPv4 ("127.0.0.1", port) ]
+          in
+          let config = config "127.0.0.1" port Addressing.Bolt in
+          match Conn.connect ~resolver net clock sw config with
+          | Error error -> fail (Errors.to_string error)
+          | Ok conn ->
+              check string "resolved address"
+                (Printf.sprintf "127.0.0.1:%d" port)
+                (Addressing.to_string (Conn.address conn));
+              Conn.close conn))
+
 let tests =
   [
     ( "[Conn] routing_not_supported",
@@ -277,6 +304,8 @@ let tests =
     ("[Conn] logoff_logon", [ test_case "LOGOFF/LOGON round trip" `Quick logoff_logon ]);
     ("[Conn] logon_unsupported", [ test_case "LOGON unsupported for 5.0" `Quick logon_unsupported ]);
     ("[Conn] connect_ready", [ test_case "state Ready after connect" `Quick connect_ready ]);
+    ( "[Conn] connect_with_resolver",
+      [ test_case "custom resolver addresses tried in order" `Quick connect_with_resolver ] );
     ( "[Conn] state_logoff_logon",
       [ test_case "state across logoff/logon" `Quick state_logoff_logon ] );
     ( "[Conn] auto_reset_after_failure",

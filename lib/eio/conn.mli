@@ -29,18 +29,24 @@ val default_user_agent : string
 (** Default [user_agent] header for HELLO. *)
 
 val connect :
+  ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   Eio.Switch.t ->
   config ->
   (t, Errors.t) result
 (** Establish a connection (over TLS when the scheme requires it), negotiate the Bolt protocol
-    version and authenticate. For Bolt >= 5.1 the authentication is sent via LOGON after HELLO; for
-    older versions it is inline in HELLO. [clock] bounds the whole attempt and subsequent
-    reads/writes by [config.connection_timeout].
+    version and authenticate. [resolver] replaces the address lookup: the address built from
+    [config] is passed to it and each returned address is tried in turn (first success wins, errors
+    are aggregated). Without [resolver], the single configured address is used. For Bolt >= 5.1 the
+    authentication is sent via LOGON after HELLO; for older versions it is inline in HELLO. [clock]
+    bounds the whole attempt and subsequent reads/writes by [config.connection_timeout].
     @return
       [Error _] for connection/handshake failures, for routing schemes (unsupported until routing is
       implemented), or for an authentication failure reported by the server. *)
+
+val address : t -> Addressing.t
+(** The resolved address the connection is established with. *)
 
 val version : t -> int * int
 (** The negotiated protocol version [(major, minor)]. *)
