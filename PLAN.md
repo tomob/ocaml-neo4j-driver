@@ -111,32 +111,35 @@ ocaml-neo4j-driver/            # this repo
 ## TRACK B — TestKit (parallel with Phase A3)
 
 The TestKit backend is a **separate parallel track** (started alongside Phase A3, revising the earlier
-"after A5" checkpoint): a JSON-over-stdio server that translates TestKit commands onto the **public
+"after A5" checkpoint): a JSON-over-TCP server that translates TestKit commands onto the **public
 library API**, forcing early API-surface stability. Conformance is enabled gradually via feature
 gating (the `test_subtest_skips.ml` analog).
 
-- **Phase B0a** — scaffold (parallel with A3, no DB access yet):
+- **Phase B0a** — scaffold (parallel with A3, no DB access yet). **Done** (commit "step B0a"):
   - `testkitbackend/` dune executable `testkitbackend` (`neodriver` + `yojson` + `eio`/`eio_main`);
     `yojson` is a backend-only dependency, not part of the public opam packages.
-  - `backend.ml`: Eio JSON-over-stdio loop — reads `#request begin` / JSON / `#request end` from
-    stdin, dispatches on `request["name"]`, writes `#response begin\n{json}\n#response end\n` on
-    stdout; unknown commands → `BackendError { msg }`.
-  - `commands.ml`: `StartTest`/`StopTest` (+ `StartSubTest`/`StopSubTest`), `GetFeatures` →
-    `FeatureList { features }`, `NewDriver`/`DriverClose`, `NewSession`/`SessionClose` (config-only,
-    no connection).
-  - `features.ml`: reported TestKit features + skip mechanism (analog of `test_subtest_skips.py`).
-  - `values.ml`: `Values.t` → TestKit JSON encoding (`CypherNode`/`CypherRelationship`/`CypherPath`/
-    `CypherPoint`/`CypherDate`/`CypherTime`/`CypherDateTime`/`CypherDuration` + scalars), modeled on
-    `totestkit.py`.
-  - Tests: `testkitbackend/test_values.ml` (pure value-encoding unit tests) +
-    `scripts/backend_smoke.sh` (canned JSON request/response check).
-  - Harness: clone `neo4j-drivers/testkit` into the sandbox, install dependencies, configure it to
-    spawn `dune exec -- testkitbackend/testkitbackend.exe`; validate the protocol live (framing,
-    `FeatureList`, `BackendError`).
-- **Phase B0b** — query path (when Phase A3 lands):
-  - `NewDriver` gains a lazily-created connection via `Conn` (A2) + HELLO/auth (A3).
+  - `backend.ml`: an Eio **TCP server on port 9876** (the TestKit harness connects over TCP, not
+    stdio) — reads `#request begin` / JSON / `#request end` lines, dispatches on `request["name"]`,
+    writes `#response begin\n{json}\n#response end\n`; unknown commands → `BackendError { msg }`.
+  - `commands.ml`: `StartTest` → `RunTest`, `GetFeatures` → `FeatureList { features }`,
+    `NewDriver`/`DriverClose` → `Driver { id }`, `NewSession`/`SessionClose` → `Session { id }`
+    (config-only, no connection; the URI is validated with `Addressing.parse_uri`, basic auth only).
+  - `features.ml`: reported TestKit features (empty for now — the harness skips everything else).
+  - `testkit_values.ml`: `Values.t` → TestKit JSON encoding (`CypherNode`/`CypherRelationship`/
+    `CypherPath`/`CypherPoint`/`CypherDate`/`CypherTime`/`CypherDateTime`/`CypherDuration` + scalars),
+    modeled on `totestkit.py`.
+  - Tests: `testkitbackend/test_values.ml` (pure value-encoding unit tests, run under
+    `dune runtest`) + `scripts/backend_smoke.sh` (spawns the backend and drives it over TCP as the
+    harness does).
+  - Harness: `neo4j-drivers/testkit` cloned into the sandbox and its dependencies installed. A live
+    harness run additionally needs a driver Docker image + a `testkit/backend.py` glue that spawns
+    our binary; that is part of B0b/B10 (with an empty feature list every test would be skipped
+    anyway). The protocol is validated by `backend_smoke.sh`.
+- **Phase B0b** — query path (Phase A3 is done, so this is within reach):
+  - `NewDriver` gains a lazily-created connection via `Conn` (A2/A3) — one connection per driver,
+    no pool yet.
   - `SessionRun` (RUN/PULL), `ResultNext`/`ResultList`/`ResultPeek`/`ResultConsume` (result
-    iteration + TestKit record encoding), `VerifyConnectivity`.
+    iteration + TestKit record encoding via `testkit_values`), `VerifyConnectivity`.
   - Enlarge the reported feature set; run the basic testkit query suite against the harness.
 - **Phases B1–B5**: extending command coverage as the API matures: transactions
   (RetryablePositive/Negative, TxBegin/Commit/Rollback), sessions (`SessionBeginTransaction`,

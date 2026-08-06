@@ -1,0 +1,9 @@
+(executable
+ (name testkitbackend)
+ (modules testkitbackend backend commands features testkit_values)
+ (libraries neodriver yojson eio eio_main))
+
+(test
+ (name test_values)
+ (modules test_values testkit_values)
+ (libraries alcotest neodriver yojson))
