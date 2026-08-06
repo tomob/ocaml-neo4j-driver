@@ -23,3 +23,6 @@ module Values = Values
 
 module Hydration = Hydration
 (** Conversion between PackStream values and rich values. *)
+
+module Capabilities = Capabilities
+(** Per-version Bolt protocol capabilities. *)

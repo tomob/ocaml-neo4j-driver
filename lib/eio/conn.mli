@@ -109,3 +109,17 @@ val discard : t -> ?n:int -> ?qid:int -> unit -> (unit, Errors.t) result
 
 val server_agent : t -> string option
 (** The server agent string reported in the HELLO response, if any. *)
+
+val capabilities : t -> Capabilities.t
+(** The protocol capabilities of the connection's version. *)
+
+val current_auth : t -> auth option
+(** The authentication token the connection is currently logged on with, if any. *)
+
+val re_auth : t -> auth -> (bool, Errors.t) result
+(** Re-authenticate when [auth] differs from the current token (LOGOFF then LOGON, Bolt >= 5.1).
+    Returns whether the token changed ([false] when it is the same as the current one).
+    @return [Error _] for older protocol versions or on server failure. *)
+
+val mark_unauthenticated : t -> unit
+(** Forget the current token (the next [re_auth] will log on again). *)

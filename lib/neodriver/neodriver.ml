@@ -11,4 +11,5 @@ module Deadline = Neodriver_core.Deadline
 module Temporal = Neodriver_core.Temporal
 module Values = Neodriver_core.Values
 module Hydration = Neodriver_core.Hydration
+module Capabilities = Neodriver_core.Capabilities
 module Driver = Neodriver_eio.Driver

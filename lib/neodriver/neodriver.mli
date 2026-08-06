@@ -28,5 +28,8 @@ module Values = Neodriver_core.Values
 module Hydration = Neodriver_core.Hydration
 (** Hydration. *)
 
+module Capabilities = Neodriver_core.Capabilities
+(** Per-version Bolt protocol capabilities. *)
+
 module Driver = Neodriver_eio.Driver
 (** Eio backend entry point. *)

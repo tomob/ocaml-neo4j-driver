@@ -9,3 +9,4 @@ module Deadline = Deadline
 module Temporal = Temporal
 module Values = Values
 module Hydration = Hydration
+module Capabilities = Capabilities

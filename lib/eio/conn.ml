@@ -28,13 +28,12 @@ type t = {
   state : State.t ref;
   server_agent : string option ref;
   address : Addressing.t;
+  current_auth : auth option ref;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
-
-(* LOGON/LOGOFF are available from Bolt 5.1 (the Python driver's
-   supports_re_auth gate). *)
-let supports_re_auth major minor = major > 5 || (major = 5 && minor >= 1)
+let capabilities_of t = Capabilities.of_version t.major t.minor
+let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth
 
 (* The bolt_agent header is sent from Bolt 5.3. *)
 let bolt_agent_version major minor = major > 5 || (major = 5 && minor >= 3)
@@ -70,7 +69,7 @@ let hello_headers (config : config) major minor =
     else headers
   in
   let headers =
-    if supports_re_auth major minor then headers
+    if re_auth_of major minor then headers
     else
       headers
       @ [
@@ -146,9 +145,17 @@ let connect ?resolver net clock sw config =
   in
   let* transport, major, minor, address = attempt [] [] addresses in
   let conn =
-    { transport; major; minor; state = ref State.Connected; server_agent = ref None; address }
+    {
+      transport;
+      major;
+      minor;
+      state = ref State.Connected;
+      server_agent = ref None;
+      address;
+      current_auth = ref None;
+    }
   in
-  let re_auth = supports_re_auth major minor in
+  let re_auth = re_auth_of major minor in
   let* hello_metadata =
     request conn ~message:State.Hello ~re_auth (fun () ->
         Bolt.hello conn.transport ~headers:(hello_headers config major minor))
@@ -160,18 +167,22 @@ let connect ?resolver net clock sw config =
       | _ -> ())
   | _ -> ());
   let* () =
-    if re_auth then
+    if re_auth then (
       let* _ =
         request conn ~message:State.Logon ~re_auth (fun () ->
             Bolt.logon conn.transport ~auth:(auth_map config.auth))
       in
+      conn.current_auth := Some config.auth;
+      Ok ())
+    else begin
+      conn.current_auth := Some config.auth;
       Ok ()
-    else Ok ()
+    end
   in
   Ok conn
 
 let logon t auth =
-  let re_auth = supports_re_auth t.major t.minor in
+  let re_auth = re_auth_of t.major t.minor in
   if not re_auth then
     Error (Errors.Service_unavailable "LOGON is not supported by this protocol version")
   else
@@ -182,7 +193,7 @@ let logon t auth =
     Ok ()
 
 let logoff t =
-  let re_auth = supports_re_auth t.major t.minor in
+  let re_auth = re_auth_of t.major t.minor in
   if not re_auth then
     Error (Errors.Service_unavailable "LOGOFF is not supported by this protocol version")
   else
@@ -234,7 +245,7 @@ let run t ~hydration ~query ~parameters ?mode ?db ?metadata () =
       metadata
   in
   let* metadata_response =
-    request t ~message:State.Run ~re_auth:(supports_re_auth t.major t.minor) (fun () ->
+    request t ~message:State.Run ~re_auth:(re_auth_of t.major t.minor) (fun () ->
         Bolt.run t.transport ~query ~parameters ~extra:(run_extra ?mode ?db ?metadata ()))
   in
   Ok (run_metadata_of metadata_response)
@@ -247,7 +258,7 @@ let pull_extra ?(n = -1) ?qid () =
   Packstream.Map extra
 
 let pull t ~hydration ?n ?qid () =
-  let re_auth = supports_re_auth t.major t.minor in
+  let re_auth = re_auth_of t.major t.minor in
   match
     request
       ~has_more:(fun (_, summary) -> Bolt.metadata_has_more summary)
@@ -259,10 +270,8 @@ let pull t ~hydration ?n ?qid () =
       let records = List.map (List.map (Hydration.hydrate hydration)) records in
       Ok (records, summary)
 
-let server_agent t = !(t.server_agent)
-
 let discard t ?n ?qid () =
-  let re_auth = supports_re_auth t.major t.minor in
+  let re_auth = re_auth_of t.major t.minor in
   let* _ =
     request
       ~has_more:(fun (_, summary) -> Bolt.metadata_has_more summary)
@@ -271,4 +280,28 @@ let discard t ?n ?qid () =
   in
   Ok ()
 
+let server_agent t = !(t.server_agent)
+let capabilities t = capabilities_of t
+let current_auth t = !(t.current_auth)
+
+(* Re-authenticate when [auth] differs from the current token: LOGOFF then
+   LOGON (Bolt >= 5.1). Returns whether the token changed. *)
+let re_auth t auth =
+  if !(t.current_auth) = Some auth then Ok false
+  else if not (re_auth_of t.major t.minor) then
+    Error (Errors.Service_unavailable "Re-authentication is not supported by this protocol version")
+  else
+    let* () =
+      request t ~message:State.Logoff ~re_auth:true (fun () -> Bolt.logoff t.transport)
+      |> Result.map (fun _ -> ())
+    in
+    let* () =
+      request t ~message:State.Logon ~re_auth:true (fun () ->
+          Bolt.logon t.transport ~auth:(auth_map auth))
+      |> Result.map (fun _ -> ())
+    in
+    t.current_auth := Some auth;
+    Ok true
+
+let mark_unauthenticated t = t.current_auth := None
 let close t = Transport.close t.transport

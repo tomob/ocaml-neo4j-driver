@@ -291,6 +291,66 @@ let connect_with_resolver () =
                 (Addressing.to_string (Conn.address conn));
               Conn.close conn))
 
+(* Re-authenticating with the same token is a no-op. *)
+let re_auth_same_token () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), received, [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.re_auth conn (auth ()) with
+          | Ok false -> ()
+          | Ok true -> fail "same token should not re-authenticate"
+          | Error error -> fail (Errors.to_string error));
+          check int "no extra messages" 2 (List.length !received);
+          Conn.close conn)
+
+(* A changed token performs LOGOFF + LOGON. *)
+let re_auth_changed_token () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.re_auth conn (auth ~credentials:"new-password" ()) with
+          | Ok true -> check_state conn "Ready"
+          | Ok false -> fail "changed token should re-authenticate"
+          | Error error -> fail (Errors.to_string error));
+          let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
+          check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
+          Conn.close conn)
+
+(* mark_unauthenticated forces a LOGON on the next re_auth. *)
+let re_auth_after_mark () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          Conn.mark_unauthenticated conn;
+          (match Conn.re_auth conn (auth ()) with
+          | Ok true -> ()
+          | Ok false -> fail "should re-authenticate after mark_unauthenticated"
+          | Error error -> fail (Errors.to_string error));
+          let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
+          check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
+          Conn.close conn)
+
 let tests =
   [
     ( "[Conn] routing_not_supported",
@@ -312,4 +372,9 @@ let tests =
       [ test_case "FAILURE triggers auto RESET" `Quick auto_reset_after_failure ] );
     ("[Conn] ignored_fails", [ test_case "IGNORED moves to Failed" `Quick ignored_fails ]);
     ("[Conn] reset_round_trip", [ test_case "reset returns to Ready" `Quick reset_round_trip ]);
+    ("[Conn] re_auth_same_token", [ test_case "same token is a no-op" `Quick re_auth_same_token ]);
+    ( "[Conn] re_auth_changed_token",
+      [ test_case "changed token does LOGOFF + LOGON" `Quick re_auth_changed_token ] );
+    ( "[Conn] re_auth_after_mark",
+      [ test_case "mark_unauthenticated forces LOGON" `Quick re_auth_after_mark ] );
   ]
