@@ -29,6 +29,9 @@ NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-testpassword}"
 NEO4J_SCHEME="${NEO4J_SCHEME:-bolt}"
 NEO4J_LOG="${NEO4J_LOG:-/var/lib/neo4j/logs/neo4j.log}"
+# Optional docker network the container joins (its name is then the network
+# alias). Empty by default.
+NEO4J_NETWORK="${NEO4J_NETWORK:-}"
 # The certificates are mounted read-only outside NEO4J_HOME (the container's
 # entrypoint chowns everything under NEO4J_HOME, which would require a writable
 # mount). Setting names containing underscores use a double underscore in the
@@ -90,6 +93,7 @@ up() {
   # keep working and bolt+ssc/bolt+s are exercised too.
   docker run -d --name "${NEO4J_CONTAINER}" \
     -p "${NEO4J_HOST_PORT}:${NEO4J_BOLT_PORT}" \
+    ${NEO4J_NETWORK:+--network "${NEO4J_NETWORK}"} \
     -v "${ssl_dir}:/certificates:ro" \
     -e "NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASS}" \
     -e "NEO4J_dbms_ssl_policy_bolt_enabled=true" \
