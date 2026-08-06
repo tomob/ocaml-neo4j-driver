@@ -108,11 +108,42 @@ ocaml-neo4j-driver/            # this repo
 
 ---
 
-## TRACK B — TestKit (parallel, from Phase A0)
+## TRACK B — TestKit (parallel with Phase A3)
 
-- **Phase B0**: `testkitbackend/` scaffold — a JSON-over-stdio server in Eio (`Eio.Flow`), handling the TestKit commands `Start`/`Stop` + `NewDriver`/`CloseDriver` + simple `SessionRun`/`ResultNext`. Install testkit dependencies (`neo4j-drivers/testkit`@`6.x`).
-- **Phases B1–B5**: extending command coverage as the API matures: types (Bolt/Node/Relationship/Path/Point/Temporal/Vector), transactions (RetryablePositive/Negative, TxBegin/Commit/Rollback), sessions (`SessionBeginTransaction`, `SessionLastBookmarks`, access mode), routing (`NewDriver` with `neo4j://`, `DriverSession`...).
-- **Phase B10**: full conformance (the full testkit suite on a server matrix 4.x/5.x/6.x) + CI running the backend in containers.
+The TestKit backend is a **separate parallel track** (started alongside Phase A3, revising the earlier
+"after A5" checkpoint): a JSON-over-stdio server that translates TestKit commands onto the **public
+library API**, forcing early API-surface stability. Conformance is enabled gradually via feature
+gating (the `test_subtest_skips.ml` analog).
+
+- **Phase B0a** — scaffold (parallel with A3, no DB access yet):
+  - `testkitbackend/` dune executable `testkitbackend` (`neodriver` + `yojson` + `eio`/`eio_main`);
+    `yojson` is a backend-only dependency, not part of the public opam packages.
+  - `backend.ml`: Eio JSON-over-stdio loop — reads `#request begin` / JSON / `#request end` from
+    stdin, dispatches on `request["name"]`, writes `#response begin\n{json}\n#response end\n` on
+    stdout; unknown commands → `BackendError { msg }`.
+  - `commands.ml`: `StartTest`/`StopTest` (+ `StartSubTest`/`StopSubTest`), `GetFeatures` →
+    `FeatureList { features }`, `NewDriver`/`DriverClose`, `NewSession`/`SessionClose` (config-only,
+    no connection).
+  - `features.ml`: reported TestKit features + skip mechanism (analog of `test_subtest_skips.py`).
+  - `values.ml`: `Values.t` → TestKit JSON encoding (`CypherNode`/`CypherRelationship`/`CypherPath`/
+    `CypherPoint`/`CypherDate`/`CypherTime`/`CypherDateTime`/`CypherDuration` + scalars), modeled on
+    `totestkit.py`.
+  - Tests: `testkitbackend/test_values.ml` (pure value-encoding unit tests) +
+    `scripts/backend_smoke.sh` (canned JSON request/response check).
+  - Harness: clone `neo4j-drivers/testkit` into the sandbox, install dependencies, configure it to
+    spawn `dune exec -- testkitbackend/testkitbackend.exe`; validate the protocol live (framing,
+    `FeatureList`, `BackendError`).
+- **Phase B0b** — query path (when Phase A3 lands):
+  - `NewDriver` gains a lazily-created connection via `Conn` (A2) + HELLO/auth (A3).
+  - `SessionRun` (RUN/PULL), `ResultNext`/`ResultList`/`ResultPeek`/`ResultConsume` (result
+    iteration + TestKit record encoding), `VerifyConnectivity`.
+  - Enlarge the reported feature set; run the basic testkit query suite against the harness.
+- **Phases B1–B5**: extending command coverage as the API matures: transactions
+  (RetryablePositive/Negative, TxBegin/Commit/Rollback), sessions (`SessionBeginTransaction`,
+  `SessionLastBookmarks`, access mode), routing (`NewDriver` with `neo4j://`, `DriverSession`...),
+  auth-token/bookmark/fake-time managers.
+- **Phase B10**: full conformance (the full testkit suite on a server matrix 4.x/5.x/6.x) + CI
+  running the backend in containers.
 
 **Principle**: the TestKit backend translates commands onto the **public library API** → forces API surface stability from the start. TestKit feature gating (the `test_subtest_skips.ml` analog) lets conformance be enabled gradually, phase by phase.
 
