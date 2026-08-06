@@ -74,17 +74,33 @@ ocaml-neo4j-driver/            # this repo
 - Per-version feature gates: `supports_multiple_results`, `supports_multiple_databases`, `supports_re_auth`, `supports_notification_filtering`, `supports_ssr`, `supports_telemetry` → a `capabilities` variant. **Done** (commit "step A3-4"): `capabilities.ml` (pure — `Capabilities.of_version` with the Python-driver thresholds: multiple results/databases 4.0+, re-auth 5.1+, notification filtering 5.2+, ROUTE (ssr) 4.3+, TELEMETRY 5.4+); `conn.ml` uses it instead of the ad-hoc `supports_re_auth` and exposes `Conn.capabilities`. Unit-tested (`test_capabilities`).
 - **Re-auth on a connection** (LOGON/LOGOFF when the token changes) — integration point for the pool. **Done** (commit "step A3-5"): `Conn` tracks `current_auth`; `Conn.re_auth` (LOGOFF+LOGON when the token differs, returns whether it changed; no-op for the same token) and `Conn.mark_unauthenticated` (clears the current token). Unit-tested via the mock (same-token no-op, changed-token LOGOFF+LOGON on the wire, re-auth after `mark_unauthenticated`). **Phase A3 complete.**
 
-### Phase A4 — Result + summary + notifications
-
-- **`result.ml`**: lazy streaming (in Eio: direct iteration), `consume/single/fetch/peek/value(s)/data`, states `_attached/_streaming/_exhausted`, semantics after transaction close.
-- **`summary.ml`**: `SummaryCounters`, `plan/profile`, `query_type`, `result_available_after/consumed_after` (`t_first/t_last`), **`gql_status_objects`** polyfilled from legacy notifications, `ServerInfo` (address/agent/protocol_version).
-
 ### Phase A5 — Sessions and transactions + retry
 
-- `session.ml`: `run` (auto-commit) with `database`, `impersonated_user`, `access_mode`, timeouts, notification filters, bookmarks; auto-commit retry (1 attempt) unless `disable_auto_commit_retries`.
-- `tx.ml`: `begin_transaction/commit/rollback/close`, context-manager semantics, consumption of pending results, bookmark capture from COMMIT metadata.
-- **Managed transactions**: `execute_read/execute_write` + `unit_of_work` — retry loop within the `max_transaction_retry_time` budget, jittered backoff, decision via `error.retryable`, fresh connection between attempts, `TX_FUNC` telemetry once.
+> **Ordering**: moved ahead of A4 so the TestKit suite can pass as early as possible — transaction
+> commands (`SessionBeginTransaction`, `SessionReadTransaction`, `SessionWriteTransaction`) account
+> for ~173 of the ~196 current testkit errors, while A4's full Result/summary API unblocks almost no
+> testkit tests (`ResultSingle`/`ResultSingleOptional` are feature-skipped and the summary tests are
+> transaction-gated anyway). A5 does not depend on A4 (results use the A3 RUN/PULL path; retry uses
+> `error.retryable`).
+
+- **A5a — explicit transactions**: `session.ml` `run` (auto-commit) with `database`,
+  `impersonated_user`, `access_mode`, timeouts, notification filters, bookmarks; auto-commit retry
+  (1 attempt) unless `disable_auto_commit_retries`; `tx.ml`
+  `begin_transaction/commit/rollback/close`, context-manager semantics, consumption of pending
+  results, bookmark capture from COMMIT metadata. Backend commands:
+  `SessionBeginTransaction`, `TransactionRun`, `TransactionCommit`, `TransactionRollback`,
+  `TransactionClose`.
+- **A5b — managed transactions + retry**: `execute_read/execute_write` + `unit_of_work` — retry
+  loop within the `max_transaction_retry_time` budget, jittered backoff, decision via
+  `error.retryable`, fresh connection between attempts, `TX_FUNC` telemetry once. Backend commands:
+  `SessionReadTransaction`/`SessionWriteTransaction` (the `RetryableTry`/`RetryableDone` protocol),
+  `RetryablePositive`/`RetryableNegative`.
 - **⚠️ Checkpoint**: after A5 we have a full, correctly streaming single-connection client — the best first release.
+
+### Phase A4 — Result + summary + notifications
+
+- **`result.ml`**: lazy streaming (in Eio: direct iteration), `consume/single/fetch/peek/value(s)/data`, states `_attached/_streaming/_exhausted`, semantics after transaction close. Backend: `ResultSingle`/`ResultSingleOptional`.
+- **`summary.ml`**: `SummaryCounters`, `plan/profile`, `query_type`, `result_available_after/consumed_after` (`t_first/t_last`), **`gql_status_objects`** polyfilled from legacy notifications, `ServerInfo` (address/agent/protocol_version).
 
 ### Phase A6 — Pool
 
