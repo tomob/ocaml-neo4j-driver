@@ -63,13 +63,14 @@ let commit_round_trip () =
       let conn = connect net clock sw port in
       let tx = begin_tx conn in
       let hydration = Conn.hydration conn in
-      let run_metadata, records, _summary =
+      let stream =
         match Tx.run tx ~hydration ~query:"RETURN 1" ~parameters:[] with
-        | Ok result -> result
+        | Ok stream -> stream
         | Error e -> fail (Errors.to_string e)
       in
-      check (list string) "run fields" [] run_metadata.fields;
-      check int "one record" 1 (List.length records);
+      (match Conn.pull_stream stream with Ok _ -> () | Error e -> fail (Errors.to_string e));
+      check (list string) "run fields" [] (Conn.run_metadata stream).fields;
+      check int "one record" 1 (List.length (Conn.buffered stream));
       let bookmark = match Tx.commit tx with Ok b -> b | Error e -> fail (Errors.to_string e) in
       check (option string) "commit bookmark" (Some "bookmark-1") bookmark;
       check (list int) "wire sequence"

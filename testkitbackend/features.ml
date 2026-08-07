@@ -25,6 +25,9 @@ let features : string list =
     "Feature:API:Driver.VerifyConnectivity";
     "Feature:API:Result.List";
     "Feature:API:Result.Peek";
+    "Feature:API:Result.Single";
+    "Feature:API:Result.SingleOptional";
+    "Feature:API:Summary:GqlStatusObjects";
     "Feature:API:Type.Spatial";
     "Feature:API:Type.Temporal";
     "Feature:API:Type.UnsupportedType";

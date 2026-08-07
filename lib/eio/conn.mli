@@ -143,6 +143,35 @@ val discard : ?n:int -> ?qid:int -> t -> (unit, Errors.t) result
 (** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
     [qid]. A server failure is surfaced as [Error _]. *)
 
+type stream
+(** A lazily-streamed result on a connection: RUN is sent immediately, records are pulled in batches
+    on demand. The terminal state is a [summary] (normal end) or an [error] (a server failure,
+    surfaced after the buffered records are consumed). *)
+
+val stream : t -> hydration:Hydration.t -> run_metadata:run_metadata -> stream
+(** A fresh [stream] for the given connection, hydration scope and RUN metadata. *)
+
+val buffered : stream -> Values.t list list
+(** The records buffered so far, in order. *)
+
+val has_more : stream -> bool
+(** Whether the stream still has records to pull. *)
+
+val error : stream -> Errors.t option
+(** A server failure that interrupted the stream. *)
+
+val summary : stream -> Packstream.value option
+(** The final PULL summary metadata, once the stream has ended normally. *)
+
+val run_metadata : stream -> run_metadata
+(** The RUN metadata (field names, query id, timings, bookmark). *)
+
+val pull_stream : ?n:int -> stream -> (Values.t list list, Errors.t) result
+(** Pull up to [n] more records (all by default), buffering them, and return the newly fetched
+    records. A server failure mid-stream is stored on the stream ([error]) and the records delivered
+    before it are kept. Once the stream ends normally, its summary is stored.
+    @return [Error _] for transport failures. *)
+
 val server_agent : t -> string option
 (** The server agent string reported in the HELLO response, if any. *)
 

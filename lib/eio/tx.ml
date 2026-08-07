@@ -9,7 +9,13 @@ open Neodriver_core
 let ( let* ) = Result.bind
 
 type state = Open | Failed | Closed
-type t = { conn : Conn.t; mutable state : state; bookmark : string option ref }
+
+type t = {
+  conn : Conn.t;
+  mutable state : state;
+  bookmark : string option ref;
+  mutable streams : Conn.stream list;
+}
 
 let closed t = t.state = Closed
 let failed t = t.state = Failed
@@ -27,7 +33,17 @@ let metadata_string key = function
 let begin_transaction conn ~extra =
   match Conn.begin_ conn ~extra with
   | Error _ as error -> error
-  | Ok () -> Ok { conn; state = Open; bookmark = ref None }
+  | Ok () -> Ok { conn; state = Open; bookmark = ref None; streams = [] }
+
+(* Drain the transaction's still-open results (like the Python driver's
+   _consume_results) so COMMIT/ROLLBACK can follow. Best effort: a server
+   failure is left on the stream. *)
+let rec drain_one s =
+  if Conn.has_more s then match Conn.pull_stream s with Ok _ -> drain_one s | Error _ -> ()
+
+let drain_pending t =
+  List.iter drain_one t.streams;
+  t.streams <- []
 
 let run t ~hydration ~query ~parameters =
   let* () = check_open t in
@@ -35,20 +51,14 @@ let run t ~hydration ~query ~parameters =
   | Error _ as error ->
       t.state <- Failed;
       error
-  | Ok run_metadata -> (
-      match Conn.pull t.conn ~hydration with
-      | Error _ as error ->
-          t.state <- Failed;
-          error
-      | Ok (records, outcome) -> (
-          match outcome with
-          | Error _ as error ->
-              t.state <- Failed;
-              error
-          | Ok summary -> Ok (run_metadata, records, summary)))
+  | Ok run_metadata ->
+      let stream = Conn.stream t.conn ~hydration ~run_metadata in
+      t.streams <- stream :: t.streams;
+      Ok stream
 
 let commit t =
   let* () = check_open t in
+  if not (failed t) then drain_pending t;
   match Conn.commit t.conn with
   | Error _ as error ->
       t.state <- Failed;
@@ -61,11 +71,13 @@ let commit t =
 
 let rollback t =
   if closed t then Error closed_error
-  else
+  else begin
+    if not (failed t) then drain_pending t;
     match Conn.rollback t.conn with
     | Error _ as error -> error
     | Ok () ->
         t.state <- Closed;
         Ok ()
+  end
 
 let close t = match t.state with Closed -> Ok () | Open | Failed -> rollback t

@@ -313,6 +313,45 @@ let discard ?n ?qid t =
       t.state := State.Failed;
       error
 
+(* A lazily-streamed result on a connection: RUN is sent immediately, records
+   are pulled in batches on demand. [records] is kept in reverse for O(1)
+   prepend; the terminal state is a [summary] (normal end) or an [error]
+   (a server failure, surfaced after the buffered records are consumed). *)
+type stream = {
+  conn : t;
+  run_metadata : run_metadata;
+  hydration : Hydration.t;
+  mutable records : Values.t list list;
+  mutable summary : Packstream.value option;
+  mutable error : Errors.t option;
+  mutable has_more : bool;
+}
+
+let stream conn ~hydration ~run_metadata =
+  { conn; run_metadata; hydration; records = []; summary = None; error = None; has_more = true }
+
+let buffered s = List.rev s.records
+let has_more s = s.has_more
+let error s = s.error
+let summary s = s.summary
+let run_metadata s = s.run_metadata
+
+let pull_stream ?n s =
+  if not s.has_more then Ok []
+  else
+    let* records, outcome = pull ?n ?qid:s.run_metadata.qid s.conn ~hydration:s.hydration in
+    s.records <- List.rev_append records s.records;
+    match outcome with
+    | Error error ->
+        s.has_more <- false;
+        s.error <- Some error;
+        Ok records
+    | Ok summary ->
+        let more = Bolt.metadata_has_more summary in
+        s.has_more <- more;
+        if not more then s.summary <- Some summary;
+        Ok records
+
 let begin_ t ~extra =
   let re_auth = re_auth_of t.major t.minor in
   let* _ = request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra) in

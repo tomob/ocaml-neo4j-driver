@@ -62,11 +62,9 @@ type driver = {
 type session = { driver_id : int; session : Session.t }
 
 type result = {
-  stream : Session.stream option;
-  records : Values.t list list;
+  stream : Conn.stream;
+  session : Session.t option;
   cursor : int ref;
-  summary : Packstream.value option;
-  t_first : int option;
   query : string;
   parameters : (string * Values.t) list;
   conn : Conn.t;
@@ -368,19 +366,10 @@ let session_run _ctx fields =
   | Error error -> raise (Driver_error error)
   | Ok stream ->
       let conn = session_conn session in
-      let run_metadata = Session.run_metadata stream in
+      let run_metadata = Conn.run_metadata stream in
       let id = new_id () in
       Hashtbl.add results id
-        {
-          stream = Some stream;
-          records = [];
-          cursor = ref 0;
-          summary = None;
-          t_first = run_metadata.t_first;
-          query = cypher;
-          parameters;
-          conn;
-        };
+        { stream; session = Some session.session; cursor = ref 0; query = cypher; parameters; conn };
       ( "Result",
         `Assoc
           [ ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields)) ]
@@ -421,23 +410,16 @@ let transaction_run _ctx fields =
   | Error error ->
       tx_failed session_id;
       raise (Driver_error error)
-  | Ok (run_metadata, records, summary) ->
+  | Ok stream ->
       let id = new_id () in
       Hashtbl.add results id
-        {
-          stream = None;
-          records;
-          cursor = ref 0;
-          summary = Some summary;
-          t_first = run_metadata.t_first;
-          query = cypher;
-          parameters;
-          conn;
-        };
+        { stream; session = None; cursor = ref 0; query = cypher; parameters; conn };
       ( "Result",
         `Assoc
-          [ ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields)) ]
-      )
+          [
+            ("id", `Int id);
+            ("keys", `List (List.map (fun f -> `String f) (Conn.run_metadata stream).fields));
+          ] )
 
 let transaction_commit _ctx fields =
   let id = int "txId" fields in
@@ -477,30 +459,31 @@ let record_json record = `Assoc [ ("values", `List (List.map Testkit_values.to_y
 
 (* --- Result streaming --- *)
 
-let result_records r = match r.stream with Some s -> Session.buffered s | None -> r.records
-let result_summary r = match r.stream with Some s -> Session.summary s | None -> r.summary
-let result_has_more r = match r.stream with Some s -> Session.has_more s | None -> false
-let result_error r = match r.stream with Some s -> Session.error s | None -> None
+let result_records r = Conn.buffered r.stream
+let result_summary r = Conn.summary r.stream
+let result_has_more r = Conn.has_more r.stream
+let result_error r = Conn.error r.stream
+
+(* Pull the next batch (via the session to update bookmarks for auto-commit
+   results). *)
+let result_pull ?n r =
+  match r.session with
+  | Some session -> Session.pull ?n session r.stream
+  | None -> Conn.pull_stream ?n r.stream
 
 (* Pull the next batch of a lazy stream when its buffer is exhausted. *)
 let rec ensure_record r =
   if !(r.cursor) < List.length (result_records r) then ()
   else if result_has_more r then
-    match r.stream with
-    | Some s -> (
-        match Session.pull s ~n:1 with
-        | Error error -> raise (Driver_error error)
-        | Ok _ -> ensure_record r)
-    | None -> ()
+    match result_pull ~n:1 r with
+    | Error error -> raise (Driver_error error)
+    | Ok _ -> ensure_record r
   else ()
 
 (* Drain a lazy stream to its end (raising on a server failure). *)
 let rec drain r =
   if result_has_more r then
-    match r.stream with
-    | Some s -> (
-        match Session.pull s with Error error -> raise (Driver_error error) | Ok _ -> drain r)
-    | None -> ()
+    match result_pull r with Error error -> raise (Driver_error error) | Ok _ -> drain r
   else ()
 
 let result_next fields =
@@ -639,6 +622,60 @@ let notifications_of metadata =
           | notifications -> Some (`List notifications))
       | _ -> None)
 
+(* The GQL status objects of a summary, serialized for the TestKit Summary
+   response (every field is required by the harness's GqlStatusObject). *)
+let gql_status_objects_of metadata =
+  let diagnostic_of = function
+    | Packstream.Map fields -> (
+        match List.assoc_opt "diagnostic_record" fields with
+        | Some (Packstream.Map d) -> d
+        | _ -> [])
+    | _ -> []
+  in
+  let string key fields = Option.value ~default:"" (metadata_string key (Packstream.Map fields)) in
+  let status = function
+    | Packstream.Map fields ->
+        let diagnostic = diagnostic_of (Packstream.Map fields) in
+        let position =
+          match List.assoc_opt "_position" diagnostic with
+          | Some (Packstream.Map pos) -> (
+              match
+                (List.assoc_opt "column" pos, List.assoc_opt "line" pos, List.assoc_opt "offset" pos)
+              with
+              | ( Some (Packstream.Int column),
+                  Some (Packstream.Int line),
+                  Some (Packstream.Int offset) ) ->
+                  `Assoc
+                    [
+                      ("column", `Int (Int64.to_int column));
+                      ("line", `Int (Int64.to_int line));
+                      ("offset", `Int (Int64.to_int offset));
+                    ]
+              | _ -> `Null)
+          | _ -> `Null
+        in
+        let is_notification = List.assoc_opt "neo4j_code" fields <> None in
+        `Assoc
+          [
+            ("isNotification", `Bool is_notification);
+            ("gqlStatus", `String (string "gql_status" fields));
+            ("statusDescription", `String (string "status_description" fields));
+            ("rawClassification", `Null);
+            ("classification", `String (string "_classification" diagnostic));
+            ("rawSeverity", `Null);
+            ("severity", `String (string "_severity" diagnostic));
+            ( "diagnosticRecord",
+              match List.assoc_opt "diagnostic_record" fields with
+              | Some value -> packstream_to_yojson value
+              | None -> `Assoc [] );
+            ("position", position);
+          ]
+    | _ -> `Null
+  in
+  match metadata_value "statuses" metadata with
+  | Some (Packstream.List statuses) -> `List (List.map status statuses)
+  | _ -> `List []
+
 let summary_of r =
   let metadata = match result_summary r with Some s -> s | None -> Packstream.Map [] in
   let major, minor = Conn.version r.conn in
@@ -647,7 +684,9 @@ let summary_of r =
     match metadata_string "type" metadata with Some t -> `String t | None -> `String "r"
   in
   let database = match metadata_string "db" metadata with Some d -> `String d | None -> `Null in
-  let available = match r.t_first with Some n -> `Int n | None -> `Null in
+  let available =
+    match (Conn.run_metadata r.stream).t_first with Some n -> `Int n | None -> `Null
+  in
   let consumed = match metadata_int "t_last" metadata with Some n -> `Int n | None -> `Null in
   let plan =
     match metadata_value "plan" metadata with
@@ -672,7 +711,7 @@ let summary_of r =
       ("counters", counters_of metadata);
       ("database", database);
       ("notifications", notifications);
-      ("gqlStatusObjects", `List []);
+      ("gqlStatusObjects", gql_status_objects_of metadata);
       ("plan", plan);
       ("profile", profile);
       ( "query",
@@ -696,6 +735,30 @@ let result_consume fields =
   Hashtbl.remove results id;
   ("Summary", summary)
 
+(* Drain the result and return its records (raising on a stream error). *)
+let drained_records r =
+  drain r;
+  (match result_error r with Some error -> raise (Driver_error error) | None -> ());
+  result_records r
+
+(* Expect exactly one record in the result stream. *)
+let result_single fields =
+  let r = get_result (int "resultId" fields) in
+  match drained_records r with
+  | [ record ] -> ("Record", record_json record)
+  | _ -> raise (Driver_error (Errors.Result_not_single_error "expected exactly one record"))
+
+(* Expect at most one record in the result stream. *)
+let result_single_optional fields =
+  let r = get_result (int "resultId" fields) in
+  let record =
+    match drained_records r with
+    | [ record ] -> record_json record
+    | [] -> `Null
+    | _ -> raise (Driver_error (Errors.Result_not_single_error "expected at most one record"))
+  in
+  ("RecordOptional", `Assoc [ ("record", record); ("warnings", `List []) ])
+
 let handle ctx name data =
   let fields =
     match data with `Assoc fields -> fields | _ -> raise (Backend_error "data is not an object")
@@ -716,6 +779,8 @@ let handle ctx name data =
   | "ResultPeek" -> Some (result_peek fields)
   | "ResultList" -> Some (result_list fields)
   | "ResultConsume" -> Some (result_consume fields)
+  | "ResultSingle" -> Some (result_single fields)
+  | "ResultSingleOptional" -> Some (result_single_optional fields)
   | "SessionBeginTransaction" -> Some (session_begin_transaction ctx fields)
   | "TransactionRun" -> Some (transaction_run ctx fields)
   | "TransactionCommit" -> Some (transaction_commit ctx fields)
