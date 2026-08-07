@@ -32,6 +32,12 @@ type t = {
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
+
+(* The basic authentication token: scheme [basic] with the given principal and
+   credentials. *)
+let basic_auth ?(principal = "neo4j") ?(credentials = "") () =
+  { scheme = "basic"; principal; credentials }
+
 let capabilities_of t = Capabilities.of_version t.major t.minor
 let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth
 
@@ -151,10 +157,14 @@ let authenticate conn config =
 
 let connect ?resolver net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in
-  let* initial =
-    Addressing.parse ~default_host:"localhost" ~default_port:7687
-      (Printf.sprintf "%s:%d" config.host config.port)
+  (* [config.host] carries an IPv6 literal without brackets (the URI parser
+     strips them), so bracket it again or the re-parse would split the port off
+     the last colon and mistype the address as IPv4. *)
+  let host_port =
+    if String.contains config.host ':' then Printf.sprintf "[%s]:%d" config.host config.port
+    else Printf.sprintf "%s:%d" config.host config.port
   in
+  let* initial = Addressing.parse ~default_host:"localhost" ~default_port:7687 host_port in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in
   let connect_single address =
     let* transport =

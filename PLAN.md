@@ -192,6 +192,16 @@ not yet implemented).
   resources into a ready `Session`, rejects `neo4j://` until routing exists), plus
   `Conn.basic_auth ?principal ?credentials ()` and extending the `Neodriver` aggregator with
   `Conn`/`Session`/`Tx`/`Transport`/`Bolt`/`State` aliases so `open Neodriver` covers the whole API.
+  **Done** (commit "step C0"): `Driver.connect` parses the URI via `Addressing.parse_uri` (errors
+  returned as `Configuration_error`), builds `Conn.config` (`?connection_timeout` default 30.0,
+  `?user_agent` default `Conn.default_user_agent`) and a `Session.config` (`?config`, base
+  `Session.default_config`) and returns a lazily connecting `Session.t` (no pool; one session per
+  driver). `neo4j://` is **not** rejected eagerly — it fails on first use from `Conn.connect`
+  (`Service_unavailable "Routing (neo4j://) is not supported yet"`). `Conn.basic_auth` defaults to
+  principal `neo4j` / empty credentials. The `Neodriver` aggregator now re-exports
+  `Conn`/`Session`/`Tx`/`Transport`/`Bolt`/`State` (plus `Neo4jResult`/`Summary`/`Driver`). Unit
+  tested (`test_driver.ml`: basic_auth, bad URI, lazy neo4j:// rejection, connect+run on the mock,
+  session config flowing into the RUN extra); TestKit unchanged (OK, 12 skipped).
 - **Phase C1 — API documentation (odoc)**: audit all `.mli` files (public declarations must carry
   a doc comment) and document the new API; add odoc index pages (a top-level `index.mld` and one
   per package) so `dune build @doc` produces a browsable site with a landing page; keep
