@@ -66,10 +66,10 @@ let run_pull_single () =
     (fun net clock sw port ->
       let conn = connect net clock sw port in
       let hydration = Conn.hydration conn in
-      (match Conn.run conn ~hydration ~query:"RETURN 1" ~parameters:[] () with
+      (match Conn.run conn ~hydration ~query:"RETURN 1" ~parameters:[] with
       | Ok metadata -> check (list string) "fields" [ "x" ] metadata.fields
       | Error error -> fail (Errors.to_string error));
-      (match Conn.pull conn ~hydration () with
+      (match Conn.pull conn ~hydration with
       | Ok (records, summary) ->
           check string "records" "[[1]]" (records_to_string records);
           check bool "has_more" false (Bolt.metadata_has_more summary);
@@ -92,21 +92,21 @@ let streaming_has_more () =
     (fun net clock sw port ->
       let conn = connect net clock sw port in
       let hydration = Conn.hydration conn in
-      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] () with
+      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
-      (match Conn.pull conn ~hydration ~n:2 () with
+      (match Conn.pull conn ~hydration ~n:2 with
       | Ok (records, summary) ->
           check string "batch1" "[[1];[2]]" (records_to_string records);
           check bool "more1" true (Bolt.metadata_has_more summary);
           check_state conn "Streaming"
       | Error error -> fail (Errors.to_string error));
-      (match Conn.pull conn ~hydration ~n:2 () with
+      (match Conn.pull conn ~hydration ~n:2 with
       | Ok (records, summary) ->
           check string "batch2" "[[3];[4]]" (records_to_string records);
           check bool "more2" true (Bolt.metadata_has_more summary)
       | Error error -> fail (Errors.to_string error));
-      (match Conn.pull conn ~hydration ~n:2 () with
+      (match Conn.pull conn ~hydration ~n:2 with
       | Ok (records, summary) ->
           check string "batch3" "[[5]]" (records_to_string records);
           check bool "more3" false (Bolt.metadata_has_more summary);
@@ -122,10 +122,10 @@ let discard_round_trip () =
     (fun net clock sw port ->
       let conn = connect net clock sw port in
       let hydration = Conn.hydration conn in
-      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] () with
+      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
-      (match Conn.discard conn () with
+      (match Conn.discard conn with
       | Ok () -> check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       Conn.close conn)
@@ -139,10 +139,10 @@ let qid_in_extra () =
   Test_mock.with_mock (session received responses) (fun net clock sw port ->
       let conn = connect net clock sw port in
       let hydration = Conn.hydration conn in
-      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] () with
+      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
-      (match Conn.pull conn ~hydration ~qid:7 () with
+      (match Conn.pull conn ~hydration ~qid:7 with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
       let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
@@ -171,10 +171,10 @@ let run_failure_reset () =
   Test_mock.with_mock (session received responses) (fun net clock sw port ->
       let conn = connect net clock sw port in
       let hydration = Conn.hydration conn in
-      (match Conn.run conn ~hydration ~query:"BAD" ~parameters:[] () with
+      (match Conn.run conn ~hydration ~query:"BAD" ~parameters:[] with
       | Ok _ -> fail "bad query should fail"
       | Error _ -> check_state conn "Failed");
-      (match Conn.discard conn () with
+      (match Conn.discard conn with
       | Ok () -> check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in

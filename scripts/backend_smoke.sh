@@ -77,6 +77,14 @@ try:
     session = read_response()
     assert session["name"] == "Session", "expected Session"
     session_id = session["data"]["id"]
+    # The transaction commands must be registered (no live Neo4j here, so the
+    # begin fails to connect rather than reporting an unknown command).
+    request("SessionBeginTransaction", {"sessionId": session_id})
+    tx = read_response()
+    assert tx["name"] != "BackendError", "expected a registered tx handler"
+    request("SessionLastBookmarks", {"sessionId": session_id})
+    bookmarks = read_response()
+    assert bookmarks["name"] == "Bookmarks", "expected Bookmarks"
     request("SessionClose", {"sessionId": session_id})
     assert read_response()["name"] == "Session", "expected Session"
     request("DriverClose", {"driverId": driver_id})

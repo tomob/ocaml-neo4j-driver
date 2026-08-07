@@ -19,6 +19,9 @@ let logon_tag = 0x6A
 let logoff_tag = 0x6B
 let reset_tag = 0x0F
 let run_tag = 0x10
+let begin_tag = 0x11
+let commit_tag = 0x12
+let rollback_tag = 0x13
 let discard_tag = 0x2F
 let pull_tag = 0x3F
 let record_tag = 0x71
@@ -81,6 +84,18 @@ let logoff transport =
 
 let run transport ~query ~parameters ~extra =
   let* () = send transport ~tag:run_tag [ Packstream.String query; parameters; extra ] in
+  respond transport
+
+let begin_ transport ~extra =
+  let* () = send transport ~tag:begin_tag [ extra ] in
+  respond transport
+
+let commit transport =
+  let* () = send transport ~tag:commit_tag [] in
+  respond transport
+
+let rollback transport =
+  let* () = send transport ~tag:rollback_tag [] in
   respond transport
 
 (* Read the RECORD messages of a result up to its summary (SUCCESS/FAILURE/IGNORED).

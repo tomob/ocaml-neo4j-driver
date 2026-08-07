@@ -200,7 +200,7 @@ let logoff t =
     let* _ = request t ~message:State.Logoff ~re_auth (fun () -> Bolt.logoff t.transport) in
     Ok ()
 
-type run_metadata = { fields : string list; qid : int option }
+type run_metadata = { fields : string list; qid : int option; bookmark : string option }
 
 let map_fields key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
 
@@ -211,6 +211,7 @@ let string_list = function
         values []
   | _ -> []
 
+let string_opt = function Some (Packstream.String v) -> Some v | _ -> None
 let int_opt = function Some (Packstream.Int v) -> Some (Int64.to_int v) | _ -> None
 
 let run_metadata_of metadata =
@@ -218,9 +219,12 @@ let run_metadata_of metadata =
     match map_fields "fields" metadata with Some value -> string_list value | None -> []
   in
   let qid = map_fields "qid" metadata |> int_opt in
-  { fields; qid }
+  let bookmark = map_fields "bookmark" metadata |> string_opt in
+  { fields; qid; bookmark }
 
-let run_extra ?mode ?db ?metadata () =
+(* The extra map shared by BEGIN and auto-commit RUN: mode, db, impersonation,
+   bookmarks, tx_metadata and tx_timeout (milliseconds). *)
+let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
   let extra =
     match mode with
     | Some Config.Read -> [ ("mode", Packstream.String "r") ]
@@ -228,13 +232,27 @@ let run_extra ?mode ?db ?metadata () =
   in
   let extra = match db with Some db -> ("db", Packstream.String db) :: extra | None -> extra in
   let extra =
+    match imp_user with Some user -> ("imp_user", Packstream.String user) :: extra | None -> extra
+  in
+  let extra =
+    match bookmarks with
+    | Some bookmarks ->
+        ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)) :: extra
+    | None -> extra
+  in
+  let extra =
+    match timeout with
+    | Some seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))) :: extra
+    | None -> extra
+  in
+  let extra =
     match metadata with
     | Some metadata -> ("tx_metadata", Packstream.Map metadata) :: extra
     | None -> extra
   in
   Packstream.Map extra
 
-let run t ~hydration ~query ~parameters ?mode ?db ?metadata () =
+let run ?mode ?db ?bookmarks ?timeout ?metadata t ~hydration ~query ~parameters =
   let parameters =
     Packstream.Map
       (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)) parameters)
@@ -246,7 +264,8 @@ let run t ~hydration ~query ~parameters ?mode ?db ?metadata () =
   in
   let* metadata_response =
     request t ~message:State.Run ~re_auth:(re_auth_of t.major t.minor) (fun () ->
-        Bolt.run t.transport ~query ~parameters ~extra:(run_extra ?mode ?db ?metadata ()))
+        Bolt.run t.transport ~query ~parameters
+          ~extra:(build_extra ?mode ?db ?bookmarks ?timeout ?metadata ()))
   in
   Ok (run_metadata_of metadata_response)
 
@@ -257,7 +276,7 @@ let pull_extra ?(n = -1) ?qid () =
   in
   Packstream.Map extra
 
-let pull t ~hydration ?n ?qid () =
+let pull ?n ?qid t ~hydration =
   let re_auth = re_auth_of t.major t.minor in
   match
     request
@@ -270,7 +289,7 @@ let pull t ~hydration ?n ?qid () =
       let records = List.map (List.map (Hydration.hydrate hydration)) records in
       Ok (records, summary)
 
-let discard t ?n ?qid () =
+let discard ?n ?qid t =
   let re_auth = re_auth_of t.major t.minor in
   let* _ =
     request
@@ -279,6 +298,28 @@ let discard t ?n ?qid () =
       (fun () -> Bolt.discard t.transport ~extra:(pull_extra ?n ?qid ()))
   in
   Ok ()
+
+let begin_ t ~extra =
+  let re_auth = re_auth_of t.major t.minor in
+  let* _ = request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra) in
+  Ok ()
+
+let commit t =
+  let re_auth = re_auth_of t.major t.minor in
+  let* metadata = request t ~message:State.Commit ~re_auth (fun () -> Bolt.commit t.transport) in
+  Ok metadata
+
+(* Roll back the current transaction. On a FAILED connection the server already
+   discarded the transaction implicitly, so a RESET suffices (a ROLLBACK would
+   be IGNORED after the RESET performed by [request]). *)
+let rollback t =
+  let re_auth = re_auth_of t.major t.minor in
+  if State.failed !(t.state) then
+    let* () = reset t in
+    Ok ()
+  else
+    let* _ = request t ~message:State.Rollback ~re_auth (fun () -> Bolt.rollback t.transport) in
+    Ok ()
 
 let server_agent t = !(t.server_agent)
 let capabilities t = capabilities_of t

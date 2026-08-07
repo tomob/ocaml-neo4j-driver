@@ -21,10 +21,10 @@ let run_and_pull ?n env query =
           | Ok conn ->
               let hydration = Conn.hydration conn in
               let result =
-                match Conn.run conn ~hydration ~query ~parameters:[] () with
+                match Conn.run conn ~hydration ~query ~parameters:[] with
                 | Error error -> Error error
                 | Ok metadata -> (
-                    match Conn.pull conn ~hydration ?n () with
+                    match Conn.pull conn ~hydration ?n with
                     | Error error -> Error error
                     | Ok (records, summary) -> Ok (metadata, records, Bolt.metadata_has_more summary)
                     )
@@ -59,17 +59,17 @@ let streaming () =
                     let outcome =
                       match
                         Conn.run conn ~hydration ~query:"UNWIND [1,2,3,4,5] AS n RETURN n"
-                          ~parameters:[] ()
+                          ~parameters:[]
                       with
                       | Error error -> Error error
                       | Ok _ -> (
-                          match Conn.pull conn ~hydration ~n:2 () with
+                          match Conn.pull conn ~hydration ~n:2 with
                           | Error error -> Error error
                           | Ok batch1 -> (
-                              match Conn.pull conn ~hydration ~n:2 () with
+                              match Conn.pull conn ~hydration ~n:2 with
                               | Error error -> Error error
                               | Ok batch2 -> (
-                                  match Conn.pull conn ~hydration ~n:2 () with
+                                  match Conn.pull conn ~hydration ~n:2 with
                                   | Error error -> Error error
                                   | Ok batch3 -> Ok (batch1, batch2, batch3))))
                     in
@@ -106,11 +106,11 @@ let discard () =
                   let hydration = Conn.hydration conn in
                   (match
                      Conn.run conn ~hydration ~query:"UNWIND range(1, 1000) AS n RETURN n"
-                       ~parameters:[] ()
+                       ~parameters:[]
                    with
                   | Ok _ -> ()
                   | Error error -> fail (Errors.to_string error));
-                  (match Conn.discard conn () with
+                  (match Conn.discard conn with
                   | Ok () -> check bool "state ready" true (State.ready (Conn.server_state conn))
                   | Error error -> fail (Errors.to_string error));
                   Conn.close conn)))

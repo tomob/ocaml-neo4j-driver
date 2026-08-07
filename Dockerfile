@@ -8,8 +8,8 @@ COPY --chown=opam:opam . .
 
 RUN sudo chown -R opam:opam /workspace \
   && opam install . --deps-only -y \
-  && opam install -y yojson \
-  && opam exec -- dune build testkitbackend/testkitbackend.exe
+  && opam install -y yojson
+RUN opam exec -- dune build testkitbackend/testkitbackend.exe
 
 EXPOSE 9876
 ENTRYPOINT ["opam", "exec", "--", "/workspace/_build/default/testkitbackend/testkitbackend.exe"]

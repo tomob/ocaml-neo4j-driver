@@ -73,37 +73,64 @@ val close : t -> unit
 val hydration : t -> Hydration.t
 (** A fresh hydration scope for the connection's protocol version. *)
 
-type run_metadata = { fields : string list; qid : int option }
-(** Metadata of a RUN response: the result's field names and, for multiple results, the query id. *)
+type run_metadata = { fields : string list; qid : int option; bookmark : string option }
+(** Metadata of a RUN response: the result's field names, the query id (for multiple results) and
+    the [bookmark] reported for an auto-commit transaction, if any. *)
 
 val run :
+  ?mode:Config.access_mode ->
+  ?db:string ->
+  ?bookmarks:string list ->
+  ?timeout:float ->
+  ?metadata:(string * Values.t) list ->
   t ->
   hydration:Hydration.t ->
   query:string ->
   parameters:(string * Values.t) list ->
-  ?mode:Config.access_mode ->
-  ?db:string ->
-  ?metadata:(string * Values.t) list ->
-  unit ->
   (run_metadata, Errors.t) result
 (** Send a RUN message for [query]. [parameters] are dehydrated with [hydration]. The optional
-    [mode], [db] and [metadata] ([tx_metadata]) go into the request's [extra] map.
+    [mode], [db], [bookmarks], [timeout] (seconds) and [metadata] ([tx_metadata]) go into the
+    request's [extra] map.
     @return
       [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
       the next request). *)
 
+val begin_ : t -> extra:Packstream.value -> (unit, Errors.t) result
+(** Send a BEGIN message (start a transaction) with the given [extra] map (see [begin_extra]). A
+    RESET is sent first if the server is in the [Failed] state. *)
+
+val build_extra :
+  ?mode:Config.access_mode ->
+  ?db:string ->
+  ?imp_user:string ->
+  ?bookmarks:string list ->
+  ?timeout:float ->
+  ?metadata:(string * Packstream.value) list ->
+  unit ->
+  Packstream.value
+(** The [extra] map for BEGIN (and auto-commit RUN): [mode] ([Read] -> "r"), [db], [imp_user],
+    [bookmarks], [timeout] (seconds, sent as [tx_timeout] milliseconds) and [metadata]
+    ([tx_metadata], already dehydrated). *)
+
+val commit : t -> (Packstream.value, Errors.t) result
+(** Send a COMMIT message (end the transaction, applying its writes). Returns the full response
+    metadata (its [bookmark] entry records the commit position). *)
+
+val rollback : t -> (unit, Errors.t) result
+(** Send a ROLLBACK message (end the transaction, discarding its writes). On a [Failed] connection
+    the server already discarded the transaction implicitly, so a RESET is sent instead. *)
+
 val pull :
-  t ->
-  hydration:Hydration.t ->
   ?n:int ->
   ?qid:int ->
-  unit ->
+  t ->
+  hydration:Hydration.t ->
   (Values.t list list * Packstream.value, Errors.t) result
 (** Send a PULL message, fetching up to [n] records (all by default) of the result [qid]. Records
     are hydrated with [hydration]. Returns the records and the full PULL summary metadata (its
     [has_more] flag, readable via [Bolt.metadata_has_more], says whether more records remain). *)
 
-val discard : t -> ?n:int -> ?qid:int -> unit -> (unit, Errors.t) result
+val discard : ?n:int -> ?qid:int -> t -> (unit, Errors.t) result
 (** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
     [qid]. *)
 

@@ -8,3 +8,4 @@ module Handshake = Handshake
 module Conn = Conn
 module Bolt = Bolt
 module State = State
+module Tx = Tx

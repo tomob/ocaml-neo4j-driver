@@ -368,7 +368,7 @@ let failure_gql_code () =
       | Error error -> fail (Errors.to_string error)
       | Ok conn ->
           let hydration = Conn.hydration conn in
-          (match Conn.run conn ~hydration ~query:"BAD" ~parameters:[] () with
+          (match Conn.run conn ~hydration ~query:"BAD" ~parameters:[] with
           | Ok _ -> fail "bad query should fail"
           | Error (Errors.Neo4j server) ->
               check string "code" "Neo.ClientError.Statement.SyntaxError" server.code

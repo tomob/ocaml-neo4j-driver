@@ -20,3 +20,6 @@ module Bolt = Bolt
 
 module State = State
 (** Bolt server-state machine. *)
+
+module Tx = Tx
+(** Explicit transactions (BEGIN/COMMIT/ROLLBACK with per-transaction state). *)

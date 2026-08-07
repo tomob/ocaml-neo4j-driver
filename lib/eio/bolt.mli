@@ -20,6 +20,15 @@ val reset_tag : int
 val run_tag : int
 (** Message tag of RUN (0x10). *)
 
+val begin_tag : int
+(** Message tag of BEGIN (0x11). *)
+
+val commit_tag : int
+(** Message tag of COMMIT (0x12). *)
+
+val rollback_tag : int
+(** Message tag of ROLLBACK (0x13). *)
+
 val discard_tag : int
 (** Message tag of DISCARD (0x2F). *)
 
@@ -74,6 +83,16 @@ val run :
   (Packstream.value, Errors.t) result
 (** Send a RUN message for [query] with the given [parameters] and [extra] map, and read the
     response. *)
+
+val begin_ : Transport.t -> extra:Packstream.value -> (Packstream.value, Errors.t) result
+(** Send a BEGIN message with the [extra] map (mode, db, bookmarks, tx_metadata, tx_timeout) and
+    read the response. *)
+
+val commit : Transport.t -> (Packstream.value, Errors.t) result
+(** Send a COMMIT message and read the response (its metadata carries the [bookmark]). *)
+
+val rollback : Transport.t -> (Packstream.value, Errors.t) result
+(** Send a ROLLBACK message and read the response. *)
 
 val pull :
   Transport.t ->

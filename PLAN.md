@@ -83,13 +83,17 @@ ocaml-neo4j-driver/            # this repo
 > transaction-gated anyway). A5 does not depend on A4 (results use the A3 RUN/PULL path; retry uses
 > `error.retryable`).
 
-- **A5a — explicit transactions**: `session.ml` `run` (auto-commit) with `database`,
-  `impersonated_user`, `access_mode`, timeouts, notification filters, bookmarks; auto-commit retry
-  (1 attempt) unless `disable_auto_commit_retries`; `tx.ml`
-  `begin_transaction/commit/rollback/close`, context-manager semantics, consumption of pending
-  results, bookmark capture from COMMIT metadata. Backend commands:
-  `SessionBeginTransaction`, `TransactionRun`, `TransactionCommit`, `TransactionRollback`,
-  `TransactionClose`.
+- **A5a — explicit transactions**. **Done** (commit "step A5a"): `lib/eio/tx.ml` with
+  `begin_transaction/commit/rollback/close` and per-transaction state (`Open`/`Failed`/`Closed` —
+  operations on a failed transaction fail fast, rollback recovers the connection with a RESET);
+  session bookmarks tracked and reported (`SessionLastBookmarks`), captured from the COMMIT
+  metadata (explicit) and the PULL summary (auto-commit); auto-commit `session.run` carries the
+  session's `access_mode`/`database`/`bookmarks`/`timeout`/`tx_metadata`. The backend gives each
+  session its own lazy connection (two sessions can hold concurrent transactions, e.g.
+  `test_tx_timeout`). Backend commands: `SessionBeginTransaction` (rejects a second transaction
+  while one is open), `TransactionRun`, `TransactionCommit`, `TransactionRollback`, `TransactionClose`,
+  `SessionLastBookmarks`. Auto-commit retry (`disable_auto_commit_retries`) is deferred: no TestKit
+  test exercises it and it needs connection rotation (A6).
 - **A5b — managed transactions + retry**: `execute_read/execute_write` + `unit_of_work` — retry
   loop within the `max_transaction_retry_time` budget, jittered backoff, decision via
   `error.retryable`, fresh connection between attempts, `TX_FUNC` telemetry once. Backend commands:

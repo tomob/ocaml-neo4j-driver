@@ -58,7 +58,15 @@ type driver = {
   conn : Conn.t option ref;
 }
 
-type session = { driver_id : int; database : string option; access_mode : string option }
+type session = {
+  driver_id : int;
+  database : string option;
+  access_mode : string option;
+  impersonated_user : string option;
+  conn : Conn.t option ref;
+  bookmarks : string list ref;
+  current_tx : Tx.t option ref;
+}
 
 type result = {
   fields : string list;
@@ -72,6 +80,7 @@ type result = {
 
 let drivers : (int, driver) Hashtbl.t = Hashtbl.create 16
 let sessions : (int, session) Hashtbl.t = Hashtbl.create 16
+let transactions : (int, int * Tx.t) Hashtbl.t = Hashtbl.create 16
 let results : (int, result) Hashtbl.t = Hashtbl.create 16
 let custom_resolutions : (int, string list) Hashtbl.t = Hashtbl.create 16
 let next_id = ref 0
@@ -94,6 +103,11 @@ let get_result id =
   match Hashtbl.find_opt results id with
   | Some result -> result
   | None -> raise (Backend_error "unknown result")
+
+let get_transaction id =
+  match Hashtbl.find_opt transactions id with
+  | Some (session_id, tx) -> (session_id, tx)
+  | None -> raise (Backend_error "unknown transaction")
 
 let auth_of fields =
   match List.assoc_opt "authorizationToken" fields with
@@ -181,6 +195,36 @@ let ensure_conn ctx (driver : driver) =
 let conn_of ctx (driver : driver) =
   match ensure_conn ctx driver with Ok conn -> conn | Error error -> raise (Driver_error error)
 
+(* The session's own lazy connection (one per session, so two sessions can hold
+   concurrent transactions). *)
+let ensure_session_conn ctx (session : session) =
+  match !(session.conn) with
+  | Some conn -> Ok conn
+  | None -> (
+      let driver = get_driver session.driver_id in
+      let custom = if driver.resolver_registered then Some (resolver ctx) else None in
+      match Conn.connect ?resolver:custom ctx.net ctx.clock ctx.sw (conn_config driver) with
+      | Error error -> Error error
+      | Ok conn ->
+          session.conn := Some conn;
+          Ok conn)
+
+let session_conn ctx session =
+  match ensure_session_conn ctx session with
+  | Ok conn -> conn
+  | Error error -> raise (Driver_error error)
+
+(* The session's access mode as the Bolt extra [mode]. *)
+let access_mode_of = function
+  | Some "r" -> Some Config.Read
+  | Some "w" -> Some Config.Write
+  | _ -> None
+
+(* Close the session's open transaction (if any) and its connection. *)
+let close_session_conns (session : session) =
+  (match !(session.current_tx) with Some tx -> ignore (Tx.close tx) | None -> ());
+  match !(session.conn) with Some conn -> Conn.close conn | None -> ()
+
 (* --- Handlers --- *)
 
 let start_test _fields = ("RunTest", `Assoc [])
@@ -212,6 +256,9 @@ let new_driver fields =
 
 let driver_close fields =
   let id = int "driverId" fields in
+  Hashtbl.iter
+    (fun _ session -> if session.driver_id = id then close_session_conns session)
+    sessions;
   (match Hashtbl.find_opt drivers id with
   | Some driver -> ( match !(driver.conn) with Some conn -> Conn.close conn | None -> ())
   | None -> ());
@@ -222,13 +269,32 @@ let new_session fields =
   let driver_id = int "driverId" fields in
   let database = opt_string "database" fields in
   let access_mode = opt_string "accessMode" fields in
+  let impersonated_user = opt_string "impersonatedUser" fields in
+  let bookmarks =
+    match List.assoc_opt "bookmarks" fields with
+    | Some (`List bookmarks) ->
+        List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) bookmarks
+    | _ -> []
+  in
   if not (Hashtbl.mem drivers driver_id) then raise (Backend_error "unknown driver");
   let id = new_id () in
-  Hashtbl.add sessions id { driver_id; database; access_mode };
+  Hashtbl.add sessions id
+    {
+      driver_id;
+      database;
+      access_mode;
+      impersonated_user;
+      conn = ref None;
+      bookmarks = ref bookmarks;
+      current_tx = ref None;
+    };
   ("Session", `Assoc [ ("id", `Int id) ])
 
 let session_close fields =
   let id = int "sessionId" fields in
+  (match Hashtbl.find_opt sessions id with
+  | Some session -> close_session_conns session
+  | None -> ());
   Hashtbl.remove sessions id;
   ("Session", `Assoc [ ("id", `Int id) ])
 
@@ -269,10 +335,15 @@ let decode_params fields =
   | Some (`Assoc params) -> List.map (fun (k, v) -> (k, Testkit_values.of_yojson v)) params
   | _ -> []
 
+let summary_string key summary =
+  match summary with
+  | Packstream.Map fields -> (
+      match List.assoc_opt key fields with Some (Packstream.String v) -> Some v | _ -> None)
+  | _ -> None
+
 let session_run ctx fields =
   let session = get_session (int "sessionId" fields) in
-  let driver = get_driver session.driver_id in
-  let conn = conn_of ctx driver in
+  let conn = session_conn ctx session in
   let cypher = string "cypher" fields in
   let parameters = decode_params fields in
   let metadata =
@@ -281,13 +352,28 @@ let session_run ctx fields =
         Some (List.map (fun (k, v) -> (k, Testkit_values.of_yojson v)) tx_meta)
     | _ -> None
   in
+  let timeout =
+    match List.assoc_opt "timeout" fields with
+    | Some (`Int ms) -> Some (float_of_int ms /. 1000.0)
+    | Some (`Intlit ms) -> Option.map (fun f -> f /. 1000.0) (float_of_string_opt ms)
+    | _ -> None
+  in
   let hydration = Conn.hydration conn in
-  match Conn.run conn ~hydration ~query:cypher ~parameters ?metadata () with
+  match
+    Conn.run conn ~hydration ~query:cypher ~parameters
+      ?mode:(access_mode_of session.access_mode)
+      ?db:session.database ?timeout ~bookmarks:!(session.bookmarks) ?metadata
+  with
   | Error error -> raise (Driver_error error)
   | Ok run_metadata -> (
-      match Conn.pull conn ~hydration () with
+      match Conn.pull conn ~hydration with
       | Error error -> raise (Driver_error error)
       | Ok (records, summary) ->
+          (* The bookmark of an auto-commit transaction is reported in the PULL
+             summary metadata. *)
+          (match summary_string "bookmark" summary with
+          | Some b -> session.bookmarks := [ b ]
+          | None -> ());
           let id = new_id () in
           Hashtbl.add results id
             {
@@ -304,6 +390,126 @@ let session_run ctx fields =
               [
                 ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields));
               ] ))
+
+(* --- Transactions --- *)
+
+let tx_config fields =
+  let metadata =
+    match List.assoc_opt "txMeta" fields with
+    | Some (`Assoc tx_meta) ->
+        Some (List.map (fun (k, v) -> (k, Testkit_values.of_yojson v)) tx_meta)
+    | _ -> None
+  in
+  let timeout =
+    match List.assoc_opt "timeout" fields with
+    | Some (`Int ms) -> Some (float_of_int ms /. 1000.0)
+    | Some (`Intlit ms) -> Option.map (fun f -> f /. 1000.0) (float_of_string_opt ms)
+    | _ -> None
+  in
+  (metadata, timeout)
+
+let session_begin_transaction ctx fields =
+  let session_id = int "sessionId" fields in
+  let session = get_session session_id in
+  let conn = session_conn ctx session in
+  (match !(session.current_tx) with
+  | Some tx when not (Tx.closed tx) -> raise (Backend_error "Explicit transaction already open")
+  | _ -> ());
+  let metadata, timeout = tx_config fields in
+  let hydration = Conn.hydration conn in
+  let metadata =
+    Option.map (List.map (fun (k, v) -> (k, Hydration.dehydrate hydration v))) metadata
+  in
+  let extra =
+    Conn.build_extra
+      ?mode:(access_mode_of session.access_mode)
+      ?db:session.database ?imp_user:session.impersonated_user ?timeout ?metadata
+      ~bookmarks:!(session.bookmarks) ()
+  in
+  match Tx.begin_transaction conn ~extra with
+  | Error error -> raise (Driver_error error)
+  | Ok tx ->
+      session.current_tx := Some tx;
+      let id = new_id () in
+      Hashtbl.add transactions id (session_id, tx);
+      ("Transaction", `Assoc [ ("id", `Int id) ])
+
+(* Update the session after the transaction ends (bookmark from a successful
+   commit, no bookmark otherwise). *)
+let end_transaction session_id bookmark =
+  match Hashtbl.find_opt sessions session_id with
+  | Some session ->
+      (match bookmark with Some b -> session.bookmarks := [ b ] | None -> ());
+      session.current_tx := None
+  | None -> ()
+
+(* A failed transaction leaves the session without a current transaction (the
+   transaction object itself stays usable for a follow-up rollback). *)
+let tx_failed session_id =
+  match Hashtbl.find_opt sessions session_id with
+  | Some session -> session.current_tx := None
+  | None -> ()
+
+let transaction_run ctx fields =
+  let session_id, tx = get_transaction (int "txId" fields) in
+  let session = get_session session_id in
+  let conn = session_conn ctx session in
+  let cypher = string "cypher" fields in
+  let parameters = decode_params fields in
+  let hydration = Conn.hydration conn in
+  match Tx.run tx ~hydration ~query:cypher ~parameters with
+  | Error error ->
+      tx_failed session_id;
+      raise (Driver_error error)
+  | Ok (run_metadata, records, summary) ->
+      let id = new_id () in
+      Hashtbl.add results id
+        {
+          fields = run_metadata.fields;
+          records;
+          cursor = ref 0;
+          summary;
+          query = cypher;
+          parameters;
+          conn;
+        };
+      ( "Result",
+        `Assoc
+          [ ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields)) ]
+      )
+
+let transaction_commit _ctx fields =
+  let id = int "txId" fields in
+  let session_id, tx = get_transaction id in
+  match Tx.commit tx with
+  | Error error ->
+      tx_failed session_id;
+      raise (Driver_error error)
+  | Ok bookmark ->
+      end_transaction session_id bookmark;
+      ("Transaction", `Assoc [ ("id", `Int id) ])
+
+let transaction_rollback _ctx fields =
+  let id = int "txId" fields in
+  let session_id, tx = get_transaction id in
+  match Tx.rollback tx with
+  | Error error -> raise (Driver_error error)
+  | Ok () ->
+      end_transaction session_id None;
+      ("Transaction", `Assoc [ ("id", `Int id) ])
+
+let transaction_close _ctx fields =
+  let id = int "txId" fields in
+  let session_id, tx = get_transaction id in
+  match Tx.close tx with
+  | Error error -> raise (Driver_error error)
+  | Ok () ->
+      end_transaction session_id None;
+      ("Transaction", `Assoc [ ("id", `Int id) ])
+
+let session_last_bookmarks fields =
+  let session = get_session (int "sessionId" fields) in
+  ("Bookmarks", `Assoc [ ("bookmarks", `List (List.map (fun b -> `String b) !(session.bookmarks))) ])
 
 let record_json record = `Assoc [ ("values", `List (List.map Testkit_values.to_yojson record)) ]
 
@@ -436,6 +642,12 @@ let handle ctx name data =
   | "ResultPeek" -> Some (result_peek fields)
   | "ResultList" -> Some (result_list fields)
   | "ResultConsume" -> Some (result_consume fields)
+  | "SessionBeginTransaction" -> Some (session_begin_transaction ctx fields)
+  | "TransactionRun" -> Some (transaction_run ctx fields)
+  | "TransactionCommit" -> Some (transaction_commit ctx fields)
+  | "TransactionRollback" -> Some (transaction_rollback ctx fields)
+  | "TransactionClose" -> Some (transaction_close ctx fields)
+  | "SessionLastBookmarks" -> Some (session_last_bookmarks fields)
   | "ResolverResolutionCompleted" -> resolver_resolution_completed fields
   | _ -> raise (Backend_error ("No request handler for " ^ name))
 
