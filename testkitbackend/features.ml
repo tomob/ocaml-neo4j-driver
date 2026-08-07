@@ -18,7 +18,6 @@ let features : string list =
     "Feature:Bolt:5.7";
     "Feature:Bolt:5.8";
     "Feature:Bolt:6.0";
-    "Feature:Bolt:6.1";
     "Feature:Bolt:HandshakeManifestV1";
     (* Implemented API surface (B0b). *)
     "Feature:API:Driver:GetServerInfo";
