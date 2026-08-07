@@ -1,5 +1,5 @@
-(* Hydration — conversion between the transport-level PackStream values and
-   the rich Neo4j values. See hydration.ml for the implementation. *)
+(** Hydration — conversion between the transport-level PackStream values and the rich Neo4j values.
+    See hydration.ml for the implementation. *)
 
 open Neodriver_packstream
 

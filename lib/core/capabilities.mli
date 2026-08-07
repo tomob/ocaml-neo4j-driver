@@ -1,6 +1,6 @@
-(* Per-version Bolt protocol capabilities.
+(** Per-version Bolt protocol capabilities.
 
-   See capabilities.ml for the implementation. *)
+    See capabilities.ml for the implementation. *)
 
 type t = {
   supports_multiple_results : bool;

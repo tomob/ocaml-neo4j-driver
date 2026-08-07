@@ -1,6 +1,6 @@
-(* Eio-based TCP transport with Bolt message framing.
+(** Eio-based TCP transport with Bolt message framing.
 
-   See transport.ml for the implementation. *)
+    See transport.ml for the implementation. *)
 
 open Neodriver_core
 

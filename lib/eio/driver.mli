@@ -1,11 +1,9 @@
-(* User-facing entry point of the Eio backend of the Neo4j driver.
+(** User-facing entry point of the Eio backend of the Neo4j driver.
 
-   [connect] parses a driver URI, builds the connection and session
-   configuration and wires the Eio resources into a ready, lazily connecting
-   [Session.t]. There is no connection pool yet: each [connect] produces a
-   single session that owns its own connection. Routing ([neo4j://] and its
-   [+s]/[+ssc] variants) is not implemented yet and is rejected by
-   [Conn.connect] on first use. *)
+    [connect] parses a driver URI, builds the connection and session configuration and wires the Eio
+    resources into a ready, lazily connecting [Session.t]. There is no connection pool yet: each
+    [connect] produces a single session that owns its own connection. Routing ([neo4j://] and its
+    [+s]/[+ssc] variants) is not implemented yet and is rejected by [Conn.connect] on first use. *)
 
 open Neodriver_core
 

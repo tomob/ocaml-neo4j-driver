@@ -1,7 +1,6 @@
-(* Public interface of the neodriver_core library.
+(** Public interface of the neodriver_core library.
 
-   Curated public surface: only the modules aliased here are part of the
-   public API. *)
+    Curated public surface: only the modules aliased here are part of the public API. *)
 
 module Errors = Errors
 (** Error taxonomy (server and driver errors). *)

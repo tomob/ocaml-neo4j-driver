@@ -1,9 +1,8 @@
-(* Deadlines for the Neo4j driver.
+(** Deadlines for the Neo4j driver.
 
-   A deadline is an absolute monotonic time with an optional original
-   timeout, providing one unified timing mechanism for connection
-   acquisition, I/O, handshake and transactions. See deadline.ml for the
-   implementation. *)
+    A deadline is an absolute monotonic time with an optional original timeout, providing one
+    unified timing mechanism for connection acquisition, I/O, handshake and transactions. See
+    deadline.ml for the implementation. *)
 
 type t
 (** An absolute deadline based on a monotonic clock. *)

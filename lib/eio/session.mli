@@ -1,17 +1,14 @@
-(* Per-session connection with auto-commit queries, explicit and managed
-   transactions.
+(** Per-session connection with auto-commit queries, explicit and managed transactions.
 
-   A [t] owns the session's lazy connection, its bookmarks and its current
-   explicit transaction. [run] sends an auto-commit query and returns a lazily
-   streamed [Neo4j_result.t] (records are pulled on demand; the bookmark from the
-   final PULL summary is recorded automatically once the result is consumed);
-   [begin_transaction] opens an explicit transaction; [execute] runs a managed
-   transaction (unit of work) with the retry loop described in the PLAN
-   (budget, jittered backoff, decision via [Errors.is_retryable]). Between
-   retry attempts the connection is recovered with a RESET rather than
-   reconnected.
+    A [t] owns the session's lazy connection, its bookmarks and its current explicit transaction.
+    [run] sends an auto-commit query and returns a lazily streamed [Neo4j_result.t] (records are
+    pulled on demand; the bookmark from the final PULL summary is recorded automatically once the
+    result is consumed); [begin_transaction] opens an explicit transaction; [execute] runs a managed
+    transaction (unit of work) with the retry loop described in the PLAN (budget, jittered backoff,
+    decision via [Errors.is_retryable]). Between retry attempts the connection is recovered with a
+    RESET rather than reconnected.
 
-   Modeled on the Python driver's AsyncSession (_async/work/session.py). *)
+    Modeled on the Python driver's AsyncSession (_async/work/session.py). *)
 
 open Neodriver_core
 

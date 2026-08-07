@@ -1,0 +1,21 @@
+{0 neodriver_core}
+
+Transport-agnostic core of the driver: shared types and logic that do not
+depend on the network backend.
+
+- {!module:Neodriver_core.Errors} — the error taxonomy and [is_retryable].
+- {!module:Neodriver_core.Config} — configuration records with validated
+  constructors.
+- {!module:Neodriver_core.Addressing} — server addresses and driver URI
+  parsing ([bolt://], [neo4j://] and their [+s] / [+ssc] variants).
+- {!module:Neodriver_core.Deadline} — deadlines for unified timing.
+- {!module:Neodriver_core.Temporal} — Date / Time / DateTime / Duration value
+  types (named zones resolved through the embedded IANA database).
+- {!module:Neodriver_core.Values} — rich value types (graph, spatial,
+  temporal, vector, unsupported, broken).
+- {!module:Neodriver_core.Hydration} — conversion between PackStream values
+  and rich values.
+- {!module:Neodriver_core.Capabilities} — per-version Bolt protocol
+  capabilities.
+
+The root {!module:Neodriver_core} aggregates all of the above.

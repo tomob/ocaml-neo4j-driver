@@ -1,6 +1,6 @@
-(* Error taxonomy for the Neo4j driver.
+(** Error taxonomy for the Neo4j driver.
 
-   See errors.ml for the implementation. *)
+    See errors.ml for the implementation. *)
 
 type classification =
   | Client

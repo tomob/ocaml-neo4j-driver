@@ -1,8 +1,8 @@
-(* Temporal value types for the Neo4j driver.
+(** Temporal value types for the Neo4j driver.
 
-   See temporal.ml for the implementation. Named time zones are resolved
-   through the IANA time zone database embedded in [Timedesc] (timedesc-tzdb,
-   1970-2040); unknown zones fall back to opaque handling ([None]). *)
+    See temporal.ml for the implementation. Named time zones are resolved through the IANA time zone
+    database embedded in [Timedesc] (timedesc-tzdb, 1970-2040); unknown zones fall back to opaque
+    handling ([None]). *)
 
 type tz =
   | Offset of int

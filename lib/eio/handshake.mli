@@ -1,6 +1,6 @@
-(* Bolt handshake: protocol version negotiation.
+(** Bolt handshake: protocol version negotiation.
 
-   See handshake.ml for the implementation. *)
+    See handshake.ml for the implementation. *)
 
 open Neodriver_core
 

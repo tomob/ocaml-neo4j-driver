@@ -1,0 +1,9 @@
+{0 neodriver_packstream}
+
+Pure OCaml implementation of {b PackStream}, the binary serialization format
+used by Neo4j's Bolt protocol. No async dependencies.
+
+- {!module:Neodriver_packstream.Packstream} — [pack] / [unpack] with depth and
+  size limits, and a safe error type.
+
+The root {!module:Neodriver_packstream} exposes [Packstream].

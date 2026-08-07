@@ -1,9 +1,9 @@
-(* A lazily-streamed query result. [next]/[peek]/[fetch] iterate the records
-   (pulling from the connection on demand); [consume] drains the stream and
-   returns its summary; [single]/[single_optional] enforce cardinality.
+(** A lazily-streamed query result. [next]/[peek]/[fetch] iterate the records (pulling from the
+    connection on demand); [consume] drains the stream and returns its summary;
+    [single]/[single_optional] enforce cardinality.
 
-   A deferred server failure is surfaced as [Error] once the buffered records
-   before it have been consumed. *)
+    A deferred server failure is surfaced as [Error] once the buffered records before it have been
+    consumed. *)
 
 open Neodriver_core
 

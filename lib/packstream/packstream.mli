@@ -1,6 +1,6 @@
-(* PackStream — binary serialization for the Neo4j Bolt protocol.
+(** PackStream — binary serialization for the Neo4j Bolt protocol.
 
-   See packstream.ml for the implementation. *)
+    See packstream.ml for the implementation. *)
 
 type value =
   | Null

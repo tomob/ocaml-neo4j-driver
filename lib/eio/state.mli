@@ -1,6 +1,6 @@
-(* Bolt server-state machine.
+(** Bolt server-state machine.
 
-   See state.ml for the implementation. *)
+    See state.ml for the implementation. *)
 
 type t =
   | Connected

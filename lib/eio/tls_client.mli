@@ -1,4 +1,4 @@
-(* TLS client wrapper for the bolt+s / bolt+ssc URI schemes. *)
+(** TLS client wrapper for the bolt+s / bolt+ssc URI schemes. *)
 
 open Neodriver_core
 

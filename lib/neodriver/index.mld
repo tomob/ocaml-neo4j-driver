@@ -1,0 +1,48 @@
+{0 neodriver}
+
+The friendly entry point of the driver: [open Neodriver] exposes the whole
+API (the [neodriver_packstream], [neodriver_core] and [neodriver_eio]
+packages) under one namespace with short names.
+{1 Quickstart}
+
+Add the driver to your dune project with [neodriver] and [neodriver_eio] (and
+[Eio_main] to run [Eio_main.run]); see [docs/quickstart.md]. A minimal program
+that connects and runs a query:
+
+{v
+open Neodriver
+
+let () =
+  Eio_main.run (fun env ->
+    let net = Eio.Stdenv.net env in
+    let clock = Eio.Stdenv.mono_clock env in
+    Eio.Switch.run (fun sw ->
+      let session =
+        match
+          Driver.connect ~uri:"bolt://localhost:7687" ~auth:(Conn.basic_auth ())
+            net clock sw
+        with
+        | Ok session -> session
+        | Error error -> failwith (Errors.to_string error)
+      in
+      match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
+      | Ok result -> (
+          match Neo4jResult.values result with
+          | Ok [ [ Values.Int n ] ] -> Printf.printf "n = %Ld\n%!" n
+          | _ -> ())
+      | Error error -> failwith (Errors.to_string error)))
+v}
+
+{1 Modules}
+
+The root {!module:Neodriver} re-exports the whole API:
+
+- connection and transport: {!module:Neodriver.Conn}, {!module:Neodriver.Transport},
+  {!module:Neodriver.Bolt}, {!module:Neodriver.State};
+- sessions and transactions: {!module:Neodriver.Session}, {!module:Neodriver.Tx};
+- results: {!module:Neodriver.Neo4jResult}, {!module:Neodriver.Summary};
+- the entry point: {!module:Neodriver.Driver};
+- core types: {!module:Neodriver.Packstream}, {!module:Neodriver.Errors},
+  {!module:Neodriver.Config}, {!module:Neodriver.Addressing},
+  {!module:Neodriver.Temporal}, {!module:Neodriver.Values},
+  {!module:Neodriver.Hydration}, {!module:Neodriver.Capabilities}.

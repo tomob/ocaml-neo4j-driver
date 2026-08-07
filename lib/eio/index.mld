@@ -1,0 +1,23 @@
+{0 neodriver_eio}
+
+The Eio backend of the driver: network transport, Bolt protocol and the
+user-facing connection, session and transaction layers, in direct style
+(OCaml 5).
+
+- {!module:Neodriver_eio.Driver} — the entry point: [Driver.connect] builds a
+  session from a URI and auth token.
+- {!module:Neodriver_eio.Conn} — a minimal Bolt connection (connect,
+  authenticate, RUN/PULL/DISCARD, transactions).
+- {!module:Neodriver_eio.Session} — a per-session connection: auto-commit
+  queries, explicit and managed transactions with retry.
+- {!module:Neodriver_eio.Tx} — explicit transactions (BEGIN / COMMIT /
+  ROLLBACK).
+- {!module:Neodriver_eio.Neo4jResult} — a lazily-streamed query result
+  (next / peek / fetch / consume / single).
+- {!module:Neodriver_eio.Summary} — the summary of a query result (counters,
+  plan, notifications).
+- {!module:Neodriver_eio.Transport}, {!module:Neodriver_eio.Bolt},
+  {!module:Neodriver_eio.State}, {!module:Neodriver_eio.Handshake} — the
+  transport and protocol layers.
+
+The root {!module:Neodriver_eio} aggregates all of the above.

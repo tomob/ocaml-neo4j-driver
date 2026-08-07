@@ -1,6 +1,6 @@
-(* Minimal Bolt connection: TCP connect (+ optional TLS) + handshake + HELLO/auth + state machine.
+(** Minimal Bolt connection: TCP connect (+ optional TLS) + handshake + HELLO/auth + state machine.
 
-   See conn.ml for the implementation. *)
+    See conn.ml for the implementation. *)
 
 open Neodriver_packstream
 open Neodriver_core

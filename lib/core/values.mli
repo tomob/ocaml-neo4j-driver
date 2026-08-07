@@ -1,6 +1,6 @@
-(* Rich value types for the Neo4j driver.
+(** Rich value types for the Neo4j driver.
 
-   See values.ml for the implementation. *)
+    See values.ml for the implementation. *)
 
 type node = {
   element_id : string;

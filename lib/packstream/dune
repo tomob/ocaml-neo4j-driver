@@ -1,3 +1,6 @@
 (library
  (name neodriver_packstream)
  (public_name neodriver_packstream))
+
+(documentation
+ (package neodriver_packstream))

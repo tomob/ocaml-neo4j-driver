@@ -1,13 +1,11 @@
-(* Explicit transaction on a single connection.
+(** Explicit transaction on a single connection.
 
-   A [t] wraps a connection with the per-transaction state: [Open] after BEGIN,
-   [Failed] after any error inside the transaction, [Closed] after
-   COMMIT/ROLLBACK. Operations on a closed transaction return a
-   [Transaction_error "Transaction closed"]; operations on a failed transaction
-   fail without touching the server (except ROLLBACK, which recovers the
-   connection with a RESET).
+    A [t] wraps a connection with the per-transaction state: [Open] after BEGIN, [Failed] after any
+    error inside the transaction, [Closed] after COMMIT/ROLLBACK. Operations on a closed transaction
+    return a [Transaction_error "Transaction closed"]; operations on a failed transaction fail
+    without touching the server (except ROLLBACK, which recovers the connection with a RESET).
 
-   Modeled on the Python driver's AsyncTransaction (_async/work/transaction.py). *)
+    Modeled on the Python driver's AsyncTransaction (_async/work/transaction.py). *)
 
 open Neodriver_packstream
 open Neodriver_core

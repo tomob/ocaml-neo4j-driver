@@ -1,10 +1,9 @@
-(* Friendly names for the whole Neo4j driver.
+(** Friendly names for the whole Neo4j driver.
 
-   Aggregates the public API of all packages under a single namespace, so
-   consumers can `open Neodriver` and use Packstream, Errors, Config,
-   Addressing, Deadline, Conn, Session, Tx, Transport, Bolt, State, Values,
-   Temporal, Hydration, Capabilities, Neo4jResult, Summary and Driver
-   directly. *)
+    Aggregates the public API of all packages under a single namespace, so consumers can `open
+    Neodriver` and use Packstream, Errors, Config, Addressing, Deadline, Conn, Session, Tx,
+    Transport, Bolt, State, Values, Temporal, Hydration, Capabilities, Neo4jResult, Summary and
+    Driver directly. *)
 
 module Packstream = Neodriver_packstream.Packstream
 (** PackStream binary serialization. *)

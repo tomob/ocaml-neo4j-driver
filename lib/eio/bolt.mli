@@ -1,8 +1,8 @@
+(** Bolt protocol messages: PackStream structures tagged by message type.
+
+    See bolt.ml for the implementation. *)
+
 open Neodriver_packstream
-(* Bolt protocol messages: PackStream structures tagged by message type.
-
-   See bolt.ml for the implementation. *)
-
 open Neodriver_core
 
 val hello_tag : int

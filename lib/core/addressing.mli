@@ -1,6 +1,6 @@
-(* Server addresses and URI parsing for the Neo4j driver.
+(** Server addresses and URI parsing for the Neo4j driver.
 
-   See addressing.ml for the implementation. *)
+    See addressing.ml for the implementation. *)
 
 type t =
   | IPv4 of string * int

@@ -1,6 +1,6 @@
-(* Configuration records for the Neo4j driver.
+(** Configuration records for the Neo4j driver.
 
-   See config.ml for the implementation. *)
+    See config.ml for the implementation. *)
 
 type access_mode = Read | Write  (** Access mode for a session: [Read] or [Write]. *)
 
