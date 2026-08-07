@@ -54,7 +54,7 @@ let run t ~hydration ~query ~parameters =
   | Ok run_metadata ->
       let stream = Conn.stream t.conn ~hydration ~run_metadata in
       t.streams <- stream :: t.streams;
-      Ok stream
+      Ok (Neo4j_result.make ~query ~parameters stream)
 
 let commit t =
   let* () = check_open t in

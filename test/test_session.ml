@@ -170,8 +170,8 @@ let run_captures_bookmark () =
     (fun net clock sw port ->
       let session = session net clock sw port in
       (match Session.run session ~query:"CREATE (n) RETURN 1" ~parameters:[] with
-      | Ok stream -> (
-          match Session.pull session stream with
+      | Ok result -> (
+          match Neo4jResult.consume result with
           | Ok _ -> ()
           | Error error -> fail (Errors.to_string error))
       | Error error -> fail (Errors.to_string error));

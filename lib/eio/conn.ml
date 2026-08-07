@@ -317,6 +317,12 @@ let discard ?n ?qid t =
    are pulled in batches on demand. [records] is kept in reverse for O(1)
    prepend; the terminal state is a [summary] (normal end) or an [error]
    (a server failure, surfaced after the buffered records are consumed). *)
+(* A lazily-streamed result on a connection: RUN is sent immediately, records
+   are pulled in batches on demand. [records] is kept in reverse for O(1)
+   prepend; the terminal state is a [summary] (normal end) or an [error]
+   (a server failure, surfaced after the buffered records are consumed).
+   [on_complete] fires with the final summary once the stream ends normally
+   (e.g. to capture an auto-commit bookmark). *)
 type stream = {
   conn : t;
   run_metadata : run_metadata;
@@ -325,11 +331,22 @@ type stream = {
   mutable summary : Packstream.value option;
   mutable error : Errors.t option;
   mutable has_more : bool;
+  on_complete : Packstream.value -> unit;
 }
 
-let stream conn ~hydration ~run_metadata =
-  { conn; run_metadata; hydration; records = []; summary = None; error = None; has_more = true }
+let stream ?(on_complete = fun _ -> ()) conn ~hydration ~run_metadata =
+  {
+    conn;
+    run_metadata;
+    hydration;
+    records = [];
+    summary = None;
+    error = None;
+    has_more = true;
+    on_complete;
+  }
 
+let connection s = s.conn
 let buffered s = List.rev s.records
 let has_more s = s.has_more
 let error s = s.error
@@ -349,7 +366,10 @@ let pull_stream ?n s =
     | Ok summary ->
         let more = Bolt.metadata_has_more summary in
         s.has_more <- more;
-        if not more then s.summary <- Some summary;
+        if not more then begin
+          s.summary <- Some summary;
+          s.on_complete summary
+        end;
         Ok records
 
 let begin_ t ~extra =

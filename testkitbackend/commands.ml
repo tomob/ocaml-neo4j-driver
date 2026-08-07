@@ -60,15 +60,7 @@ type driver = {
 }
 
 type session = { driver_id : int; session : Session.t }
-
-type result = {
-  stream : Conn.stream;
-  session : Session.t option;
-  cursor : int ref;
-  query : string;
-  parameters : (string * Values.t) list;
-  conn : Conn.t;
-}
+type result = { res : Neo4jResult.t }
 
 let drivers : (int, driver) Hashtbl.t = Hashtbl.create 16
 let sessions : (int, session) Hashtbl.t = Hashtbl.create 16
@@ -364,16 +356,15 @@ let session_run _ctx fields =
   let metadata, timeout = tx_config fields in
   match Session.run session.session ~query:cypher ~parameters ?timeout ?metadata with
   | Error error -> raise (Driver_error error)
-  | Ok stream ->
-      let conn = session_conn session in
-      let run_metadata = Conn.run_metadata stream in
+  | Ok result ->
       let id = new_id () in
-      Hashtbl.add results id
-        { stream; session = Some session.session; cursor = ref 0; query = cypher; parameters; conn };
+      Hashtbl.add results id { res = result };
       ( "Result",
         `Assoc
-          [ ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields)) ]
-      )
+          [
+            ("id", `Int id);
+            ("keys", `List (List.map (fun f -> `String f) (Neo4jResult.keys result)));
+          ] )
 
 (* --- Transactions --- *)
 
@@ -410,15 +401,14 @@ let transaction_run _ctx fields =
   | Error error ->
       tx_failed session_id;
       raise (Driver_error error)
-  | Ok stream ->
+  | Ok result ->
       let id = new_id () in
-      Hashtbl.add results id
-        { stream; session = None; cursor = ref 0; query = cypher; parameters; conn };
+      Hashtbl.add results id { res = result };
       ( "Result",
         `Assoc
           [
             ("id", `Int id);
-            ("keys", `List (List.map (fun f -> `String f) (Conn.run_metadata stream).fields));
+            ("keys", `List (List.map (fun f -> `String f) (Neo4jResult.keys result)));
           ] )
 
 let transaction_commit _ctx fields =
@@ -459,303 +449,164 @@ let record_json record = `Assoc [ ("values", `List (List.map Testkit_values.to_y
 
 (* --- Result streaming --- *)
 
-let result_records r = Conn.buffered r.stream
-let result_summary r = Conn.summary r.stream
-let result_has_more r = Conn.has_more r.stream
-let result_error r = Conn.error r.stream
-
-(* Pull the next batch (via the session to update bookmarks for auto-commit
-   results). *)
-let result_pull ?n r =
-  match r.session with
-  | Some session -> Session.pull ?n session r.stream
-  | None -> Conn.pull_stream ?n r.stream
-
-(* Pull the next batch of a lazy stream when its buffer is exhausted. *)
-let rec ensure_record r =
-  if !(r.cursor) < List.length (result_records r) then ()
-  else if result_has_more r then
-    match result_pull ~n:1 r with
-    | Error error -> raise (Driver_error error)
-    | Ok _ -> ensure_record r
-  else ()
-
-(* Drain a lazy stream to its end (raising on a server failure). *)
-let rec drain r =
-  if result_has_more r then
-    match result_pull r with Error error -> raise (Driver_error error) | Ok _ -> drain r
-  else ()
-
 let result_next fields =
   let r = get_result (int "resultId" fields) in
-  ensure_record r;
-  if !(r.cursor) < List.length (result_records r) then begin
-    let record = List.nth (result_records r) !(r.cursor) in
-    r.cursor := !(r.cursor) + 1;
-    ("Record", record_json record)
-  end
-  else
-    match result_error r with
-    | Some error -> raise (Driver_error error)
-    | None -> ("NullRecord", `Assoc [])
+  match Neo4jResult.next r.res with
+  | Error error -> raise (Driver_error error)
+  | Ok None -> ("NullRecord", `Assoc [])
+  | Ok (Some record) -> ("Record", record_json record)
 
 let result_peek fields =
   let r = get_result (int "resultId" fields) in
-  ensure_record r;
-  if !(r.cursor) < List.length (result_records r) then
-    ("Record", record_json (List.nth (result_records r) !(r.cursor)))
-  else
-    match result_error r with
-    | Some error -> raise (Driver_error error)
-    | None -> ("NullRecord", `Assoc [])
+  match Neo4jResult.peek r.res with
+  | Error error -> raise (Driver_error error)
+  | Ok None -> ("NullRecord", `Assoc [])
+  | Ok (Some record) -> ("Record", record_json record)
 
 let result_list fields =
   let r = get_result (int "resultId" fields) in
-  drain r;
-  (match result_error r with Some error -> raise (Driver_error error) | None -> ());
-  let remaining =
-    List.filteri (fun i _ -> i >= !(r.cursor)) (result_records r) |> List.map record_json
-  in
-  r.cursor := List.length (result_records r);
-  ("RecordList", `Assoc [ ("records", `List remaining) ])
+  match Neo4jResult.values r.res with
+  | Error error -> raise (Driver_error error)
+  | Ok records -> ("RecordList", `Assoc [ ("records", `List (List.map record_json records)) ])
 
 (* --- Summary --- *)
 
-let stat key stats =
-  match List.assoc_opt key stats with Some (Packstream.Int n) -> Int64.to_int n | _ -> 0
+(* Render a hydrated [Values.t] as JSON for the summary's plan/profile/notification
+   subtrees. *)
+let rec values_to_plain = function
+  | Values.Null -> `Null
+  | Values.Bool b -> `Bool b
+  | Values.Int n -> `Intlit (Int64.to_string n)
+  | Values.Float f -> `Float f
+  | Values.String s -> `String s
+  | Values.Bytes _ -> `String "<bytes>"
+  | Values.List l -> `List (List.map values_to_plain l)
+  | Values.Map m -> `Assoc (List.map (fun (k, v) -> (k, values_to_plain v)) m)
+  | _ -> `Null
 
-let stat_bool key stats =
-  match List.assoc_opt key stats with Some (Packstream.Bool b) -> b | _ -> false
-
-let counters_of metadata =
-  let stats =
-    match metadata with
-    | Packstream.Map fields -> (
-        match List.assoc_opt "stats" fields with Some (Packstream.Map s) -> s | _ -> [])
-    | _ -> []
-  in
-  let n key = stat key stats in
+let counters_json c =
   `Assoc
     [
-      ("constraintsAdded", `Int (n "constraints-added"));
-      ("constraintsRemoved", `Int (n "constraints-removed"));
-      ("containsSystemUpdates", `Bool (stat_bool "contains-system-updates" stats));
-      ("containsUpdates", `Bool (stat_bool "contains-updates" stats));
-      ("indexesAdded", `Int (n "indexes-added"));
-      ("indexesRemoved", `Int (n "indexes-removed"));
-      ("labelsAdded", `Int (n "labels-added"));
-      ("labelsRemoved", `Int (n "labels-removed"));
-      ("nodesCreated", `Int (n "nodes-created"));
-      ("nodesDeleted", `Int (n "nodes-deleted"));
-      ("propertiesSet", `Int (n "properties-set"));
-      ("relationshipsCreated", `Int (n "relationships-created"));
-      ("relationshipsDeleted", `Int (n "relationships-deleted"));
-      ("systemUpdates", `Int (n "system-updates"));
+      ("constraintsAdded", `Int c.Summary.constraints_added);
+      ("constraintsRemoved", `Int c.Summary.constraints_removed);
+      ("containsSystemUpdates", `Bool c.Summary.contains_system_updates);
+      ("containsUpdates", `Bool c.Summary.contains_updates);
+      ("indexesAdded", `Int c.Summary.indexes_added);
+      ("indexesRemoved", `Int c.Summary.indexes_removed);
+      ("labelsAdded", `Int c.Summary.labels_added);
+      ("labelsRemoved", `Int c.Summary.labels_removed);
+      ("nodesCreated", `Int c.Summary.nodes_created);
+      ("nodesDeleted", `Int c.Summary.nodes_deleted);
+      ("propertiesSet", `Int c.Summary.properties_set);
+      ("relationshipsCreated", `Int c.Summary.relationships_created);
+      ("relationshipsDeleted", `Int c.Summary.relationships_deleted);
+      ("systemUpdates", `Int c.Summary.system_updates);
     ]
-
-let metadata_string key metadata =
-  match metadata with
-  | Packstream.Map fields -> (
-      match List.assoc_opt key fields with Some (Packstream.String s) -> Some s | _ -> None)
-  | _ -> None
-
-let metadata_int key metadata =
-  match metadata with
-  | Packstream.Map fields -> (
-      match List.assoc_opt key fields with
-      | Some (Packstream.Int n) -> Some (Int64.to_int n)
-      | _ -> None)
-  | _ -> None
-
-let metadata_value key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
-
-(* Render a PackStream value as JSON for the summary's plan/profile/notification
-   subtrees. *)
-let rec packstream_to_yojson = function
-  | Packstream.Null -> `Null
-  | Packstream.Bool b -> `Bool b
-  | Packstream.Int n -> `Intlit (Int64.to_string n)
-  | Packstream.Float f -> `Float f
-  | Packstream.String s -> `String s
-  | Packstream.Bytes _ -> `String "<bytes>"
-  | Packstream.List l -> `List (List.map packstream_to_yojson l)
-  | Packstream.Map m -> `Assoc (List.map (fun (k, v) -> (k, packstream_to_yojson v)) m)
-  | Packstream.Structure _ -> `Null
-
-(* Map a Bolt 6 GQL status (with a [neo4j_code]) to a legacy notification dict,
-   mirroring the Python driver's _notification_from_status. *)
-let notification_from_status = function
-  | Packstream.Map fields -> (
-      match List.assoc_opt "neo4j_code" fields with
-      | None -> None
-      | Some _ ->
-          let diag =
-            match List.assoc_opt "diagnostic_record" fields with
-            | Some (Packstream.Map d) -> d
-            | _ -> []
-          in
-          let value key src = Option.map packstream_to_yojson (List.assoc_opt key src) in
-          let items =
-            List.filter_map Fun.id
-              [
-                Option.map (fun v -> ("title", v)) (value "title" fields);
-                Option.map (fun v -> ("code", v)) (value "neo4j_code" fields);
-                Option.map (fun v -> ("description", v)) (value "description" fields);
-                Option.map (fun v -> ("severity", v)) (value "_severity" diag);
-                Option.map (fun v -> ("category", v)) (value "_classification" diag);
-                Option.map (fun v -> ("position", v)) (value "_position" diag);
-              ]
-          in
-          Some (`Assoc items))
-  | _ -> None
-
-(* The legacy notifications of a summary: the server sends them directly (Bolt 5)
-   or as GQL statuses (Bolt 6), which are mapped here. *)
-let notifications_of metadata =
-  match metadata_value "notifications" metadata with
-  | Some (Packstream.List items) -> Some (`List (List.map packstream_to_yojson items))
-  | _ -> (
-      match metadata_value "statuses" metadata with
-      | Some (Packstream.List statuses) -> (
-          match List.filter_map notification_from_status statuses with
-          | [] -> None
-          | notifications -> Some (`List notifications))
-      | _ -> None)
 
 (* The GQL status objects of a summary, serialized for the TestKit Summary
    response (every field is required by the harness's GqlStatusObject). *)
-let gql_status_objects_of metadata =
-  let diagnostic_of = function
-    | Packstream.Map fields -> (
-        match List.assoc_opt "diagnostic_record" fields with
-        | Some (Packstream.Map d) -> d
-        | _ -> [])
-    | _ -> []
-  in
-  let string key fields = Option.value ~default:"" (metadata_string key (Packstream.Map fields)) in
-  let status = function
-    | Packstream.Map fields ->
-        let diagnostic = diagnostic_of (Packstream.Map fields) in
-        let position =
-          match List.assoc_opt "_position" diagnostic with
-          | Some (Packstream.Map pos) -> (
-              match
-                (List.assoc_opt "column" pos, List.assoc_opt "line" pos, List.assoc_opt "offset" pos)
-              with
-              | ( Some (Packstream.Int column),
-                  Some (Packstream.Int line),
-                  Some (Packstream.Int offset) ) ->
-                  `Assoc
-                    [
-                      ("column", `Int (Int64.to_int column));
-                      ("line", `Int (Int64.to_int line));
-                      ("offset", `Int (Int64.to_int offset));
-                    ]
-              | _ -> `Null)
-          | _ -> `Null
-        in
-        let is_notification = List.assoc_opt "neo4j_code" fields <> None in
-        `Assoc
-          [
-            ("isNotification", `Bool is_notification);
-            ("gqlStatus", `String (string "gql_status" fields));
-            ("statusDescription", `String (string "status_description" fields));
-            ("rawClassification", `Null);
-            ("classification", `String (string "_classification" diagnostic));
-            ("rawSeverity", `Null);
-            ("severity", `String (string "_severity" diagnostic));
-            ( "diagnosticRecord",
-              match List.assoc_opt "diagnostic_record" fields with
-              | Some value -> packstream_to_yojson value
-              | None -> `Assoc [] );
-            ("position", position);
-          ]
-    | _ -> `Null
-  in
-  match metadata_value "statuses" metadata with
-  | Some (Packstream.List statuses) -> `List (List.map status statuses)
-  | _ -> `List []
+let gql_status_json = function
+  | Values.Map fields ->
+      let string key fields =
+        match List.assoc_opt key fields with Some (Values.String s) -> s | _ -> ""
+      in
+      let diagnostic =
+        match List.assoc_opt "diagnostic_record" fields with Some (Values.Map d) -> d | _ -> []
+      in
+      let position =
+        match List.assoc_opt "_position" diagnostic with
+        | Some (Values.Map pos) -> (
+            match
+              (List.assoc_opt "column" pos, List.assoc_opt "line" pos, List.assoc_opt "offset" pos)
+            with
+            | Some (Values.Int column), Some (Values.Int line), Some (Values.Int offset) ->
+                `Assoc
+                  [
+                    ("column", `Int (Int64.to_int column));
+                    ("line", `Int (Int64.to_int line));
+                    ("offset", `Int (Int64.to_int offset));
+                  ]
+            | _ -> `Null)
+        | _ -> `Null
+      in
+      let is_notification = List.assoc_opt "neo4j_code" fields <> None in
+      `Assoc
+        [
+          ("isNotification", `Bool is_notification);
+          ("gqlStatus", `String (string "gql_status" fields));
+          ("statusDescription", `String (string "status_description" fields));
+          ("rawClassification", `Null);
+          ("classification", `String (string "_classification" diagnostic));
+          ("rawSeverity", `Null);
+          ("severity", `String (string "_severity" diagnostic));
+          ( "diagnosticRecord",
+            match List.assoc_opt "diagnostic_record" fields with
+            | Some value -> values_to_plain value
+            | None -> `Assoc [] );
+          ("position", position);
+        ]
+  | _ -> `Null
 
-let summary_of r =
-  let metadata = match result_summary r with Some s -> s | None -> Packstream.Map [] in
-  let major, minor = Conn.version r.conn in
-  let agent = Option.value ~default:"" (Conn.server_agent r.conn) in
-  let query_type =
-    match metadata_string "type" metadata with Some t -> `String t | None -> `String "r"
-  in
-  let database = match metadata_string "db" metadata with Some d -> `String d | None -> `Null in
-  let available =
-    match (Conn.run_metadata r.stream).t_first with Some n -> `Int n | None -> `Null
-  in
-  let consumed = match metadata_int "t_last" metadata with Some n -> `Int n | None -> `Null in
-  let plan =
-    match metadata_value "plan" metadata with
-    | Some value -> packstream_to_yojson value
-    | None -> `Null
-  in
-  let profile =
-    match metadata_value "profile" metadata with
-    | Some value -> packstream_to_yojson value
-    | None -> `Null
-  in
-  let notifications = match notifications_of metadata with Some value -> value | None -> `Null in
+let summary_json s =
+  let major, minor = s.Summary.server_info.protocol_version in
+  let agent = Option.value ~default:"" s.Summary.server_info.agent in
+  let int_or_null = function Some n -> `Int n | None -> `Null in
+  let value_or_null = function Some v -> values_to_plain v | None -> `Null in
   `Assoc
     [
       ( "serverInfo",
         `Assoc
           [
-            ("address", `String (Addressing.to_string (Conn.address r.conn)));
+            ("address", `String (Addressing.to_string s.Summary.server_info.address));
             ("agent", `String agent);
             ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
           ] );
-      ("counters", counters_of metadata);
-      ("database", database);
-      ("notifications", notifications);
-      ("gqlStatusObjects", gql_status_objects_of metadata);
-      ("plan", plan);
-      ("profile", profile);
+      ("counters", counters_json s.Summary.counters);
+      ("database", match s.Summary.database with Some d -> `String d | None -> `Null);
+      ( "notifications",
+        match s.Summary.notifications with
+        | [] -> `Null
+        | items -> `List (List.map values_to_plain items) );
+      ("gqlStatusObjects", `List (List.map gql_status_json s.Summary.gql_status_objects));
+      ("plan", value_or_null s.Summary.plan);
+      ("profile", value_or_null s.Summary.profile);
       ( "query",
         `Assoc
           [
-            ("text", `String r.query);
+            ("text", `String s.Summary.query);
             ( "parameters",
-              `Assoc (List.map (fun (k, v) -> (k, Testkit_values.to_yojson v)) r.parameters) );
+              `Assoc (List.map (fun (k, v) -> (k, Testkit_values.to_yojson v)) s.Summary.parameters)
+            );
           ] );
-      ("queryType", query_type);
-      ("resultAvailableAfter", available);
-      ("resultConsumedAfter", consumed);
+      ("queryType", `String s.Summary.query_type);
+      ("resultAvailableAfter", int_or_null s.Summary.result_available_after);
+      ("resultConsumedAfter", int_or_null s.Summary.result_consumed_after);
     ]
 
 let result_consume fields =
   let id = int "resultId" fields in
   let r = get_result id in
-  drain r;
-  (match result_error r with Some error -> raise (Driver_error error) | None -> ());
-  let summary = summary_of r in
-  Hashtbl.remove results id;
-  ("Summary", summary)
-
-(* Drain the result and return its records (raising on a stream error). *)
-let drained_records r =
-  drain r;
-  (match result_error r with Some error -> raise (Driver_error error) | None -> ());
-  result_records r
+  match Neo4jResult.consume r.res with
+  | Error error -> raise (Driver_error error)
+  | Ok summary ->
+      Hashtbl.remove results id;
+      ("Summary", summary_json summary)
 
 (* Expect exactly one record in the result stream. *)
 let result_single fields =
   let r = get_result (int "resultId" fields) in
-  match drained_records r with
-  | [ record ] -> ("Record", record_json record)
-  | _ -> raise (Driver_error (Errors.Result_not_single_error "expected exactly one record"))
+  match Neo4jResult.single r.res with
+  | Error error -> raise (Driver_error error)
+  | Ok record -> ("Record", record_json record)
 
 (* Expect at most one record in the result stream. *)
 let result_single_optional fields =
   let r = get_result (int "resultId" fields) in
   let record =
-    match drained_records r with
-    | [ record ] -> record_json record
-    | [] -> `Null
-    | _ -> raise (Driver_error (Errors.Result_not_single_error "expected at most one record"))
+    match Neo4jResult.single_optional r.res with
+    | Error error -> raise (Driver_error error)
+    | Ok None -> `Null
+    | Ok (Some record) -> record_json record
   in
   ("RecordOptional", `Assoc [ ("record", record); ("warnings", `List []) ])
 

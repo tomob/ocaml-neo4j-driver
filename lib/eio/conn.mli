@@ -148,8 +148,17 @@ type stream
     on demand. The terminal state is a [summary] (normal end) or an [error] (a server failure,
     surfaced after the buffered records are consumed). *)
 
-val stream : t -> hydration:Hydration.t -> run_metadata:run_metadata -> stream
-(** A fresh [stream] for the given connection, hydration scope and RUN metadata. *)
+val stream :
+  ?on_complete:(Packstream.value -> unit) ->
+  t ->
+  hydration:Hydration.t ->
+  run_metadata:run_metadata ->
+  stream
+(** A fresh [stream] for the given connection, hydration scope and RUN metadata. [on_complete] fires
+    with the final summary once the stream ends normally. *)
+
+val connection : stream -> t
+(** The connection the stream is running on. *)
 
 val buffered : stream -> Values.t list list
 (** The records buffered so far, in order. *)

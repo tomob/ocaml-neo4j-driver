@@ -74,31 +74,29 @@ let mark_bookmark t = function
       | _ -> ())
   | _ -> ()
 
-let pull ?n t stream =
-  let* records = Conn.pull_stream ?n stream in
-  (* The bookmark of an auto-commit transaction is reported in the final PULL summary. *)
-  (match Conn.summary stream with Some summary -> mark_bookmark t summary | None -> ());
-  Ok records
-
 (* Drain an auto-commit result to its end (a server failure is left on the
-   result; the connection is recovered by the next request's RESET). *)
-let rec drain t stream =
-  if Conn.has_more stream then match pull t stream with Ok _ -> drain t stream | Error _ -> ()
+   result; the connection is recovered by the next request's RESET). The
+   auto-commit bookmark is captured by the stream's on_complete hook. *)
+let rec drain stream =
+  if Conn.has_more stream then
+    match Conn.pull_stream stream with Ok _ -> drain stream | Error _ -> ()
 
 let run ?timeout ?metadata t ~query ~parameters =
   let* conn = conn t in
   (* A new auto-commit query cannot start while the previous result is still
      streaming on the connection: drain it first (like the Python driver's
      consume of the auto result). *)
-  (match !(t.auto_result) with Some previous -> drain t previous | None -> ());
+  (match !(t.auto_result) with Some previous -> drain previous | None -> ());
   let hydration = Conn.hydration conn in
   let* run_metadata =
     Conn.run conn ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks) ?db:t.config.database
       ?timeout ?metadata
   in
-  let stream = Conn.stream conn ~hydration ~run_metadata in
+  let stream =
+    Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary -> mark_bookmark t summary)
+  in
   t.auto_result := Some stream;
-  Ok stream
+  Ok (Neo4j_result.make ~query ~parameters stream)
 
 let begin_transaction_mode ?metadata ?timeout t ~mode =
   match !(t.current_tx) with

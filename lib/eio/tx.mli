@@ -26,10 +26,10 @@ val run :
   hydration:Hydration.t ->
   query:string ->
   parameters:(string * Values.t) list ->
-  (Conn.stream, Errors.t) result
-(** Send RUN for [query] inside the transaction; the result is streamed lazily via
-    [Conn.pull_stream]. On any error the transaction becomes [Failed] and an [Error _] is returned.
-    The transaction's still-open results are drained before [commit]/[rollback]. *)
+  (Neo4j_result.t, Errors.t) result
+(** Send RUN for [query] inside the transaction; the result is streamed lazily via [Result]. On any
+    error the transaction becomes [Failed] and an [Error _] is returned. The transaction's
+    still-open results are drained before [commit]/[rollback]. *)
 
 val commit : t -> (string option, Errors.t) result
 (** Send COMMIT, applying the transaction's writes, and return the [bookmark] from the response. *)

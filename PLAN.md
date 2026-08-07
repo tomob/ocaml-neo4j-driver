@@ -112,8 +112,8 @@ ocaml-neo4j-driver/            # this repo
 
 ### Phase A4 — Result + summary + notifications
 
-- **`result.ml`**: lazy streaming (in Eio: direct iteration), `consume/single/fetch/peek/value(s)/data`, states `_attached/_streaming/_exhausted`, semantics after transaction close. Backend: `ResultSingle`/`ResultSingleOptional`.
-- **`summary.ml`**: `SummaryCounters`, `plan/profile`, `query_type`, `result_available_after/consumed_after` (`t_first/t_last`), **`gql_status_objects`** polyfilled from legacy notifications, `ServerInfo` (address/agent/protocol_version).
+- **`neo4j_result.ml`**: lazy streaming (in Eio: direct iteration), `consume/single/fetch/peek/value(s)/data`, states `_attached/_streaming/_exhausted`, semantics after transaction close. Backend: `ResultSingle`/`ResultSingleOptional`. **Done** (commit "step A4-5"): `lib/eio/neo4j_result.ml` wraps a `Conn.stream` + cursor over `next/peek/fetch/values/data/consume/single/single_optional` (deferred server failure surfaced as `Error`); `Session.run`/`Tx.run` now return a `Neo4jResult.t` and the auto-commit bookmark is captured by the stream's `on_complete` hook (so `Session.pull` is gone); the backend holds a `Neo4jResult.t` and delegates every Result handler to it.
+- **`summary.ml`**: `SummaryCounters`, `plan/profile`, `query_type`, `result_available_after/consumed_after` (`t_first/t_last`), **`gql_status_objects`** polyfilled from legacy notifications, `ServerInfo` (address/agent/protocol_version). **Done** (commit "step A4-5"): `lib/eio/summary.ml` builds the summary from a completed stream and **hydrates** plan/profile/notifications/gql statuses into `Values.t` (hiding PackStream); the backend's TestKit `Summary` JSON is now serialized from `Summary.t` (`values_to_plain`/`gql_status_json`/`counters_json`). TestKit: 111 -> 113 OK.
 
 ### Phase A6 — Pool
 

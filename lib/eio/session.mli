@@ -3,12 +3,13 @@
 
    A [t] owns the session's lazy connection, its bookmarks and its current
    explicit transaction. [run] sends an auto-commit query and returns a lazily
-   streamed result (records are pulled via [pull], which records the bookmark
-   from the final PULL summary); [begin_transaction] opens an explicit
-   transaction; [execute] runs a managed transaction (unit of work) with the
-   retry loop described in the PLAN (budget, jittered backoff, decision via
-   [Errors.is_retryable]). Between retry attempts the connection is recovered
-   with a RESET rather than reconnected.
+   streamed [Neo4j_result.t] (records are pulled on demand; the bookmark from the
+   final PULL summary is recorded automatically once the result is consumed);
+   [begin_transaction] opens an explicit transaction; [execute] runs a managed
+   transaction (unit of work) with the retry loop described in the PLAN
+   (budget, jittered backoff, decision via [Errors.is_retryable]). Between
+   retry attempts the connection is recovered with a RESET rather than
+   reconnected.
 
    Modeled on the Python driver's AsyncSession (_async/work/session.py). *)
 
@@ -59,16 +60,11 @@ val run :
   t ->
   query:string ->
   parameters:(string * Values.t) list ->
-  (Conn.stream, Errors.t) result
-(** Run an auto-commit query: send RUN only (the result streams via [pull]). The session's
-    bookmarks, database and access mode go into the RUN extra. Any previously pending auto-commit
-    result is drained first. *)
-
-val pull : ?n:int -> t -> Conn.stream -> (Values.t list list, Errors.t) result
-(** Pull up to [n] more records (all by default) of the auto-commit [stream], buffering them, and
-    return the newly fetched records. Once the stream ends normally, the session's bookmarks are
-    updated from its final summary.
-    @return [Error _] for transport failures (the stream is left usable for a later pull). *)
+  (Neo4j_result.t, Errors.t) result
+(** Run an auto-commit query: send RUN only (the result streams on demand via [Result]). The
+    session's bookmarks, database and access mode go into the RUN extra. Any previously pending
+    auto-commit result is drained first. Once the result ends normally, the session's bookmarks are
+    updated from its final summary. *)
 
 val begin_transaction :
   ?metadata:(string * Values.t) list -> ?timeout:float -> t -> (Tx.t, Errors.t) result

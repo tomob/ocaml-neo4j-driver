@@ -26,3 +26,9 @@ module Tx = Tx
 
 module Session = Session
 (** Per-session connection: auto-commit queries, explicit and managed transactions. *)
+
+module Neo4jResult = Neo4j_result
+(** A lazily-streamed query result (next/peek/fetch/consume/single). *)
+
+module Summary = Summary
+(** The summary of a query result (counters, plan, notifications, ...). *)
