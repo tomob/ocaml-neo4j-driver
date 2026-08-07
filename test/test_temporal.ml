@@ -155,6 +155,30 @@ let duration_span () =
       check int "span ns" 500000000 back.nanoseconds
   | None -> fail "to_span"
 
+(* Pre-1970 named-zone instants resolve through the embedded LMT table: the
+   embedded tzdb only covers 1970-2040 and would report the 1970-era offset
+   (e.g. 0 for Abidjan) for the year-0001 wall 00:00:00, breaking the round
+   trip against the server's historical LMT. *)
+let named_zone_lmt () =
+  let lmt name expected =
+    match DT.of_ymd_hms ~tz:(Zone_name name) (1, 1, 2) (0, 0, 0) 0 with
+    | Some dt ->
+        let (y, mo, d), (h, mi, s), ns = DT.to_ymd_hms dt in
+        check (option int) (name ^ " LMT offset") (Some expected) (DT.offset_seconds dt);
+        check (Alcotest.triple int int int) (name ^ " LMT day") (1, 1, 2) (y, mo, d);
+        check (Alcotest.triple int int int) (name ^ " LMT time") (0, 0, 0) (h, mi, s);
+        check int (name ^ " LMT ns") 0 ns
+    | None -> fail (name ^ " of_ymd_hms")
+  in
+  lmt "Africa/Abidjan" (-960);
+  lmt "Europe/Warsaw" 5040;
+  lmt "Africa/Monrovia" (-2580);
+  lmt "US/Pacific-New" (-28380);
+  (* Modern named-zone instants still use the embedded database. *)
+  match DT.of_ymd_hms ~tz:(Zone_name "Africa/Abidjan") (2024, 1, 1) (12, 0, 0) 0 with
+  | Some dt -> check (option int) "Abidjan modern offset" (Some 0) (DT.offset_seconds dt)
+  | None -> fail "Abidjan modern"
+
 let tests =
   [
     ("[Temporal] Date round_trip", [ test_case "round trip" `Quick date_round_trip ]);
@@ -163,6 +187,7 @@ let tests =
     ("[Temporal] Time arithmetic", [ test_case "arithmetic" `Quick time_arithmetic ]);
     ("[Temporal] DateTime round_trip", [ test_case "round trip" `Quick datetime_round_trip ]);
     ("[Temporal] DateTime ptime", [ test_case "ptime" `Quick datetime_ptime ]);
+    ("[Temporal] DateTime named zone LMT", [ test_case "LMT" `Quick named_zone_lmt ]);
     ("[Temporal] Duration round_trip", [ test_case "round trip" `Quick duration_round_trip ]);
     ("[Temporal] Duration arithmetic", [ test_case "arithmetic" `Quick duration_arithmetic ]);
     ("[Temporal] Duration span", [ test_case "span" `Quick duration_span ]);

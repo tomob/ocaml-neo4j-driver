@@ -432,6 +432,10 @@ module DateTime = struct
     | "SystemV/YST9" -> "Etc/GMT-9"
     | z -> z
 
+  (* The LMT offset of a named zone (after alias resolution), for instants
+     before the embedded database starts (1970). *)
+  let lmt_offset name = Tz_lmt.find (canonical_zone name)
+
   (* A Timedesc datetime for a named zone at this instant. *)
   let timedesc_of_epoch name t =
     match Timedesc.Time_zone.make (canonical_zone name) with
@@ -440,14 +444,18 @@ module DateTime = struct
         Timedesc.of_timestamp ~tz_of_date_time:zone
           (Timedesc.Span.make ~s:t.epoch_seconds ~ns:t.nanoseconds ())
 
-  (* The UTC offset (seconds) of a named zone at this instant. *)
+  (* The UTC offset (seconds) of a named zone at this instant. Before the
+     embedded database starts (1970) only the zone's LMT was in effect, so we
+     use it instead of the 1970-era offset timedesc would report. *)
   let zone_offset name t =
-    match timedesc_of_epoch name t with
-    | None -> None
-    | Some dt -> (
-        match Timedesc.offset_from_utc dt with
-        | `Single span | `Ambiguous (span, _) ->
-            Some (Int64.to_int (fst (Timedesc.Span.to_s_ns span))))
+    if t.epoch_seconds < 0L then lmt_offset name
+    else
+      match timedesc_of_epoch name t with
+      | None -> None
+      | Some dt -> (
+          match Timedesc.offset_from_utc dt with
+          | `Single span | `Ambiguous (span, _) ->
+              Some (Int64.to_int (fst (Timedesc.Span.to_s_ns span))))
 
   let offset_seconds t =
     match t.tz with
@@ -457,6 +465,18 @@ module DateTime = struct
 
   let to_ymd_hms t =
     match t.tz with
+    | Some (Zone_name name) when t.epoch_seconds < 0L -> (
+        match lmt_offset name with
+        | Some offset ->
+            let days, rem =
+              floor_div_rem (Int64.add t.epoch_seconds (Int64.of_int offset)) seconds_per_day
+            in
+            let days = Int64.to_int days in
+            let h = Int64.to_int (Int64.div rem 3_600L) in
+            let m = Int64.to_int (Int64.div (Int64.rem rem 3_600L) 60L) in
+            let s = Int64.to_int (Int64.rem rem 60L) in
+            (civil_from_days days, (h, m, s), t.nanoseconds)
+        | None -> ((1970, 1, 1), (0, 0, 0), 0))
     | Some (Zone_name name) -> (
         match timedesc_of_epoch name t with
         | Some dt ->
@@ -474,7 +494,7 @@ module DateTime = struct
 
   (* A named-zone datetime from a wall clock, resolved through the embedded
      IANA database. *)
-  let of_zone name (y, mo, d) (h, m, s) ns =
+  let of_zone_timedesc name (y, mo, d) (h, m, s) ns =
     let* zone = Timedesc.Time_zone.make (canonical_zone name) in
     let* dt =
       Result.to_option
@@ -487,6 +507,26 @@ module DateTime = struct
         nanoseconds = ns;
         tz = Some (Zone_name name);
       }
+
+  (* A named-zone datetime from a wall clock, resolved through the embedded
+     IANA database (or the LMT fallback before 1970). *)
+  let of_zone name (y, mo, d) (h, m, s) ns =
+    if y < 1970 then
+      match lmt_offset name with
+      | Some offset ->
+          let wall =
+            Int64.add
+              (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
+              (Int64.of_int ((h * 3600) + (m * 60) + s))
+          in
+          Some
+            {
+              epoch_seconds = Int64.sub wall (Int64.of_int offset);
+              nanoseconds = ns;
+              tz = Some (Zone_name name);
+            }
+      | None -> of_zone_timedesc name (y, mo, d) (h, m, s) ns
+    else of_zone_timedesc name (y, mo, d) (h, m, s) ns
 
   (* A fixed-offset or naive datetime from a wall clock. *)
   let of_offset_or_naive tz (y, mo, d) (h, m, s) ns =
