@@ -54,19 +54,12 @@ type driver = {
   auth : auth;
   user_agent : string;
   connection_timeout : float;
+  max_transaction_retry_time : float;
   resolver_registered : bool;
   conn : Conn.t option ref;
 }
 
-type session = {
-  driver_id : int;
-  database : string option;
-  access_mode : string option;
-  impersonated_user : string option;
-  conn : Conn.t option ref;
-  bookmarks : string list ref;
-  current_tx : Tx.t option ref;
-}
+type session = { driver_id : int; session : Session.t }
 
 type result = {
   fields : string list;
@@ -83,6 +76,7 @@ let sessions : (int, session) Hashtbl.t = Hashtbl.create 16
 let transactions : (int, int * Tx.t) Hashtbl.t = Hashtbl.create 16
 let results : (int, result) Hashtbl.t = Hashtbl.create 16
 let custom_resolutions : (int, string list) Hashtbl.t = Hashtbl.create 16
+let errors : (int, Errors.t) Hashtbl.t = Hashtbl.create 16
 let next_id = ref 0
 
 let new_id () =
@@ -195,35 +189,14 @@ let ensure_conn ctx (driver : driver) =
 let conn_of ctx (driver : driver) =
   match ensure_conn ctx driver with Ok conn -> conn | Error error -> raise (Driver_error error)
 
-(* The session's own lazy connection (one per session, so two sessions can hold
-   concurrent transactions). *)
-let ensure_session_conn ctx (session : session) =
-  match !(session.conn) with
-  | Some conn -> Ok conn
-  | None -> (
-      let driver = get_driver session.driver_id in
-      let custom = if driver.resolver_registered then Some (resolver ctx) else None in
-      match Conn.connect ?resolver:custom ctx.net ctx.clock ctx.sw (conn_config driver) with
-      | Error error -> Error error
-      | Ok conn ->
-          session.conn := Some conn;
-          Ok conn)
-
-let session_conn ctx session =
-  match ensure_session_conn ctx session with
+(* The session's connection (created lazily by the Session itself). *)
+let session_conn (session : session) =
+  match Session.conn session.session with
   | Ok conn -> conn
   | Error error -> raise (Driver_error error)
 
-(* The session's access mode as the Bolt extra [mode]. *)
-let access_mode_of = function
-  | Some "r" -> Some Config.Read
-  | Some "w" -> Some Config.Write
-  | _ -> None
-
 (* Close the session's open transaction (if any) and its connection. *)
-let close_session_conns (session : session) =
-  (match !(session.current_tx) with Some tx -> ignore (Tx.close tx) | None -> ());
-  match !(session.conn) with Some conn -> Conn.close conn | None -> ()
+let close_session_conns (session : session) = Session.close session.session
 
 (* --- Handlers --- *)
 
@@ -246,12 +219,27 @@ let new_driver fields =
         match float_of_string_opt ms with Some f -> f /. 1000.0 | None -> 30.0)
     | _ -> 30.0
   in
+  let max_transaction_retry_time =
+    match List.assoc_opt "maxTxRetryTimeMs" fields with
+    | Some (`Int ms) -> float_of_int ms /. 1000.0
+    | Some (`Intlit ms) -> (
+        match float_of_string_opt ms with Some f -> f /. 1000.0 | None -> 30.0)
+    | _ -> 30.0
+  in
   match Addressing.parse_uri uri_string with
   | Error error -> raise (Driver_error error)
   | Ok uri ->
       let id = new_id () in
       Hashtbl.add drivers id
-        { uri; auth; user_agent; connection_timeout; resolver_registered; conn = ref None };
+        {
+          uri;
+          auth;
+          user_agent;
+          connection_timeout;
+          max_transaction_retry_time;
+          resolver_registered;
+          conn = ref None;
+        };
       ("Driver", `Assoc [ ("id", `Int id) ])
 
 let driver_close fields =
@@ -265,35 +253,47 @@ let driver_close fields =
   Hashtbl.remove drivers id;
   ("Driver", `Assoc [ ("id", `Int id) ])
 
-let new_session fields =
+let new_session ctx fields =
   let driver_id = int "driverId" fields in
+  let driver = get_driver driver_id in
   let database = opt_string "database" fields in
-  let access_mode = opt_string "accessMode" fields in
+  let access_mode =
+    match opt_string "accessMode" fields with Some "r" -> Config.Read | _ -> Config.Write
+  in
   let impersonated_user = opt_string "impersonatedUser" fields in
+  let fetch_size =
+    match List.assoc_opt "fetchSize" fields with Some (`Int n) -> Some n | _ -> None
+  in
   let bookmarks =
     match List.assoc_opt "bookmarks" fields with
     | Some (`List bookmarks) ->
         List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) bookmarks
     | _ -> []
   in
-  if not (Hashtbl.mem drivers driver_id) then raise (Backend_error "unknown driver");
+  let custom = if driver.resolver_registered then Some (resolver ctx) else None in
+  let connect () = Conn.connect ?resolver:custom ctx.net ctx.clock ctx.sw (conn_config driver) in
+  let config =
+    Session.
+      {
+        database;
+        access_mode;
+        impersonated_user;
+        fetch_size;
+        bookmarks;
+        max_transaction_retry_time = driver.max_transaction_retry_time;
+        initial_retry_delay = 1.0;
+        retry_delay_multiplier = 2.0;
+        retry_delay_jitter_factor = 0.2;
+      }
+  in
   let id = new_id () in
-  Hashtbl.add sessions id
-    {
-      driver_id;
-      database;
-      access_mode;
-      impersonated_user;
-      conn = ref None;
-      bookmarks = ref bookmarks;
-      current_tx = ref None;
-    };
+  Hashtbl.add sessions id { driver_id; session = Session.create config ~clock:ctx.clock ~connect };
   ("Session", `Assoc [ ("id", `Int id) ])
 
 let session_close fields =
   let id = int "sessionId" fields in
   (match Hashtbl.find_opt sessions id with
-  | Some session -> close_session_conns session
+  | Some session -> Session.close session.session
   | None -> ());
   Hashtbl.remove sessions id;
   ("Session", `Assoc [ ("id", `Int id) ])
@@ -330,69 +330,19 @@ let get_server_info ctx fields =
         ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
       ] )
 
+let check_multi_db_support ctx fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  let conn = conn_of ctx driver in
+  let major, _minor = Conn.version conn in
+  ("MultiDBSupport", `Assoc [ ("id", `Int id); ("available", `Bool (major >= 4)) ])
+
 let decode_params fields =
   match List.assoc_opt "params" fields with
   | Some (`Assoc params) -> List.map (fun (k, v) -> (k, Testkit_values.of_yojson v)) params
   | _ -> []
 
-let summary_string key summary =
-  match summary with
-  | Packstream.Map fields -> (
-      match List.assoc_opt key fields with Some (Packstream.String v) -> Some v | _ -> None)
-  | _ -> None
-
-let session_run ctx fields =
-  let session = get_session (int "sessionId" fields) in
-  let conn = session_conn ctx session in
-  let cypher = string "cypher" fields in
-  let parameters = decode_params fields in
-  let metadata =
-    match List.assoc_opt "txMeta" fields with
-    | Some (`Assoc tx_meta) ->
-        Some (List.map (fun (k, v) -> (k, Testkit_values.of_yojson v)) tx_meta)
-    | _ -> None
-  in
-  let timeout =
-    match List.assoc_opt "timeout" fields with
-    | Some (`Int ms) -> Some (float_of_int ms /. 1000.0)
-    | Some (`Intlit ms) -> Option.map (fun f -> f /. 1000.0) (float_of_string_opt ms)
-    | _ -> None
-  in
-  let hydration = Conn.hydration conn in
-  match
-    Conn.run conn ~hydration ~query:cypher ~parameters
-      ?mode:(access_mode_of session.access_mode)
-      ?db:session.database ?timeout ~bookmarks:!(session.bookmarks) ?metadata
-  with
-  | Error error -> raise (Driver_error error)
-  | Ok run_metadata -> (
-      match Conn.pull conn ~hydration with
-      | Error error -> raise (Driver_error error)
-      | Ok (records, summary) ->
-          (* The bookmark of an auto-commit transaction is reported in the PULL
-             summary metadata. *)
-          (match summary_string "bookmark" summary with
-          | Some b -> session.bookmarks := [ b ]
-          | None -> ());
-          let id = new_id () in
-          Hashtbl.add results id
-            {
-              fields = run_metadata.fields;
-              records;
-              cursor = ref 0;
-              summary;
-              query = cypher;
-              parameters;
-              conn;
-            };
-          ( "Result",
-            `Assoc
-              [
-                ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields));
-              ] ))
-
-(* --- Transactions --- *)
-
+(* The [txMeta] and [timeout] (milliseconds) of a transaction request. *)
 let tx_config fields =
   let metadata =
     match List.assoc_opt "txMeta" fields with
@@ -408,28 +358,40 @@ let tx_config fields =
   in
   (metadata, timeout)
 
-let session_begin_transaction ctx fields =
+let session_run _ctx fields =
+  let session = get_session (int "sessionId" fields) in
+  let cypher = string "cypher" fields in
+  let parameters = decode_params fields in
+  let metadata, timeout = tx_config fields in
+  match Session.run session.session ~query:cypher ~parameters ?timeout ?metadata () with
+  | Error error -> raise (Driver_error error)
+  | Ok (run_metadata, records, summary) ->
+      let conn = session_conn session in
+      let id = new_id () in
+      Hashtbl.add results id
+        {
+          fields = run_metadata.fields;
+          records;
+          cursor = ref 0;
+          summary;
+          query = cypher;
+          parameters;
+          conn;
+        };
+      ( "Result",
+        `Assoc
+          [ ("id", `Int id); ("keys", `List (List.map (fun f -> `String f) run_metadata.fields)) ]
+      )
+
+(* --- Transactions --- *)
+
+let session_begin_transaction _ctx fields =
   let session_id = int "sessionId" fields in
   let session = get_session session_id in
-  let conn = session_conn ctx session in
-  (match !(session.current_tx) with
-  | Some tx when not (Tx.closed tx) -> raise (Backend_error "Explicit transaction already open")
-  | _ -> ());
   let metadata, timeout = tx_config fields in
-  let hydration = Conn.hydration conn in
-  let metadata =
-    Option.map (List.map (fun (k, v) -> (k, Hydration.dehydrate hydration v))) metadata
-  in
-  let extra =
-    Conn.build_extra
-      ?mode:(access_mode_of session.access_mode)
-      ?db:session.database ?imp_user:session.impersonated_user ?timeout ?metadata
-      ~bookmarks:!(session.bookmarks) ()
-  in
-  match Tx.begin_transaction conn ~extra with
+  match Session.begin_transaction session.session ?metadata ?timeout () with
   | Error error -> raise (Driver_error error)
   | Ok tx ->
-      session.current_tx := Some tx;
       let id = new_id () in
       Hashtbl.add transactions id (session_id, tx);
       ("Transaction", `Assoc [ ("id", `Int id) ])
@@ -438,22 +400,17 @@ let session_begin_transaction ctx fields =
    commit, no bookmark otherwise). *)
 let end_transaction session_id bookmark =
   match Hashtbl.find_opt sessions session_id with
-  | Some session ->
-      (match bookmark with Some b -> session.bookmarks := [ b ] | None -> ());
-      session.current_tx := None
+  | Some session -> Session.mark_tx_ended session.session ~bookmark
   | None -> ()
 
 (* A failed transaction leaves the session without a current transaction (the
    transaction object itself stays usable for a follow-up rollback). *)
-let tx_failed session_id =
-  match Hashtbl.find_opt sessions session_id with
-  | Some session -> session.current_tx := None
-  | None -> ()
+let tx_failed session_id = end_transaction session_id None
 
-let transaction_run ctx fields =
+let transaction_run _ctx fields =
   let session_id, tx = get_transaction (int "txId" fields) in
   let session = get_session session_id in
-  let conn = session_conn ctx session in
+  let conn = session_conn session in
   let cypher = string "cypher" fields in
   let parameters = decode_params fields in
   let hydration = Conn.hydration conn in
@@ -509,7 +466,8 @@ let transaction_close _ctx fields =
 
 let session_last_bookmarks fields =
   let session = get_session (int "sessionId" fields) in
-  ("Bookmarks", `Assoc [ ("bookmarks", `List (List.map (fun b -> `String b) !(session.bookmarks))) ])
+  let bookmarks = Session.last_bookmarks session.session in
+  ("Bookmarks", `Assoc [ ("bookmarks", `List (List.map (fun b -> `String b) bookmarks)) ])
 
 let record_json record = `Assoc [ ("values", `List (List.map Testkit_values.to_yojson record)) ]
 
@@ -633,10 +591,11 @@ let handle ctx name data =
   | "GetFeatures" -> Some (get_features fields)
   | "NewDriver" -> Some (new_driver fields)
   | "DriverClose" -> Some (driver_close fields)
-  | "NewSession" -> Some (new_session fields)
+  | "NewSession" -> Some (new_session ctx fields)
   | "SessionClose" -> Some (session_close fields)
   | "VerifyConnectivity" -> Some (verify_connectivity ctx fields)
   | "GetServerInfo" -> Some (get_server_info ctx fields)
+  | "CheckMultiDBSupport" -> Some (check_multi_db_support ctx fields)
   | "SessionRun" -> Some (session_run ctx fields)
   | "ResultNext" -> Some (result_next fields)
   | "ResultPeek" -> Some (result_peek fields)
@@ -651,15 +610,20 @@ let handle ctx name data =
   | "ResolverResolutionCompleted" -> resolver_resolution_completed fields
   | _ -> raise (Backend_error ("No request handler for " ^ name))
 
-(* A driver error surfaced to the harness (analog of the Python driver_exc):
-   a Neo4j error carries its [code]; other driver errors carry just a message. *)
+(* A driver error surfaced to the harness (analog of the Python driver_exc): a
+   Neo4j error carries its [code]; other driver errors carry just a message. The
+   error is stored under an [id] so the harness can reference it back (e.g. the
+   [errorId] of a RetryableNegative). *)
 let driver_error_json error =
+  let id = new_id () in
+  Hashtbl.add errors id error;
   let retryable = Errors.is_retryable error in
   match error with
   | Errors.Neo4j server ->
       ( "DriverError",
         `Assoc
           [
+            ("id", `Int id);
             ("retryable", `Bool retryable);
             ("errorType", `String "neodriver.Neo4jError");
             ("msg", `String server.message);
@@ -669,13 +633,14 @@ let driver_error_json error =
       ( "DriverError",
         `Assoc
           [
+            ("id", `Int id);
             ("retryable", `Bool retryable);
             ("errorType", `String "neodriver.DriverError");
             ("msg", `String (Errors.to_string error));
           ] )
 
-(* Parse a request JSON and dispatch it. *)
-let dispatch ctx json =
+(* Dispatch a single (non-managed) request JSON to the [handle] table. *)
+let dispatch_plain ctx json =
   try
     match Yojson.Safe.from_string json with
     | `Assoc fields ->
@@ -684,6 +649,77 @@ let dispatch ctx json =
           match List.assoc_opt "data" fields with Some data -> data | None -> `Assoc []
         in
         handle ctx name data
+    | _ -> raise (Backend_error "Request is not an object")
+  with
+  | Backend_error message -> Some ("BackendError", `Assoc [ ("msg", `String message) ])
+  | Driver_error error -> Some (driver_error_json error)
+  | exn -> Some ("BackendError", `Assoc [ ("msg", `String (Printexc.to_string exn)) ])
+
+(* --- Managed transactions --- *)
+
+(* The unit of work of a managed transaction: announce a new attempt with
+   RetryableTry and then serve requests until the harness says the work finished
+   (RetryablePositive) or failed (RetryableNegative, referencing a driver error
+   by id, or absent for an application error). *)
+let rec managed_work ctx session_id tx =
+  let id = new_id () in
+  Hashtbl.add transactions id (session_id, tx);
+  ctx.send "RetryableTry" (`Assoc [ ("id", `Int id) ]);
+  let rec loop () =
+    match ctx.read () with
+    | None -> Error (Session.Driver (Errors.Service_unavailable "harness closed mid-transaction"))
+    | Some json -> (
+        match Yojson.Safe.from_string json with
+        | `Assoc request_fields -> (
+            match List.assoc_opt "name" request_fields with
+            | Some (`String "RetryablePositive") -> Ok ()
+            | Some (`String "RetryableNegative") -> (
+                let data =
+                  match List.assoc_opt "data" request_fields with
+                  | Some data -> data
+                  | None -> `Assoc []
+                in
+                match opt_string "errorId" (match data with `Assoc f -> f | _ -> []) with
+                | Some error_id when error_id <> "" -> (
+                    match int_of_string_opt error_id with
+                    | Some error_id -> (
+                        match Hashtbl.find_opt errors error_id with
+                        | Some error -> Error (Session.Driver error)
+                        | None ->
+                            Error (Session.Driver (Errors.Service_unavailable "unknown error id")))
+                    | None -> Error (Session.Driver (Errors.Service_unavailable "bad error id")))
+                | _ -> Error Session.Client)
+            | _ -> (
+                match dispatch ctx json with
+                | None -> loop ()
+                | Some (name, data) ->
+                    ctx.send name data;
+                    loop ()))
+        | _ -> Error (Session.Driver (Errors.Service_unavailable "malformed request")))
+  in
+  loop ()
+
+and managed_transaction ctx fields ~mode =
+  let session_id = int "sessionId" fields in
+  let session = get_session session_id in
+  let metadata, timeout = tx_config fields in
+  let work tx = managed_work ctx session_id tx in
+  match Session.execute session.session ~mode ?metadata ?timeout work with
+  | Ok () -> Some ("RetryableDone", `Assoc [])
+  | Error (Session.Driver error) -> Some (driver_error_json error)
+  | Error Session.Client -> Some ("FrontendError", `Assoc [ ("msg", `String "Client said no") ])
+
+(* Parse a request JSON and dispatch it (managed transaction requests are routed
+   to the managed flow first). *)
+and dispatch ctx json =
+  try
+    match Yojson.Safe.from_string json with
+    | `Assoc fields -> (
+        let data = match List.assoc_opt "data" fields with Some (`Assoc data) -> data | _ -> [] in
+        match string "name" fields with
+        | "SessionReadTransaction" -> managed_transaction ctx data ~mode:Config.Read
+        | "SessionWriteTransaction" -> managed_transaction ctx data ~mode:Config.Write
+        | _ -> dispatch_plain ctx json)
     | _ -> raise (Backend_error "Request is not an object")
   with
   | Backend_error message -> Some ("BackendError", `Assoc [ ("msg", `String message) ])

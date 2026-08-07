@@ -94,11 +94,20 @@ ocaml-neo4j-driver/            # this repo
   while one is open), `TransactionRun`, `TransactionCommit`, `TransactionRollback`, `TransactionClose`,
   `SessionLastBookmarks`. Auto-commit retry (`disable_auto_commit_retries`) is deferred: no TestKit
   test exercises it and it needs connection rotation (A6).
-- **A5b — managed transactions + retry**: `execute_read/execute_write` + `unit_of_work` — retry
-  loop within the `max_transaction_retry_time` budget, jittered backoff, decision via
-  `error.retryable`, fresh connection between attempts, `TX_FUNC` telemetry once. Backend commands:
-  `SessionReadTransaction`/`SessionWriteTransaction` (the `RetryableTry`/`RetryableDone` protocol),
-  `RetryablePositive`/`RetryableNegative`.
+- **A5b — managed transactions + retry**. **Done** (commit "step A5b"): `lib/eio/session.ml` with
+  `Session.run` (auto-commit, bookmark capture), `begin_transaction`, `execute` (managed unit of
+  work) and `last_bookmarks`; the session owns its lazy connection and bookmarks. `execute` runs the
+  retry loop within the `max_transaction_retry_time` budget (configurable via the TestKit
+  `maxTxRetryTimeMs`), jittered backoff (1s initial, x2, 0.2 jitter), decision via
+  `error.retryable`; between attempts the connection is recovered with a RESET; a client
+  (application) failure rolls back without retrying. Backend commands:
+  `SessionReadTransaction`/`SessionWriteTransaction` with the full `RetryableTry`/`RetryableDone`/
+  `RetryablePositive`/`RetryableNegative` protocol: driver errors carry an `id` (stored in a backend
+  table) which `RetryableNegative` references back; nested managed transactions (a unit of work
+  calling `execute_*` on another session) are handled recursively. Also `CheckMultiDBSupport`.
+  Unit tests cover commit/bookmark, retry on transient failures, no-retry on client errors and the
+  explicit-transaction guard. TestKit: 53 -> ~97 passing; the remaining errors are pre-existing A2
+  (named-timezone temporal round-trips) and A4 (Result/summary) limitations.
 - **⚠️ Checkpoint**: after A5 we have a full, correctly streaming single-connection client — the best first release.
 
 ### Phase A4 — Result + summary + notifications

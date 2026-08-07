@@ -9,3 +9,4 @@ module Conn = Conn
 module Bolt = Bolt
 module State = State
 module Tx = Tx
+module Session = Session

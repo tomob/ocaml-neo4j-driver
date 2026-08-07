@@ -23,3 +23,6 @@ module State = State
 
 module Tx = Tx
 (** Explicit transactions (BEGIN/COMMIT/ROLLBACK with per-transaction state). *)
+
+module Session = Session
+(** Per-session connection: auto-commit queries, explicit and managed transactions. *)
