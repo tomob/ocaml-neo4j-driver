@@ -170,7 +170,8 @@ let run_captures_bookmark () =
     (fun net clock sw port ->
       let session = session net clock sw port in
       (match Session.run session ~query:"CREATE (n) RETURN 1" ~parameters:[] with
-      | Ok _ -> ()
+      | Ok stream -> (
+          match Session.pull stream with Ok _ -> () | Error error -> fail (Errors.to_string error))
       | Error error -> fail (Errors.to_string error));
       check (list string) "bookmarks" [ "auto-b" ] (Session.last_bookmarks session);
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received))

@@ -99,7 +99,10 @@ let rollback transport =
   respond transport
 
 (* Read the RECORD messages of a result up to its summary (SUCCESS/FAILURE/IGNORED).
-   A RECORD carries its values as a single List field. *)
+   A RECORD carries its values as a single List field. The records delivered
+   before a FAILURE/IGNORED are kept: the outcome is [Ok summary] on SUCCESS and
+   [Error _] on a server failure, so a mid-stream error can be surfaced after
+   the buffered records are consumed. *)
 let rec collect_records acc transport =
   let* tag, fields = recv_fields transport in
   match tag with
@@ -108,15 +111,20 @@ let rec collect_records acc transport =
       collect_records (record :: acc) transport
   | t when t = success_tag ->
       let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
-      Ok (List.rev acc, metadata)
+      Ok (List.rev acc, Ok metadata)
   | t when t = failure_tag ->
       let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
       let code = failure_code metadata in
       let message = Option.value ~default:"" (field_string "message" metadata) in
-      Error (Errors.of_neo4j_code ~code ~message)
-  | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")
+      Ok (List.rev acc, Error (Errors.of_neo4j_code ~code ~message))
+  | t when t = ignored_tag ->
+      Ok (List.rev acc, Error (Errors.Service_unavailable "Unexpected IGNORED response"))
   | tag ->
-      Error (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
+      Ok
+        ( List.rev acc,
+          Error
+            (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
+        )
 
 let pull transport ~extra =
   let* () = send transport ~tag:pull_tag [ extra ] in

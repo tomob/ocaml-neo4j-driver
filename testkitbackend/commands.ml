@@ -62,10 +62,10 @@ type driver = {
 type session = { driver_id : int; session : Session.t }
 
 type result = {
-  fields : string list;
+  stream : Session.stream option;
   records : Values.t list list;
   cursor : int ref;
-  summary : Packstream.value;
+  summary : Packstream.value option;
   t_first : int option;
   query : string;
   parameters : (string * Values.t) list;
@@ -366,15 +366,16 @@ let session_run _ctx fields =
   let metadata, timeout = tx_config fields in
   match Session.run session.session ~query:cypher ~parameters ?timeout ?metadata with
   | Error error -> raise (Driver_error error)
-  | Ok (run_metadata, records, summary) ->
+  | Ok stream ->
       let conn = session_conn session in
+      let run_metadata = Session.run_metadata stream in
       let id = new_id () in
       Hashtbl.add results id
         {
-          fields = run_metadata.fields;
-          records;
+          stream = Some stream;
+          records = [];
           cursor = ref 0;
-          summary;
+          summary = None;
           t_first = run_metadata.t_first;
           query = cypher;
           parameters;
@@ -424,10 +425,10 @@ let transaction_run _ctx fields =
       let id = new_id () in
       Hashtbl.add results id
         {
-          fields = run_metadata.fields;
+          stream = None;
           records;
           cursor = ref 0;
-          summary;
+          summary = Some summary;
           t_first = run_metadata.t_first;
           query = cypher;
           parameters;
@@ -474,25 +475,65 @@ let session_last_bookmarks fields =
 
 let record_json record = `Assoc [ ("values", `List (List.map Testkit_values.to_yojson record)) ]
 
+(* --- Result streaming --- *)
+
+let result_records r = match r.stream with Some s -> Session.buffered s | None -> r.records
+let result_summary r = match r.stream with Some s -> Session.summary s | None -> r.summary
+let result_has_more r = match r.stream with Some s -> Session.has_more s | None -> false
+let result_error r = match r.stream with Some s -> Session.error s | None -> None
+
+(* Pull the next batch of a lazy stream when its buffer is exhausted. *)
+let rec ensure_record r =
+  if !(r.cursor) < List.length (result_records r) then ()
+  else if result_has_more r then
+    match r.stream with
+    | Some s -> (
+        match Session.pull s ~n:1 with
+        | Error error -> raise (Driver_error error)
+        | Ok _ -> ensure_record r)
+    | None -> ()
+  else ()
+
+(* Drain a lazy stream to its end (raising on a server failure). *)
+let rec drain r =
+  if result_has_more r then
+    match r.stream with
+    | Some s -> (
+        match Session.pull s with Error error -> raise (Driver_error error) | Ok _ -> drain r)
+    | None -> ()
+  else ()
+
 let result_next fields =
   let r = get_result (int "resultId" fields) in
-  if !(r.cursor) < List.length r.records then begin
-    let record = List.nth r.records !(r.cursor) in
+  ensure_record r;
+  if !(r.cursor) < List.length (result_records r) then begin
+    let record = List.nth (result_records r) !(r.cursor) in
     r.cursor := !(r.cursor) + 1;
     ("Record", record_json record)
   end
-  else ("NullRecord", `Assoc [])
+  else
+    match result_error r with
+    | Some error -> raise (Driver_error error)
+    | None -> ("NullRecord", `Assoc [])
 
 let result_peek fields =
   let r = get_result (int "resultId" fields) in
-  if !(r.cursor) < List.length r.records then
-    ("Record", record_json (List.nth r.records !(r.cursor)))
-  else ("NullRecord", `Assoc [])
+  ensure_record r;
+  if !(r.cursor) < List.length (result_records r) then
+    ("Record", record_json (List.nth (result_records r) !(r.cursor)))
+  else
+    match result_error r with
+    | Some error -> raise (Driver_error error)
+    | None -> ("NullRecord", `Assoc [])
 
 let result_list fields =
   let r = get_result (int "resultId" fields) in
-  let remaining = List.filteri (fun i _ -> i >= !(r.cursor)) r.records |> List.map record_json in
-  r.cursor := List.length r.records;
+  drain r;
+  (match result_error r with Some error -> raise (Driver_error error) | None -> ());
+  let remaining =
+    List.filteri (fun i _ -> i >= !(r.cursor)) (result_records r) |> List.map record_json
+  in
+  r.cursor := List.length (result_records r);
   ("RecordList", `Assoc [ ("records", `List remaining) ])
 
 (* --- Summary --- *)
@@ -599,7 +640,7 @@ let notifications_of metadata =
       | _ -> None)
 
 let summary_of r =
-  let metadata = r.summary in
+  let metadata = match result_summary r with Some s -> s | None -> Packstream.Map [] in
   let major, minor = Conn.version r.conn in
   let agent = Option.value ~default:"" (Conn.server_agent r.conn) in
   let query_type =
@@ -649,6 +690,8 @@ let summary_of r =
 let result_consume fields =
   let id = int "resultId" fields in
   let r = get_result id in
+  drain r;
+  (match result_error r with Some error -> raise (Driver_error error) | None -> ());
   let summary = summary_of r in
   Hashtbl.remove results id;
   ("Summary", summary)

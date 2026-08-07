@@ -26,8 +26,10 @@ let run_and_pull ?n env query =
                 | Ok metadata -> (
                     match Conn.pull conn ~hydration ?n with
                     | Error error -> Error error
-                    | Ok (records, summary) -> Ok (metadata, records, Bolt.metadata_has_more summary)
-                    )
+                    | Ok (records, outcome) -> (
+                        match outcome with
+                        | Ok summary -> Ok (metadata, records, Bolt.metadata_has_more summary)
+                        | Error error -> Error error))
               in
               Conn.close conn;
               result))
@@ -79,7 +81,8 @@ let streaming () =
       match results with
       | Error error -> fail (Errors.to_string error)
       | Ok (batch1, batch2, batch3) ->
-          let show (records, summary) =
+          let show (records, outcome) =
+            let summary = match outcome with Ok s -> s | Error e -> fail (Errors.to_string e) in
             (records_to_string records, Bolt.metadata_has_more summary)
           in
           let b1, m1 = show batch1 in

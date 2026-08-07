@@ -53,6 +53,11 @@ let check_state conn expected =
 let record_to_string values = "[" ^ String.concat "," (List.map Values.to_string values) ^ "]"
 let records_to_string records = "[" ^ String.concat ";" (List.map record_to_string records) ^ "]"
 
+(* Unwrap a successful PULL outcome (the summary metadata). *)
+let summary_of_outcome = function
+  | Ok summary -> summary
+  | Error error -> fail (Errors.to_string error)
+
 (* run + pull of a single record. *)
 let run_pull_single () =
   let responses =
@@ -70,7 +75,8 @@ let run_pull_single () =
       | Ok metadata -> check (list string) "fields" [ "x" ] metadata.fields
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration with
-      | Ok (records, summary) ->
+      | Ok (records, outcome) ->
+          let summary = summary_of_outcome outcome in
           check string "records" "[[1]]" (records_to_string records);
           check bool "has_more" false (Bolt.metadata_has_more summary);
           check_state conn "Ready"
@@ -96,18 +102,21 @@ let streaming_has_more () =
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 with
-      | Ok (records, summary) ->
+      | Ok (records, outcome) ->
+          let summary = summary_of_outcome outcome in
           check string "batch1" "[[1];[2]]" (records_to_string records);
           check bool "more1" true (Bolt.metadata_has_more summary);
           check_state conn "Streaming"
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 with
-      | Ok (records, summary) ->
+      | Ok (records, outcome) ->
+          let summary = summary_of_outcome outcome in
           check string "batch2" "[[3];[4]]" (records_to_string records);
           check bool "more2" true (Bolt.metadata_has_more summary)
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 with
-      | Ok (records, summary) ->
+      | Ok (records, outcome) ->
+          let summary = summary_of_outcome outcome in
           check string "batch3" "[[5]]" (records_to_string records);
           check bool "more3" false (Bolt.metadata_has_more summary);
           check_state conn "Ready"

@@ -40,7 +40,12 @@ let run t ~hydration ~query ~parameters =
       | Error _ as error ->
           t.state <- Failed;
           error
-      | Ok (records, summary) -> Ok (run_metadata, records, summary))
+      | Ok (records, outcome) -> (
+          match outcome with
+          | Error _ as error ->
+              t.state <- Failed;
+              error
+          | Ok summary -> Ok (run_metadata, records, summary)))
 
 let commit t =
   let* () = check_open t in

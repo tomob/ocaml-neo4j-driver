@@ -131,14 +131,17 @@ val pull :
   ?qid:int ->
   t ->
   hydration:Hydration.t ->
-  (Values.t list list * Packstream.value, Errors.t) result
+  (Values.t list list * (Packstream.value, Errors.t) result, Errors.t) result
 (** Send a PULL message, fetching up to [n] records (all by default) of the result [qid]. Records
-    are hydrated with [hydration]. Returns the records and the full PULL summary metadata (its
-    [has_more] flag, readable via [Bolt.metadata_has_more], says whether more records remain). *)
+    are hydrated with [hydration]. Returns the records delivered and the terminal outcome: [Ok _]
+    with the PULL summary metadata (its [has_more] flag, readable via [Bolt.metadata_has_more], says
+    whether more records remain) on SUCCESS, or [Error _] for a server FAILURE (the records
+    delivered before the failure are kept). A server failure leaves the connection in the [Failed]
+    state. *)
 
 val discard : ?n:int -> ?qid:int -> t -> (unit, Errors.t) result
 (** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
-    [qid]. *)
+    [qid]. A server failure is surfaced as [Error _]. *)
 
 val server_agent : t -> string option
 (** The server agent string reported in the HELLO response, if any. *)

@@ -97,14 +97,16 @@ val rollback : Transport.t -> (Packstream.value, Errors.t) result
 val pull :
   Transport.t ->
   extra:Packstream.value ->
-  (Packstream.value list list * Packstream.value, Errors.t) result
+  (Packstream.value list list * (Packstream.value, Errors.t) result, Errors.t) result
 (** Send a PULL message with the [extra] map (e.g. [n], [qid]) and read the result: all RECORD
-    messages up to the summary. Returns [(records, summary_metadata)]. *)
+    messages up to the terminal message. Returns the records delivered so far and the terminal
+    outcome — [Ok summary] on SUCCESS, [Error _] on a server FAILURE/IGNORED (the records delivered
+    before the failure are kept, so a mid-stream error can be surfaced after buffering). *)
 
 val discard :
   Transport.t ->
   extra:Packstream.value ->
-  (Packstream.value list list * Packstream.value, Errors.t) result
+  (Packstream.value list list * (Packstream.value, Errors.t) result, Errors.t) result
 (** Send a DISCARD message with the [extra] map and read the result (same shape as [pull], though
     records are normally empty). *)
 

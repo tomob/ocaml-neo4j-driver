@@ -283,28 +283,35 @@ let pull_extra ?(n = -1) ?qid () =
   in
   Packstream.Map extra
 
+let outcome_has_more = function Ok summary -> Bolt.metadata_has_more summary | Error _ -> false
+
 let pull ?n ?qid t ~hydration =
   let re_auth = re_auth_of t.major t.minor in
   match
     request
-      ~has_more:(fun (_, summary) -> Bolt.metadata_has_more summary)
+      ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Pull ~re_auth
       (fun () -> Bolt.pull t.transport ~extra:(pull_extra ?n ?qid ()))
   with
   | Error _ as error -> error
-  | Ok (records, summary) ->
+  | Ok (records, outcome) ->
       let records = List.map (List.map (Hydration.hydrate hydration)) records in
-      Ok (records, summary)
+      (match outcome with Error _ -> t.state := State.Failed | Ok _ -> ());
+      Ok (records, outcome)
 
 let discard ?n ?qid t =
   let re_auth = re_auth_of t.major t.minor in
-  let* _ =
+  let* _records, outcome =
     request
-      ~has_more:(fun (_, summary) -> Bolt.metadata_has_more summary)
+      ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Discard ~re_auth
       (fun () -> Bolt.discard t.transport ~extra:(pull_extra ?n ?qid ()))
   in
-  Ok ()
+  match outcome with
+  | Ok _ -> Ok ()
+  | Error _ as error ->
+      t.state := State.Failed;
+      error
 
 let begin_ t ~extra =
   let re_auth = re_auth_of t.major t.minor in

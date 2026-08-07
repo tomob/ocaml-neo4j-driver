@@ -53,16 +53,42 @@ val create :
 val conn : t -> (Conn.t, Errors.t) result
 (** The session's connection, connecting on first use. *)
 
+type stream
+(** A lazily-streamed auto-commit query result: RUN is sent immediately, records are pulled in
+    batches on demand. *)
+
 val run :
   ?timeout:float ->
   ?metadata:(string * Values.t) list ->
   t ->
   query:string ->
   parameters:(string * Values.t) list ->
-  (Conn.run_metadata * Values.t list list * Packstream.value, Errors.t) result
-(** Run an auto-commit query: RUN + PULL, buffering the result. The session's bookmarks, database
-    and access mode go into the RUN extra; a [bookmark] in the PULL summary updates the session's
-    bookmarks. *)
+  (stream, Errors.t) result
+(** Run an auto-commit query: send RUN only (the result streams via [pull]). The session's
+    bookmarks, database and access mode go into the RUN extra. *)
+
+val buffered : stream -> Values.t list list
+(** The records buffered so far, in order. *)
+
+val has_more : stream -> bool
+(** Whether the result still has records to pull. *)
+
+val error : stream -> Errors.t option
+(** A server failure that interrupted the stream; surface it after the buffered records are
+    consumed. *)
+
+val summary : stream -> Packstream.value option
+(** The final PULL summary metadata, once the stream has ended normally. *)
+
+val run_metadata : stream -> Conn.run_metadata
+(** The RUN metadata (field names, query id, timings, bookmark). *)
+
+val pull : ?n:int -> stream -> (Values.t list list, Errors.t) result
+(** Pull up to [n] more records (all by default), buffering them, and return the newly fetched
+    records. A server failure mid-stream is stored on the result ([error]) and the records delivered
+    before it are kept. Once the stream ends normally, the final summary is stored ([summary]) and
+    the session's bookmarks are updated from it.
+    @return [Error _] for transport failures (the result is left usable for a later pull). *)
 
 val begin_transaction :
   ?metadata:(string * Values.t) list -> ?timeout:float -> t -> (Tx.t, Errors.t) result
