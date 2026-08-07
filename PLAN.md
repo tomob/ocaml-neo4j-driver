@@ -176,6 +176,55 @@ gating (the `test_subtest_skips.ml` analog).
 
 ---
 
+## TRACK C — Documentation and developer enablement
+
+Making the driver easy to pick up and use: a user-facing entry point, rendered
+API documentation, a quickstart, usage documentation, runnable examples and a
+hosted documentation site. Track C is largely independent of the remaining
+Phase A work and documents the current state of the API honestly (routing,
+impersonation, notifications, telemetry and the high-level `execute_query` are
+not yet implemented).
+
+- **Phase C0 — user-facing API** (prerequisite for the docs): replace the
+  placeholder `Driver` with a real entry point:
+  `Neodriver_eio.Driver.connect ~uri ~auth ?user_agent ?connection_timeout ?config net clock sw
+  -> (Session.t, Errors.t) result` (parses the URI, builds the `Conn.config`, wires the Eio
+  resources into a ready `Session`, rejects `neo4j://` until routing exists), plus
+  `Conn.basic_auth ?principal ?credentials ()` and extending the `Neodriver` aggregator with
+  `Conn`/`Session`/`Tx`/`Transport`/`Bolt`/`State` aliases so `open Neodriver` covers the whole API.
+- **Phase C1 — API documentation (odoc)**: audit all `.mli` files (public declarations must carry
+  a doc comment) and document the new API; add odoc index pages (a top-level `index.mld` and one
+  per package) so `dune build @doc` produces a browsable site with a landing page; keep
+  `dune build @doc` clean (the CI already runs it on every push).
+- **Phase C2 — quickstart** (`docs/quickstart.md`): adding the driver as a dependency (opam
+  `opam install neodriver neodriver_eio`, pinning for local development; dune
+  `(libraries neodriver neodriver_eio eio_main)`), plus a minimal program: connect with
+  `Driver.connect` and run a simple `RETURN` query.
+- **Phase C3 — usage documentation** (`docs/usage.md`): the packages and what to open; connecting
+  (`Conn.config`, the TLS schemes `bolt://` / `bolt+s` / `bolt+ssc`, `neo4j://` not yet supported);
+  sessions (`Session.run`, access modes, bookmarks); explicit transactions (`Tx`) and managed
+  transactions (`Session.execute` with retry and `max_transaction_retry_time`); authentication
+  (basic only; LOGON vs inline auth by Bolt version); the `Values`/`Temporal`/`Hydration` types;
+  error handling (`Errors.t`, `is_retryable`); configuration (timeouts, retry, fetch size); and an
+  honest "not yet implemented" list.
+- **Phase C4 — example programs** (`examples/`, modelled on
+  `neo4j-examples/python-driver-examples`): a shared `common.ml` (env config `NEO4J_URI`/
+  `NEO4J_USER`/`NEO4J_PASSWORD` + an `Eio_main` wrapper) and self-contained programs — `connect.ml`,
+  `run_cypher.ml`, `create.ml`, `transaction.ml` (explicit Tx), `managed_transaction.ml`
+  (managed + bookmarks) — built inside the workspace (compiled by `dune build`, run via
+  `dune exec`), each described in `examples/README.md`.
+- **Phase C5 — GitHub Pages + automatic documentation**: a `deploy-docs.yml` workflow that builds
+  `@doc` on `main` and publishes `_build/default/_doc/_html/` through the Pages artifact API
+  (`actions/configure-pages` / `upload-pages-artifact` / `deploy-pages`). Requires the repository
+  setting Pages → Source = "Deploy from a GitHub Actions" (a manual repo setting, not a file).
+  The existing `ci.yml` keeps verifying `dune build @doc` on every push/PR.
+- **Phase C6 — README polish**: restructure `README.md` into badges (CI, docs), prerequisites,
+  a quickstart snippet linking to `docs/quickstart.md`, documentation/examples links, an honest
+  features/status section (what works vs. planned, pointing at `PLAN.md`), the TestKit conformance
+  note and the license.
+
+---
+
 ## Risks and open decisions
 
 1. **Maturity of `tls-eio`** (in Phase A2) — the most serious risk. Decision: check its state; if problematic, use `ocaml-tls` with a custom adapter or defer TLS behind the rest of the transport (MVP on `bolt://`).
