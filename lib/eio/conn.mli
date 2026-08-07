@@ -96,7 +96,7 @@ val run :
       the next request). *)
 
 val begin_ : t -> extra:Packstream.value -> (unit, Errors.t) result
-(** Send a BEGIN message (start a transaction) with the given [extra] map (see [begin_extra]). A
+(** Send a BEGIN message (start a transaction) with the given [extra] map (see [build_extra]). A
     RESET is sent first if the server is in the [Failed] state. *)
 
 val build_extra :

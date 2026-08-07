@@ -225,32 +225,25 @@ let run_metadata_of metadata =
 (* The extra map shared by BEGIN and auto-commit RUN: mode, db, impersonation,
    bookmarks, tx_metadata and tx_timeout (milliseconds). *)
 let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
-  let extra =
-    match mode with
-    | Some Config.Read -> [ ("mode", Packstream.String "r") ]
-    | Some Config.Write | None -> []
+  let items =
+    List.filter_map Fun.id
+      [
+        Option.bind mode (function
+          | Config.Read -> Some ("mode", Packstream.String "r")
+          | Config.Write -> None);
+        Option.map (fun db -> ("db", Packstream.String db)) db;
+        Option.map (fun user -> ("imp_user", Packstream.String user)) imp_user;
+        Option.map
+          (fun bookmarks ->
+            ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)))
+          bookmarks;
+        Option.map
+          (fun seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))))
+          timeout;
+        Option.map (fun metadata -> ("tx_metadata", Packstream.Map metadata)) metadata;
+      ]
   in
-  let extra = match db with Some db -> ("db", Packstream.String db) :: extra | None -> extra in
-  let extra =
-    match imp_user with Some user -> ("imp_user", Packstream.String user) :: extra | None -> extra
-  in
-  let extra =
-    match bookmarks with
-    | Some bookmarks ->
-        ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)) :: extra
-    | None -> extra
-  in
-  let extra =
-    match timeout with
-    | Some seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))) :: extra
-    | None -> extra
-  in
-  let extra =
-    match metadata with
-    | Some metadata -> ("tx_metadata", Packstream.Map metadata) :: extra
-    | None -> extra
-  in
-  Packstream.Map extra
+  Packstream.Map items
 
 let run ?mode ?db ?bookmarks ?timeout ?metadata t ~hydration ~query ~parameters =
   let parameters =
