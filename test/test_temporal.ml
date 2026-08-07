@@ -83,7 +83,15 @@ let datetime_round_trip () =
   | Some dt -> check int64 "offset epoch" (-7200L) (fst (DT.to_epoch_seconds dt))
   | None -> fail "offset epoch");
   (match DT.of_ymd_hms ~tz:(Zone_name "Europe/Warsaw") (2024, 1, 1) (12, 0, 0) 0 with
-  | Some _ -> fail "named zone of_ymd_hms should be None"
+  | Some dt ->
+      check string "warsaw wall" "2024-01-01T12:00:00" (DT.to_string dt);
+      check (option int) "warsaw january offset" (Some 3600) (DT.offset_seconds dt)
+  | None -> fail "named zone of_ymd_hms");
+  (match DT.of_ymd_hms ~tz:(Zone_name "Europe/Warsaw") (2024, 7, 1) (12, 0, 0) 0 with
+  | Some dt -> check (option int) "warsaw july offset (DST)" (Some 7200) (DT.offset_seconds dt)
+  | None -> fail "named zone DST of_ymd_hms");
+  (match DT.of_ymd_hms ~tz:(Zone_name "Unknown/Zone") (2024, 1, 1) (12, 0, 0) 0 with
+  | Some _ -> fail "unknown named zone should be None"
   | None -> ());
   (match DT.of_iso8601 "2024-01-01T12:34:56.123456789+02:00" with
   | Some dt -> check string "iso round" "2024-01-01T12:34:56.123456789+02:00" (DT.to_string dt)

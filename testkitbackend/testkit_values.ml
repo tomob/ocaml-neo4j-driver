@@ -151,10 +151,14 @@ and datetime dt =
     ]
   in
   let data =
-    match Temporal.DateTime.tz dt with
+    match Temporal.DateTime.offset_seconds dt with
+    | Some offset -> ("utc_offset_s", `Int offset) :: data
     | None -> data
-    | Some (Temporal.Offset offset) -> ("utc_offset_s", `Int offset) :: data
-    | Some (Temporal.Zone_name zone) -> ("timezone_id", `String zone) :: data
+  in
+  let data =
+    match (Temporal.DateTime.tz dt, Temporal.DateTime.offset_seconds dt) with
+    | Some (Temporal.Zone_name zone), Some _ -> ("timezone_id", `String zone) :: data
+    | _ -> data
   in
   `Assoc [ ("name", `String "CypherDateTime"); ("data", `Assoc data) ]
 
@@ -254,21 +258,27 @@ let time_of data =
   | None -> invalid_arg "bad CypherTime"
 
 let datetime_of data =
-  let tz =
-    match member "utc_offset_s" data with
-    | Some (`Int n) -> Some (Temporal.Offset n)
-    | _ -> (
-        match member "timezone_id" data with
-        | Some (`String zone) -> Some (Temporal.Zone_name zone)
-        | _ -> None)
+  let tz_name =
+    match member "timezone_id" data with Some (`String zone) -> Some zone | _ -> None
+  in
+  let tz_offset = match member "utc_offset_s" data with Some (`Int n) -> Some n | _ -> None in
+  (* Prefer the named zone; use the given offset for the epoch so the wall
+     clock maps to the same instant, then label the datetime with the zone. *)
+  let base_tz =
+    match tz_offset with
+    | Some n -> Some (Temporal.Offset n)
+    | None -> ( match tz_name with Some zone -> Some (Temporal.Zone_name zone) | None -> None)
   in
   match
-    Temporal.DateTime.of_ymd_hms ?tz
+    Temporal.DateTime.of_ymd_hms ?tz:base_tz
       (int_field "year" data, int_field "month" data, int_field "day" data)
       (int_field "hour" data, int_field "minute" data, int_field "second" data)
       (int_field "nanosecond" data)
   with
-  | Some dt -> dt
+  | Some dt -> (
+      match tz_name with
+      | Some zone -> { dt with Temporal.tz = Some (Temporal.Zone_name zone) }
+      | None -> dt)
   | None -> invalid_arg "bad CypherDateTime"
 
 let duration_of data =
@@ -316,6 +326,7 @@ let rec of_yojson json =
       match value with
       | `Float f -> Values.Float f
       | `Int n -> Values.Float (float_of_int n)
+      | `Intlit s -> Values.Float (float_of_string s)
       | `String "NaN" -> Values.Float nan
       | `String "+Infinity" -> Values.Float infinity
       | `String "-Infinity" -> Values.Float neg_infinity

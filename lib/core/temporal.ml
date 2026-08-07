@@ -9,16 +9,18 @@
                 time zone (offset or IANA zone name).
    - Duration : months, days, seconds and nanoseconds.
 
-   Named time zones are handled opaquely: the epoch is UTC-based, so the UTC
-   wall clock is always derivable, but converting a wall clock in a named zone
-   to an epoch (and Ptime interop for named zones) requires a time zone
-   database and is not supported; such conversions return [None]. *)
+   Named time zones are resolved through the IANA time zone database embedded
+   in [Timedesc] (timedesc-tzdb.full, covering 1970-2040): converting a wall
+   clock in a named zone to an epoch, deriving the wall clock from an epoch,
+   and computing the UTC offset of an instant all work for zones in that
+   range. Unknown zones fall back to opaque handling ([None]). *)
 
 let seconds_per_day = 86_400L
 let ns_per_day = 86_400_000_000_000L
 let ps_per_day = 86_400_000_000_000_000L
 let min_year = 1
 let max_year = 9999
+let ( let* ) = Option.bind
 
 let pow10 n =
   let rec go acc = function 0 -> acc | k -> go (acc * 10) (k - 1) in
@@ -408,35 +410,103 @@ module DateTime = struct
     | Some (Offset offset) -> Int64.add t.epoch_seconds (Int64.of_int offset)
     | _ -> t.epoch_seconds
 
+  (* Canonical IANA zone for alias/link names the embedded database omits
+     (SystemV/*, Canada/East-Saskatchewan, US/Pacific-New). The fixed-offset
+     SystemV zones map to Etc/GMT-N, which the embedded database represents as
+     the fixed offset -N hours. *)
+  let canonical_zone = function
+    | "Canada/East-Saskatchewan" -> "America/Regina"
+    | "US/Pacific-New" -> "America/Los_Angeles"
+    | "SystemV/AST4ADT" -> "America/Halifax"
+    | "SystemV/CST6CDT" -> "America/Chicago"
+    | "SystemV/EST5EDT" -> "America/New_York"
+    | "SystemV/MST7MDT" -> "America/Denver"
+    | "SystemV/PST8PDT" -> "America/Los_Angeles"
+    | "SystemV/YST9YDT" -> "America/Anchorage"
+    | "SystemV/AST4" -> "Etc/GMT-4"
+    | "SystemV/CST6" -> "Etc/GMT-6"
+    | "SystemV/EST5" -> "Etc/GMT-5"
+    | "SystemV/HST10" -> "Etc/GMT-10"
+    | "SystemV/MST7" -> "Etc/GMT-7"
+    | "SystemV/PST8" -> "Etc/GMT-8"
+    | "SystemV/YST9" -> "Etc/GMT-9"
+    | z -> z
+
+  (* A Timedesc datetime for a named zone at this instant. *)
+  let timedesc_of_epoch name t =
+    match Timedesc.Time_zone.make (canonical_zone name) with
+    | None -> None
+    | Some zone ->
+        Timedesc.of_timestamp ~tz_of_date_time:zone
+          (Timedesc.Span.make ~s:t.epoch_seconds ~ns:t.nanoseconds ())
+
+  (* The UTC offset (seconds) of a named zone at this instant. *)
+  let zone_offset name t =
+    match timedesc_of_epoch name t with
+    | None -> None
+    | Some dt -> (
+        match Timedesc.offset_from_utc dt with
+        | `Single span | `Ambiguous (span, _) ->
+            Some (Int64.to_int (fst (Timedesc.Span.to_s_ns span))))
+
+  let offset_seconds t =
+    match t.tz with
+    | Some (Offset offset) -> Some offset
+    | Some (Zone_name name) -> zone_offset name t
+    | None -> None
+
   let to_ymd_hms t =
-    let days, rem = floor_div_rem (wall_seconds t) seconds_per_day in
-    let days = Int64.to_int days in
-    let h = Int64.to_int (Int64.div rem 3_600L) in
-    let m = Int64.to_int (Int64.div (Int64.rem rem 3_600L) 60L) in
-    let s = Int64.to_int (Int64.rem rem 60L) in
-    (civil_from_days days, (h, m, s), t.nanoseconds)
+    match t.tz with
+    | Some (Zone_name name) -> (
+        match timedesc_of_epoch name t with
+        | Some dt ->
+            ( (Timedesc.year dt, Timedesc.month dt, Timedesc.day dt),
+              (Timedesc.hour dt, Timedesc.minute dt, Timedesc.second dt),
+              t.nanoseconds )
+        | None -> ((1970, 1, 1), (0, 0, 0), 0))
+    | _ ->
+        let days, rem = floor_div_rem (wall_seconds t) seconds_per_day in
+        let days = Int64.to_int days in
+        let h = Int64.to_int (Int64.div rem 3_600L) in
+        let m = Int64.to_int (Int64.div (Int64.rem rem 3_600L) 60L) in
+        let s = Int64.to_int (Int64.rem rem 60L) in
+        (civil_from_days days, (h, m, s), t.nanoseconds)
+
+  (* A named-zone datetime from a wall clock, resolved through the embedded
+     IANA database. *)
+  let of_zone name (y, mo, d) (h, m, s) ns =
+    let* zone = Timedesc.Time_zone.make (canonical_zone name) in
+    let* dt =
+      Result.to_option
+        (Timedesc.make ~tz:zone ~year:y ~month:mo ~day:d ~hour:h ~minute:m ~second:s ~ns ())
+    in
+    let span = match Timedesc.to_timestamp dt with `Single s | `Ambiguous (s, _) -> s in
+    Some
+      {
+        epoch_seconds = fst (Timedesc.Span.to_s_ns span);
+        nanoseconds = ns;
+        tz = Some (Zone_name name);
+      }
+
+  (* A fixed-offset or naive datetime from a wall clock. *)
+  let of_offset_or_naive tz (y, mo, d) (h, m, s) ns =
+    let wall =
+      Int64.add
+        (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
+        (Int64.of_int ((h * 3600) + (m * 60) + s))
+    in
+    let epoch =
+      match tz with Some (Offset offset) -> Int64.sub wall (Int64.of_int offset) | _ -> wall
+    in
+    Some { epoch_seconds = epoch; nanoseconds = ns; tz }
 
   let of_ymd_hms ?tz (y, mo, d) (h, m, s) ns =
-    match Date.of_ymd (y, mo, d) with
-    | None -> None
-    | Some _ -> (
-        if h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0 || ns > 999_999_999 then
-          None
-        else
-          match tz with
-          | Some (Zone_name _) -> None
-          | _ ->
-              let wall =
-                Int64.add
-                  (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
-                  (Int64.of_int ((h * 3600) + (m * 60) + s))
-              in
-              let epoch =
-                match tz with
-                | Some (Offset offset) -> Int64.sub wall (Int64.of_int offset)
-                | _ -> wall
-              in
-              Some { epoch_seconds = epoch; nanoseconds = ns; tz })
+    if h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0 || ns > 999_999_999 then None
+    else
+      match (Date.of_ymd (y, mo, d), tz) with
+      | None, _ -> None
+      | Some _, Some (Zone_name name) -> of_zone name (y, mo, d) (h, m, s) ns
+      | Some _, _ -> of_offset_or_naive tz (y, mo, d) (h, m, s) ns
 
   let compare a b =
     match Int64.compare a.epoch_seconds b.epoch_seconds with

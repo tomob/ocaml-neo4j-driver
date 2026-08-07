@@ -1,6 +1,8 @@
 (* Temporal value types for the Neo4j driver.
 
-   See temporal.ml for the implementation. *)
+   See temporal.ml for the implementation. Named time zones are resolved
+   through the IANA time zone database embedded in [Timedesc] (timedesc-tzdb,
+   1970-2040); unknown zones fall back to opaque handling ([None]). *)
 
 type tz =
   | Offset of int
@@ -168,11 +170,17 @@ module DateTime : sig
   (** The time zone, if any. *)
 
   val of_ymd_hms : ?tz:tz -> int * int * int -> int * int * int -> int -> t option
-  (** A datetime from a wall clock and optional time zone. [None] for named zones (cannot be
-      resolved without a time zone database) or out-of-range values. *)
+  (** A datetime from a wall clock and optional time zone. Named zones are resolved through the IANA
+      time zone database embedded in [Timedesc]; [None] for unknown zones or out-of-range values. *)
 
   val to_ymd_hms : t -> (int * int * int) * (int * int * int) * int
-  (** The wall clock ((y, m, d), (h, m, s), nanoseconds) in the datetime's zone. *)
+  (** The wall clock ((y, m, d), (h, m, s), nanoseconds) in the datetime's zone. For named zones the
+      offset at the instant is resolved from the embedded IANA database. *)
+
+  val offset_seconds : t -> int option
+  (** The UTC offset in seconds at the datetime's instant: the fixed offset for [Offset] zones,
+      resolved from the embedded IANA database for [Zone_name] zones ([None] if the zone is
+      unknown). *)
 
   val add : Duration.t -> t -> t option
   (** Add a duration; [None] for named zones. *)

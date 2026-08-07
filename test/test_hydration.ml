@@ -130,7 +130,8 @@ let temporal () =
   | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (Structure (0x69, [ Int 0L; Int 0L; String "Europe/Warsaw" ])) with
   | Values.DateTime dt ->
-      check string "zone dt" "1970-01-01T00:00:00" (Values.to_string (Values.DateTime dt))
+      (* Epoch 0 in Warsaw: per the IANA database Poland was on UTC+2 in 1970. *)
+      check string "zone dt" "1970-01-01T02:00:00" (Values.to_string (Values.DateTime dt))
   | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (Structure (0x45, [ Int 2L; Int 3L; Int 4L; Int 5L ])) with
   | Values.Duration d ->
