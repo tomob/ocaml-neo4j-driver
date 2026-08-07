@@ -11,7 +11,7 @@
 #   NEO4J_USER=neo4j
 #   NEO4J_PASS=testpassword
 #   TESTKIT_BACKEND_PORT=9876
-#   TESTKIT_VERSION=6.1      # passed to tests.neo4j.suites / TEST_NEO4J_VERSION
+#   TESTKIT_VERSION=2026.06 # the real Neo4j server version (agent "Neo4j/2026.06") passed to tests.neo4j.suites / TEST_NEO4J_VERSION
 #   TESTKIT_NETWORK=neo4j-testkit-net
 #   TESTKIT_BACKEND_IMAGE=ocaml-neo4j-testkit-backend
 set -euo pipefail
@@ -25,7 +25,7 @@ NEO4J_HOST_PORT="${NEO4J_HOST_PORT:-7687}"
 NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-testpassword}"
 TESTKIT_BACKEND_PORT="${TESTKIT_BACKEND_PORT:-9876}"
-TESTKIT_VERSION="${TESTKIT_VERSION:-6.1}"
+TESTKIT_VERSION="${TESTKIT_VERSION:-2026.06}"
 TESTKIT_NETWORK="${TESTKIT_NETWORK:-neo4j-testkit-net}"
 TESTKIT_BACKEND_IMAGE="${TESTKIT_BACKEND_IMAGE:-ocaml-neo4j-testkit-backend}"
 

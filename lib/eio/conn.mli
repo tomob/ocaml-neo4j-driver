@@ -73,9 +73,15 @@ val close : t -> unit
 val hydration : t -> Hydration.t
 (** A fresh hydration scope for the connection's protocol version. *)
 
-type run_metadata = { fields : string list; qid : int option; bookmark : string option }
-(** Metadata of a RUN response: the result's field names, the query id (for multiple results) and
-    the [bookmark] reported for an auto-commit transaction, if any. *)
+type run_metadata = {
+  fields : string list;
+  qid : int option;
+  bookmark : string option;
+  t_first : int option;
+}
+(** Metadata of a RUN response: the result's field names, the query id (for multiple results), the
+    [bookmark] reported for an auto-commit transaction (if any) and the [t_first] timing (result
+    available-after, milliseconds). *)
 
 val run :
   ?mode:Config.access_mode ->

@@ -66,6 +66,7 @@ type result = {
   records : Values.t list list;
   cursor : int ref;
   summary : Packstream.value;
+  t_first : int option;
   query : string;
   parameters : (string * Values.t) list;
   conn : Conn.t;
@@ -374,6 +375,7 @@ let session_run _ctx fields =
           records;
           cursor = ref 0;
           summary;
+          t_first = run_metadata.t_first;
           query = cypher;
           parameters;
           conn;
@@ -426,6 +428,7 @@ let transaction_run _ctx fields =
           records;
           cursor = ref 0;
           summary;
+          t_first = run_metadata.t_first;
           query = cypher;
           parameters;
           conn;
@@ -497,6 +500,9 @@ let result_list fields =
 let stat key stats =
   match List.assoc_opt key stats with Some (Packstream.Int n) -> Int64.to_int n | _ -> 0
 
+let stat_bool key stats =
+  match List.assoc_opt key stats with Some (Packstream.Bool b) -> b | _ -> false
+
 let counters_of metadata =
   let stats =
     match metadata with
@@ -509,8 +515,8 @@ let counters_of metadata =
     [
       ("constraintsAdded", `Int (n "constraints-added"));
       ("constraintsRemoved", `Int (n "constraints-removed"));
-      ("containsSystemUpdates", `Int (n "contains-system-updates"));
-      ("containsUpdates", `Int (n "contains-updates"));
+      ("containsSystemUpdates", `Bool (stat_bool "contains-system-updates" stats));
+      ("containsUpdates", `Bool (stat_bool "contains-updates" stats));
       ("indexesAdded", `Int (n "indexes-added"));
       ("indexesRemoved", `Int (n "indexes-removed"));
       ("labelsAdded", `Int (n "labels-added"));
@@ -537,6 +543,61 @@ let metadata_int key metadata =
       | _ -> None)
   | _ -> None
 
+let metadata_value key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
+
+(* Render a PackStream value as JSON for the summary's plan/profile/notification
+   subtrees. *)
+let rec packstream_to_yojson = function
+  | Packstream.Null -> `Null
+  | Packstream.Bool b -> `Bool b
+  | Packstream.Int n -> `Intlit (Int64.to_string n)
+  | Packstream.Float f -> `Float f
+  | Packstream.String s -> `String s
+  | Packstream.Bytes _ -> `String "<bytes>"
+  | Packstream.List l -> `List (List.map packstream_to_yojson l)
+  | Packstream.Map m -> `Assoc (List.map (fun (k, v) -> (k, packstream_to_yojson v)) m)
+  | Packstream.Structure _ -> `Null
+
+(* Map a Bolt 6 GQL status (with a [neo4j_code]) to a legacy notification dict,
+   mirroring the Python driver's _notification_from_status. *)
+let notification_from_status = function
+  | Packstream.Map fields -> (
+      match List.assoc_opt "neo4j_code" fields with
+      | None -> None
+      | Some _ ->
+          let diag =
+            match List.assoc_opt "diagnostic_record" fields with
+            | Some (Packstream.Map d) -> d
+            | _ -> []
+          in
+          let value key src = Option.map packstream_to_yojson (List.assoc_opt key src) in
+          let items =
+            List.filter_map Fun.id
+              [
+                Option.map (fun v -> ("title", v)) (value "title" fields);
+                Option.map (fun v -> ("code", v)) (value "neo4j_code" fields);
+                Option.map (fun v -> ("description", v)) (value "description" fields);
+                Option.map (fun v -> ("severity", v)) (value "_severity" diag);
+                Option.map (fun v -> ("category", v)) (value "_classification" diag);
+                Option.map (fun v -> ("position", v)) (value "_position" diag);
+              ]
+          in
+          Some (`Assoc items))
+  | _ -> None
+
+(* The legacy notifications of a summary: the server sends them directly (Bolt 5)
+   or as GQL statuses (Bolt 6), which are mapped here. *)
+let notifications_of metadata =
+  match metadata_value "notifications" metadata with
+  | Some (Packstream.List items) -> Some (`List (List.map packstream_to_yojson items))
+  | _ -> (
+      match metadata_value "statuses" metadata with
+      | Some (Packstream.List statuses) -> (
+          match List.filter_map notification_from_status statuses with
+          | [] -> None
+          | notifications -> Some (`List notifications))
+      | _ -> None)
+
 let summary_of r =
   let metadata = r.summary in
   let major, minor = Conn.version r.conn in
@@ -545,8 +606,19 @@ let summary_of r =
     match metadata_string "type" metadata with Some t -> `String t | None -> `String "r"
   in
   let database = match metadata_string "db" metadata with Some d -> `String d | None -> `Null in
-  let available = match metadata_int "t_first" metadata with Some n -> `Int n | None -> `Null in
+  let available = match r.t_first with Some n -> `Int n | None -> `Null in
   let consumed = match metadata_int "t_last" metadata with Some n -> `Int n | None -> `Null in
+  let plan =
+    match metadata_value "plan" metadata with
+    | Some value -> packstream_to_yojson value
+    | None -> `Null
+  in
+  let profile =
+    match metadata_value "profile" metadata with
+    | Some value -> packstream_to_yojson value
+    | None -> `Null
+  in
+  let notifications = match notifications_of metadata with Some value -> value | None -> `Null in
   `Assoc
     [
       ( "serverInfo",
@@ -558,10 +630,10 @@ let summary_of r =
           ] );
       ("counters", counters_of metadata);
       ("database", database);
-      ("notifications", `Null);
+      ("notifications", notifications);
       ("gqlStatusObjects", `List []);
-      ("plan", `Null);
-      ("profile", `Null);
+      ("plan", plan);
+      ("profile", profile);
       ( "query",
         `Assoc
           [

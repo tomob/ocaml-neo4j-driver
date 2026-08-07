@@ -15,7 +15,7 @@
 #   NEO4J_USER=neo4j
 #   NEO4J_PASS=testpassword
 #   TESTKIT_BACKEND_PORT=9876
-#   TESTKIT_VERSION=6.1      # passed to tests.neo4j.suites / TEST_NEO4J_VERSION
+#   TESTKIT_VERSION=2026.06 # the real Neo4j server version (agent "Neo4j/2026.06") passed to tests.neo4j.suites / TEST_NEO4J_VERSION
 #   TESTKIT_NETWORK=neo4j-testkit-net
 #   BACKEND_BINARY=...       # override the built backend executable (default:
 #                            # _build/default/testkitbackend/testkitbackend.exe)
@@ -30,7 +30,7 @@ NEO4J_HOST_PORT="${NEO4J_HOST_PORT:-17687}"
 NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-testpassword}"
 TESTKIT_BACKEND_PORT="${TESTKIT_BACKEND_PORT:-9876}"
-TESTKIT_VERSION="${TESTKIT_VERSION:-6.1}"
+TESTKIT_VERSION="${TESTKIT_VERSION:-2026.06}"
 TESTKIT_NETWORK="${TESTKIT_NETWORK:-neo4j-testkit-net}"
 BACKEND_BINARY="${BACKEND_BINARY:-${REPO_ROOT}/_build/default/testkitbackend/testkitbackend.exe}"
 

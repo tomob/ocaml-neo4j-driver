@@ -208,7 +208,12 @@ let logoff t =
     let* _ = request t ~message:State.Logoff ~re_auth (fun () -> Bolt.logoff t.transport) in
     Ok ()
 
-type run_metadata = { fields : string list; qid : int option; bookmark : string option }
+type run_metadata = {
+  fields : string list;
+  qid : int option;
+  bookmark : string option;
+  t_first : int option;
+}
 
 let map_fields key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
 
@@ -228,7 +233,8 @@ let run_metadata_of metadata =
   in
   let qid = map_fields "qid" metadata |> int_opt in
   let bookmark = map_fields "bookmark" metadata |> string_opt in
-  { fields; qid; bookmark }
+  let t_first = map_fields "t_first" metadata |> int_opt in
+  { fields; qid; bookmark; t_first }
 
 (* The extra map shared by BEGIN and auto-commit RUN: mode, db, impersonation,
    bookmarks, tx_metadata and tx_timeout (milliseconds). *)
