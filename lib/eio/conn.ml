@@ -35,6 +35,10 @@ let default_user_agent = "ocaml-neo4j-driver/0.1.0"
 let capabilities_of t = Capabilities.of_version t.major t.minor
 let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth
 
+let timeout_of_config clock config =
+  if config.connection_timeout = infinity then Eio.Time.Timeout.none
+  else Eio.Time.Timeout.seconds clock config.connection_timeout
+
 (* The bolt_agent header is sent from Bolt 5.3. *)
 let bolt_agent_version major minor = major > 5 || (major = 5 && minor >= 3)
 
@@ -63,22 +67,20 @@ let auth_map (auth : auth) =
     ]
 
 let hello_headers (config : config) major minor =
-  let headers = [ ("user_agent", Packstream.String config.user_agent) ] in
-  let headers =
-    if bolt_agent_version major minor then ("bolt_agent", bolt_agent config.user_agent) :: headers
-    else headers
+  let base = [ ("user_agent", Packstream.String config.user_agent) ] in
+  let bolt_agent =
+    if bolt_agent_version major minor then [ ("bolt_agent", bolt_agent config.user_agent) ] else []
   in
-  let headers =
-    if re_auth_of major minor then headers
+  let auth =
+    if re_auth_of major minor then []
     else
-      headers
-      @ [
-          ("scheme", Packstream.String config.auth.scheme);
-          ("principal", Packstream.String config.auth.principal);
-          ("credentials", Packstream.String config.auth.credentials);
-        ]
+      [
+        ("scheme", Packstream.String config.auth.scheme);
+        ("principal", Packstream.String config.auth.principal);
+        ("credentials", Packstream.String config.auth.credentials);
+      ]
   in
-  Packstream.Map headers
+  Packstream.Map (base @ bolt_agent @ auth)
 
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
@@ -115,6 +117,38 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
       t.state := State.Failed;
       error
 
+(* Part 1 of the connection pipeline: open a TCP (optionally TLS) transport to a
+   single address. *)
+(* let connect_transport net sw ~timeout ~tls address = Transport.connect net sw ~timeout ~tls address *)
+
+(* Record the server agent reported in the HELLO response, if any. *)
+let set_server_agent conn = function
+  | Packstream.Map fields -> (
+      match List.assoc_opt "server" fields with
+      | Some (Packstream.String agent) -> conn.server_agent := Some agent
+      | _ -> ())
+  | _ -> ()
+
+(* Part 3 of the connection pipeline: authenticate with HELLO (+ a separate
+   LOGON for Bolt >= 5.1). On success the connection carries the token. *)
+let authenticate conn config =
+  let major, minor = version conn in
+  let re_auth = re_auth_of major minor in
+  let* hello_metadata =
+    request conn ~message:State.Hello ~re_auth (fun () ->
+        Bolt.hello conn.transport ~headers:(hello_headers config major minor))
+  in
+  set_server_agent conn hello_metadata;
+  let* () =
+    if re_auth then
+      request conn ~message:State.Logon ~re_auth (fun () ->
+          Bolt.logon conn.transport ~auth:(auth_map config.auth))
+      |> Result.map (fun _ -> ())
+    else Ok ()
+  in
+  conn.current_auth := Some config.auth;
+  Ok ()
+
 let connect ?resolver net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in
   let* initial =
@@ -122,13 +156,10 @@ let connect ?resolver net clock sw config =
       (Printf.sprintf "%s:%d" config.host config.port)
   in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in
-  let timeout =
-    if config.connection_timeout = infinity then Eio.Time.Timeout.none
-    else Eio.Time.Timeout.seconds clock config.connection_timeout
-  in
-  (* One connection attempt (TCP + TLS + handshake) for a single address. *)
   let connect_single address =
-    let* transport = Transport.connect net sw ~timeout ~tls address in
+    let* transport =
+      Transport.connect net sw ~timeout:(timeout_of_config clock config) ~tls address
+    in
     let* major, minor = Handshake.negotiate transport in
     Ok (transport, major, minor, address)
   in
@@ -155,30 +186,7 @@ let connect ?resolver net clock sw config =
       current_auth = ref None;
     }
   in
-  let re_auth = re_auth_of major minor in
-  let* hello_metadata =
-    request conn ~message:State.Hello ~re_auth (fun () ->
-        Bolt.hello conn.transport ~headers:(hello_headers config major minor))
-  in
-  (match hello_metadata with
-  | Packstream.Map fields -> (
-      match List.assoc_opt "server" fields with
-      | Some (Packstream.String agent) -> conn.server_agent := Some agent
-      | _ -> ())
-  | _ -> ());
-  let* () =
-    if re_auth then (
-      let* _ =
-        request conn ~message:State.Logon ~re_auth (fun () ->
-            Bolt.logon conn.transport ~auth:(auth_map config.auth))
-      in
-      conn.current_auth := Some config.auth;
-      Ok ())
-    else begin
-      conn.current_auth := Some config.auth;
-      Ok ()
-    end
-  in
+  let* () = authenticate conn config in
   Ok conn
 
 let logon t auth =
