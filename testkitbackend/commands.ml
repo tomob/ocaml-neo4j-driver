@@ -363,7 +363,7 @@ let session_run _ctx fields =
   let cypher = string "cypher" fields in
   let parameters = decode_params fields in
   let metadata, timeout = tx_config fields in
-  match Session.run session.session ~query:cypher ~parameters ?timeout ?metadata () with
+  match Session.run session.session ~query:cypher ~parameters ?timeout ?metadata with
   | Error error -> raise (Driver_error error)
   | Ok (run_metadata, records, summary) ->
       let conn = session_conn session in
@@ -389,7 +389,7 @@ let session_begin_transaction _ctx fields =
   let session_id = int "sessionId" fields in
   let session = get_session session_id in
   let metadata, timeout = tx_config fields in
-  match Session.begin_transaction session.session ?metadata ?timeout () with
+  match Session.begin_transaction ?metadata ?timeout session.session with
   | Error error -> raise (Driver_error error)
   | Ok tx ->
       let id = new_id () in
