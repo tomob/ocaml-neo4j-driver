@@ -66,6 +66,18 @@ The four opam packages, in dependency order:
   values, hydration).
 - [neodriver_eio] — the Eio (OCaml 5) backend.
 
+{1 API reference}
+
+The per-package module documentation (each root module re-exports its API):
+
+- {{:Neodriver/index.html }Neodriver} — the aggregator (see also the Modules list below).
+- {{:../neodriver_core/Neodriver_core/index.html }Neodriver_core} — Errors, Config,
+  Addressing, Deadline, Temporal, Values, Hydration, Capabilities.
+- {{:../neodriver_eio/Neodriver_eio/index.html }Neodriver_eio} — Driver, Conn, Session,
+  Tx, Neo4jResult, Summary, Transport, Bolt, State, Handshake.
+- {{:../neodriver_packstream/Neodriver_packstream/index.html }Neodriver_packstream} —
+  Packstream.
+
 {1 Modules}
 
 The root {!module:Neodriver} re-exports the whole API:
