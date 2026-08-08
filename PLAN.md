@@ -205,7 +205,15 @@ not yet implemented).
 - **Phase C1 — API documentation (odoc)**: audit all `.mli` files (public declarations must carry
   a doc comment) and document the new API; add odoc index pages (a top-level `index.mld` and one
   per package) so `dune build @doc` produces a browsable site with a landing page; keep
-  `dune build @doc` clean (the CI already runs it on every push).
+  `dune build @doc` clean (the CI already runs it on every push). **Done** (commit "step C1"): every
+  `.mli` header comment is now an odoc module doc (`(** ... *)`), the previously undocumented
+  `Summary` types (`counters`/`server_info`/`t`) carry doc comments, and the stale `Driver`
+  description in `neodriver_eio.mli` is refreshed. Per-package `index.mld` landing pages (wired with
+  `(documentation (package ...))` stanzas) were added: the `neodriver` page is the project landing
+  with a quickstart (`Driver.connect` + `Session.run`) and links to every module; `core`/`eio`/
+  `packstream` pages list their modules. Note: dune auto-generates the top-level `index.html`
+  (package list), so the project landing page lives in the `neodriver` package index rather than a
+  root `index.mld` (dune has no hook for the top-level page). `dune build @doc` is warning-free.
 - **Phase C2 — quickstart** (`docs/quickstart.md`): adding the driver as a dependency (opam
   `opam install neodriver neodriver_eio`, pinning for local development; dune
   `(libraries neodriver neodriver_eio eio_main)`), plus a minimal program: connect with
