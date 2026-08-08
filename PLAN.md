@@ -267,7 +267,14 @@ not yet implemented).
 - **Phase C6 — README polish**: restructure `README.md` into badges (CI, docs), prerequisites,
   a quickstart snippet linking to `docs/quickstart.md`, documentation/examples links, an honest
   features/status section (what works vs. planned, pointing at `PLAN.md`), the TestKit conformance
-  note and the license.
+  note and the license. **Done** (commit "step C6"): `README.md` now has CI / docs / OCaml / license
+  badges, a compiled-and-checked quickstart snippet linking to `docs/quickstart.md`, a features
+  section (Bolt 3.0 / 4.2-4.4 / 5.0-5.8 / 6.0, TLS schemes, lazy streaming results, explicit and
+  managed transactions, bookmarks, named-zone temporal types, basic auth; a not-yet-implemented
+  list pointing at `PLAN.md`), the four-package table (including the `neodriver` aggregator),
+  documentation/examples links (quickstart, usage, examples, the Pages API reference), the TestKit
+  conformance note (114/126, 12 skipped), the corrected prerequisites (OCaml >= 5.2, dune >= 3.13)
+  and the MIT license. The original reference-implementation paragraph is kept.
 
 ---
 
