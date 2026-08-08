@@ -1,24 +1,34 @@
 (executable
  (name connect)
  (modules connect common)
- (libraries neodriver neodriver_eio eio_main))
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
 
 (executable
  (name run_cypher)
  (modules run_cypher common)
- (libraries neodriver neodriver_eio eio_main))
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
 
 (executable
  (name create)
  (modules create common)
- (libraries neodriver neodriver_eio eio_main))
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
 
 (executable
  (name transaction)
  (modules transaction common)
- (libraries neodriver neodriver_eio eio_main))
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
 
 (executable
  (name managed_transaction)
  (modules managed_transaction common)
- (libraries neodriver neodriver_eio eio_main))
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
