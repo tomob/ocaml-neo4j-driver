@@ -236,7 +236,8 @@ let run_fetch () =
       | Error e -> fail (Errors.to_string e));
       (match Neo4jResult.next result with Ok None -> () | _ -> fail "expected end of stream");
       (match Tx.commit tx with Ok _ -> () | Error e -> fail (Errors.to_string e));
-      check (list int) "wire sequence" [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
+      check (list int) "wire sequence"
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
         (message_tags received);
       Conn.close conn)
 

@@ -242,7 +242,8 @@ let run_fetch_streams () =
       | Ok records -> check (list int) "fetch remaining" [ 5 ] (List.map record_int records)
       | Error error -> fail (Errors.to_string error));
       (match Neo4jResult.next result with Ok None -> () | _ -> fail "expected end of stream");
-      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F; 0x3F; 0x3F ]
+      check (list int) "wire sequence"
+        [ 0x01; 0x6A; 0x10; 0x3F; 0x3F; 0x3F ]
         (message_tags received);
       let pull_sizes =
         List.filter_map

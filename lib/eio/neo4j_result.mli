@@ -11,14 +11,9 @@ type t
 (** A lazily-streamed result over a connection. *)
 
 val make :
-  ?fetch_size:int ->
-  ?query:string ->
-  ?parameters:(string * Values.t) list ->
-  Conn.stream ->
-  t
-(** Wrap a stream (as produced by [Session.run] or [Tx.run]) into a [t].
-    [fetch_size] is the number of records pulled per PULL when the buffer runs
-    out (default 1000). *)
+  ?fetch_size:int -> ?query:string -> ?parameters:(string * Values.t) list -> Conn.stream -> t
+(** Wrap a stream (as produced by [Session.run] or [Tx.run]) into a [t]. [fetch_size] is the number
+    of records pulled per PULL when the buffer runs out (default 1000). *)
 
 val stream : t -> Conn.stream
 (** The underlying stream (for the summary, buffered records and raw pull). *)

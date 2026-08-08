@@ -36,17 +36,16 @@ let rec ensure t =
   match t.pending with
   | _ :: _ -> Ok ()
   | [] ->
-      if Conn.has_more t.stream then
+      if Conn.has_more t.stream then (
         let* records = Conn.pull_stream t.stream ~n:t.fetch_size in
         t.pending <- records;
-        ensure t
+        ensure t)
       else Ok ()
 
 let record_at t =
   match t.pending with
   | record :: _ -> Ok (Some record)
-  | [] -> (
-      match Conn.error t.stream with Some error -> Error error | None -> Ok None)
+  | [] -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
 let next t =
   let* () = ensure t in
@@ -54,8 +53,7 @@ let next t =
   | record :: rest ->
       t.pending <- rest;
       Ok (Some record)
-  | [] -> (
-      match Conn.error t.stream with Some error -> Error error | None -> Ok None)
+  | [] -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
 let peek t =
   let* () = ensure t in
