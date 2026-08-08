@@ -1,6 +1,6 @@
 (lang dune 3.13)
 (name ocaml_neo4j_driver)
-(version 0.1.1)
+(version 0.1.2)
 (license MIT)
 (authors "Tomasz Barański <tomasz.baranski@posteo.net>")
 (maintainers "Tomasz Barański <tomasz.baranski@posteo.net>")
