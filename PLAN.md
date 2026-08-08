@@ -228,7 +228,13 @@ not yet implemented).
   transactions (`Session.execute` with retry and `max_transaction_retry_time`); authentication
   (basic only; LOGON vs inline auth by Bolt version); the `Values`/`Temporal`/`Hydration` types;
   error handling (`Errors.t`, `is_retryable`); configuration (timeouts, retry, fetch size); and an
-  honest "not yet implemented" list.
+  honest "not yet implemented" list. **Done** (commit "step C3"): `docs/usage.md` covers what to
+  open (`open Neodriver`), connecting (schemes/TLS, `neo4j://` unsupported, lazy session), sessions
+  (`Session.run`, bookmarks), explicit and managed transactions (with the `Session.conn`/`Conn.hydration`
+  pattern and a data-return-via-ref example), authentication (LOGON vs inline HELLO), value types,
+  error handling, configuration (with the honest note that `fetch_size` is not yet applied and the
+  pool is unimplemented) and a "not yet implemented" list. The three main snippets were validated to
+  compile. Links to `examples/` (created in C4) and the usage page.
 - **Phase C4 — example programs** (`examples/`, modelled on
   `neo4j-examples/python-driver-examples`): a shared `common.ml` (env config `NEO4J_URI`/
   `NEO4J_USER`/`NEO4J_PASSWORD` + an `Eio_main` wrapper) and self-contained programs — `connect.ml`,
