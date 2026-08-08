@@ -48,6 +48,24 @@ jobs:
           touch _build/default/_doc/_html/.nojekyll
           mkdir -p _build/default/_doc/_html/docs
           cp docs/*.md _build/default/_doc/_html/docs/
+          # dune hardcodes the top-level index.html (a plain package list); the
+          # neodriver landing page carries the README-derived content, so the
+          # entry page redirects there. dune generates index.html read-only, so
+          # write a temp file and move it over.
+          cat > _build/default/_doc/_html/index.html.tmp <<'EOF'
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8"/>
+              <meta http-equiv="refresh" content="0; url=neodriver/index.html"/>
+              <title>ocaml-neo4j-driver</title>
+            </head>
+            <body>
+              <p><a href="neodriver/index.html">ocaml-neo4j-driver documentation</a></p>
+            </body>
+          </html>
+          EOF
+          mv -f _build/default/_doc/_html/index.html.tmp _build/default/_doc/_html/index.html
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

@@ -8,10 +8,11 @@ maintainer: ["Tomasz Barański <tomasz.baranski@posteo.net>"]
 authors: ["Tomasz Barański <tomasz.baranski@posteo.net>"]
 license: "MIT"
 homepage: "https://github.com/tomob/ocaml-neo4j-driver"
+doc: "https://tomob.github.io/ocaml-neo4j-driver/"
 bug-reports: "https://github.com/tomob/ocaml-neo4j-driver/issues"
 depends: [
+  "dune" {>= "3.13"}
   "ocaml" {>= "5.2.0"}
-  "dune" {>= "3.13" & >= "3.13"}
   "alcotest" {with-test}
   "odoc" {with-doc}
 ]

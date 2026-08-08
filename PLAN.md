@@ -259,10 +259,19 @@ not yet implemented).
   `.github/workflows/deploy-docs.yml` builds `@doc` on pushes to `main` (plus manual dispatch) with
   `ocaml/setup-ocaml` + `opam install . --deps-only` + `odoc`, stages the site (`.nojekyll`, plus
   `docs/*.md` copied under `docs/`) and deploys via `actions/configure-pages@v5`,
-  `upload-pages-artifact@v3` and `deploy-pages@v4` (two jobs: build + deploy with the
-  `github-pages` environment). The `index.mld` quickstart link now points at
-  `https://tomob.github.io/ocaml-neo4j-driver/docs/quickstart.md`. The only remaining step is the
-  manual repository setting Pages → Source = "Deploy from a GitHub Actions".
+   `upload-pages-artifact@v3` and `deploy-pages@v4` (two jobs: build + deploy with the
+   `github-pages` environment). The only remaining step is the
+   manual repository setting Pages → Source = "Deploy from a GitHub Actions".
+
+- **Release prep (opam + docs site)**: the four `*.opam` files pass `opam lint` with a proper
+  maintainer, `homepage`, `doc` (the Pages site), `bug-reports`, `dev-repo` and license; the
+  `dune-project` dependencies were cleaned up (unused `fmt`/`logs` dropped from `neodriver_core`,
+  `cstruct` added to `neodriver_eio`, the doubled `dune` constraint resolved). The odoc site now
+  has rendered `quickstart`/`usage` pages (odoc `.mld`, converted from `docs/*.md`, tables as
+  lists) linked from the `neodriver` landing page, which was enriched with the README content
+  (features, packages, docs links, TestKit note); the top-level `index.html` (which dune hardcodes
+  as a package list) is replaced at deploy time by a meta-refresh redirect to the `neodriver`
+  landing, so the Pages homepage shows the README-derived content.
 
 - **Phase C6 — README polish**: restructure `README.md` into badges (CI, docs), prerequisites,
   a quickstart snippet linking to `docs/quickstart.md`, documentation/examples links, an honest

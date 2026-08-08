@@ -3,12 +3,33 @@
 The friendly entry point of the driver: [open Neodriver] exposes the whole
 API (the [neodriver_packstream], [neodriver_core] and [neodriver_eio]
 packages) under one namespace with short names.
+
+{1 Features}
+
+- Bolt protocol 3.0, 4.2-4.4, 5.0-5.8 and 6.0.
+- Plain [bolt://] and TLS [bolt+s://] / [bolt+ssc://] connections.
+- Auto-commit queries with lazy streaming results ([Neo4jResult] / [Summary]).
+- Explicit and managed transactions with automatic retry.
+- Bookmarks.
+- Temporal types with named time zones (embedded IANA database plus an LMT
+  fallback before 1970).
+- Basic authentication (LOGON after HELLO on Bolt >= 5.1).
+- TestKit conformance: 114 of 126 tests passing (12 skipped).
+
+{1 Documentation}
+
+- {{:quickstart.html }Quickstart} — the first program.
+- {{:usage.html }Usage} — sessions, transactions, value types, errors.
+- {{:https://github.com/tomob/ocaml-neo4j-driver/tree/main/examples }Examples} —
+  runnable programs.
+- {{:https://github.com/tomob/ocaml-neo4j-driver/blob/main/PLAN.md }PLAN.md} —
+  the implementation plan and the status of every phase.
+
 {1 Quickstart}
 
 Add the driver to your dune project with [neodriver] and [neodriver_eio] (and
-[Eio_main] to run [Eio_main.run]); see the
-[quickstart](https://tomob.github.io/ocaml-neo4j-driver/docs/quickstart.md).
-A minimal program that connects and runs a query:
+[Eio_main] to run [Eio_main.run]). A minimal program that connects and runs a
+query:
 
 {v
 open Neodriver
@@ -20,7 +41,8 @@ let () =
     Eio.Switch.run (fun sw ->
       let session =
         match
-          Driver.connect ~uri:"bolt://localhost:7687" ~auth:(Conn.basic_auth ())
+          Driver.connect ~uri:"bolt://localhost:7687"
+            ~auth:(Conn.basic_auth ~credentials:"your_password" ())
             net clock sw
         with
         | Ok session -> session
@@ -33,6 +55,16 @@ let () =
           | _ -> ())
       | Error error -> failwith (Errors.to_string error)))
 v}
+
+{1 Packages}
+
+The four opam packages, in dependency order:
+
+- [neodriver] — this aggregator: [open Neodriver] covers the whole API.
+- [neodriver_packstream] — PackStream binary serialization.
+- [neodriver_core] — transport-agnostic core (errors, config, temporal
+  values, hydration).
+- [neodriver_eio] — the Eio (OCaml 5) backend.
 
 {1 Modules}
 

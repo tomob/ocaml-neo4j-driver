@@ -1,0 +1,296 @@
+{0 Usage}
+
+This guide walks through the driver's main API. If you have not connected yet,
+start with the {{:quickstart.html }quickstart}. Runnable programs live in the
+{{:https://github.com/tomob/ocaml-neo4j-driver/tree/main/examples }examples}
+directory.
+
+{1 Packages and what to open}
+
+[open Neodriver] exposes the whole driver: [Driver], [Conn], [Session], [Tx],
+[Neo4jResult], [Summary], and the core types [Errors], [Config], [Addressing],
+[Values], [Temporal], [Hydration] and [Packstream]. Programs also need the
+[eio_main] library for the [Eio_main.run] entry point.
+
+{1 Connecting}
+
+{v
+let session =
+  Driver.connect ~uri:"bolt://localhost:7687"
+    ~auth:(Conn.basic_auth ~credentials:"password" ())
+    net clock sw
+v}
+
+- [Driver.connect] parses the URI and returns a {b lazily connecting}
+  [Session.t]: the server is contacted only on the first query.
+- [Conn.basic_auth] builds the authentication token (default principal
+  [neo4j]; only the [basic] scheme is supported).
+- [?user_agent], [?connection_timeout] (seconds, default 30.0) and [?config]
+  (a [Session.config]) tune the connection.
+- The [sw] switch must outlive the session (it hosts the connection attempt).
+- [?resolver] replaces address lookup (useful for custom DNS resolution).
+
+{2 Schemes and TLS}
+
+- [bolt://] — none (plain).
+- [bolt+s://] — TLS, certificate validated against the OS trust store.
+- [bolt+ssc://] — TLS, any certificate accepted (self-signed allowed).
+
+[neo4j://] (routing) is not implemented: a [neo4j://] URI fails on first use
+with a [Service_unavailable] error.
+
+{1 Sessions}
+
+[Session.run] sends an auto-commit query and returns a lazily streamed
+[Neo4jResult.t]:
+
+{v
+match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
+| Ok result -> (
+    match Neo4jResult.values result with
+    | Ok [ [ Values.Int n ] ] -> Printf.printf "n = %Ld\n" n
+    | _ -> ())
+| Error error -> failwith (Errors.to_string error)
+v}
+
+- Parameters are a [(string * Values.t) list].
+- [Neo4jResult.values] drains the result into [Values.t list list] (one list
+  per record). [Neo4jResult.consume] drains and returns the [Summary];
+  [next], [peek] and [fetch] iterate without consuming everything.
+- The session's bookmarks are updated automatically once an auto-commit result
+  is consumed; read them with [Session.last_bookmarks] and seed them via
+  [Session.config]'s [bookmarks].
+- [Session.config] (base [Session.default_config]) also selects the [database]
+  and the transaction retry settings.
+
+{1 Transactions}
+
+{2 Explicit}
+
+{v
+let conn =
+  match Session.conn session with Ok conn -> conn | Error error -> failwith (Errors.to_string error)
+in
+let hydration = Conn.hydration conn in
+match Session.begin_transaction session with
+| Ok tx -> (
+    match
+      Tx.run tx ~hydration ~query:"CREATE (:Person {name: $name})"
+        ~parameters:[ ("name", Values.String "Alice") ]
+    with
+    | Ok result -> (
+        match Neo4jResult.consume result with
+        | Ok _ -> (
+            match Tx.commit tx with
+            | Ok _ -> ()
+            | Error error ->
+                ignore (Tx.rollback tx);
+                failwith (Errors.to_string error))
+        | Error error ->
+            ignore (Tx.rollback tx);
+            failwith (Errors.to_string error))
+    | Error error ->
+        ignore (Tx.rollback tx);
+        failwith (Errors.to_string error))
+| Error error -> failwith (Errors.to_string error)
+v}
+
+- [Tx.run] needs a hydration scope, obtained with
+  [Conn.hydration (Session.conn session)].
+- [Tx.commit] applies the writes and returns the bookmark ([string option]);
+  [Tx.rollback] discards them. A session can hold only one open transaction.
+
+{2 Managed (with retry)}
+
+{v
+let conn =
+  match Session.conn session with Ok conn -> conn | Error error -> failwith (Errors.to_string error)
+in
+let hydration = Conn.hydration conn in
+let created = ref 0 in
+let work tx =
+  match
+    Tx.run tx ~hydration ~query:"CREATE (:Person {name: $name})"
+      ~parameters:[ ("name", Values.String "Bob") ]
+  with
+  | Ok result -> (
+      match Neo4jResult.consume result with
+      | Ok summary ->
+          created := summary.counters.nodes_created;
+          Ok ()
+      | Error error -> Error (Session.Driver error))
+  | Error error -> Error (Session.Driver error)
+in
+match Session.execute session ~mode:Config.Write work with
+| Ok () -> Printf.printf "created %d node(s)\n" !created
+| Error (Session.Driver error) -> failwith (Errors.to_string error)
+| Error Session.Client -> failwith "the application aborted the transaction"
+v}
+
+- [Session.execute] runs [work] inside a transaction and commits it on [Ok].
+  Failures that [Errors.is_retryable] treats as retryable are retried (with a
+  jittered backoff) until [max_transaction_retry_time] runs out; [Error
+  (Session.Driver e)] retries when retryable, [Error Session.Client] never
+  does.
+- The work callback returns [(unit, Session.failure) result], so return query
+  data through a ref, as above.
+
+{1 Authentication}
+
+Only [basic]. For Bolt >= 5.1 the token is sent via a separate LOGON message
+after HELLO; older versions inline it in HELLO. [Conn.re_auth conn auth]
+re-authenticates when the token changes, and [Conn.logon]/[Conn.logoff] manage
+the authenticated state directly.
+
+{1 Value types}
+
+[Values.t] is a plain variant, so parameters are built explicitly — there is
+no implicit conversion from OCaml data. The common cases:
+
+- [true] / [false] → [Values.Bool b]
+- [42L] → [Values.Int n] (an [int64])
+- [3.14] → [Values.Float f]
+- ["hello"] → [Values.String s]
+- a list of values → [Values.List [ Values.Int 1L; Values.Int 2L ]]
+- a record → [Values.Map [ ("key", value); ... ]]
+- [None] (an absent value) → [Values.Null]
+
+Integers are [int64] — use [42L], not [42]. [Null] is also how you represent
+[None] inside a [List] or [Map].
+
+Graph, spatial, temporal and vector values are built through their types:
+
+{v
+let born = Temporal.DateTime.of_ymd_hms (1990, 5, 17) (12, 0, 0) 0 |> Option.get in
+let home = Values.Point { srid = 4326; x = 21.0122; y = 52.2297; z = None } in
+let params =
+  [
+    ("name", Values.String "Alice");
+    ("born", Values.DateTime born);
+    ("home", home);
+    ("tags", Values.List [ Values.String "admin"; Values.String "staff" ]);
+    ("meta", Values.Map [ ("active", Values.Bool true) ]);
+  ]
+v}
+
+A small helper makes converting a custom record convenient:
+
+{v
+let person_to_values { name; age; tags } =
+  Values.Map
+    [
+      ("name", Values.String name);
+      ("age", Values.Int age);
+      ("tags", Values.List (List.map (fun t -> Values.String t) tags));
+    ]
+v}
+
+Reading values back is pattern matching:
+
+{v
+match value with
+| Values.Int n -> Printf.printf "int %Ld\n" n
+| Values.String s -> Printf.printf "string %s\n" s
+| Values.List items -> List.iter print_value items
+| Values.Map fields -> List.iter (fun (k, v) -> ...) fields
+| Values.Node node -> Printf.printf "%s\n" (String.concat "," node.labels)
+| Values.Broken b -> (* the driver could not decode it *)
+| _ -> ()
+v}
+
+[Values.to_string] renders any value for logging. The graph types ([Node],
+[Relationship], [Path]) are typically read from results, not sent as
+parameters.
+
+[Temporal] provides [Date], [Time], [DateTime] and [Duration]. Named time
+zones resolve through the embedded IANA database (1970-2040) with an LMT
+fallback before 1970; [DateTime.of_ymd_hms], [to_ymd_hms] and
+[offset_seconds] handle the wall-clock/epoch conversions. [Hydration]
+converts between PackStream and [Values.t]; you rarely touch it directly.
+
+{1 Errors}
+
+[Session.run], [Tx.run] and friends return [(_, Errors.t) result]. [Errors.t]
+covers server errors ([Neo4j of { code; message; classification }]),
+[Service_unavailable], [Transaction_error], [Configuration_error] and more.
+[Errors.to_string] renders a message; [Errors.is_retryable] tells you whether
+a failure is worth retrying.
+
+{1 Configuration}
+
+{2 Driver.connect options}
+
+- [uri] (required) — e.g. [bolt://localhost:7687], [bolt+s://host:7687],
+  [bolt+ssc://host:7687] ([neo4j://] not supported yet).
+- [auth] (required) — from [Conn.basic_auth ?principal ?credentials ()]
+  (principal defaults to [neo4j], credentials to the empty string).
+- [?user_agent] — the HELLO user agent (default [Conn.default_user_agent]).
+- [?connection_timeout] (seconds) — bounds the whole connect attempt and
+  subsequent reads/writes (default 30.0; [infinity] disables the deadline).
+- [?config] — a [Session.config] (see below).
+- [?resolver] — [Addressing.t -> (Addressing.t list, Errors.t) result];
+  replaces the address lookup, each returned address being tried in turn.
+
+{2 Session settings (Session.config)}
+
+Base it on [Session.default_config] and update only what you need:
+
+{v
+let config = { Session.default_config with database = Some "mydb"; bookmarks = [ "bm-1" ] } in
+Driver.connect ~uri ~auth ~config net clock sw
+v}
+
+- [database] — database selected in RUN/BEGIN (honored).
+- [access_mode] — [Read] / [Write], sent in BEGIN for explicit and managed
+  transactions (honored for explicit/managed).
+- [bookmarks] — initial bookmarks, sent in RUN/BEGIN (honored).
+- [impersonated_user] — user to impersonate, sent in BEGIN (honored for
+  explicit/managed).
+- [max_transaction_retry_time] — retry budget of [Session.execute] (default
+  30.0 s, honored).
+- [initial_retry_delay] — first backoff of [Session.execute] (default 1.0 s,
+  honored).
+- [retry_delay_multiplier] — backoff growth (default 2.0, honored).
+- [retry_delay_jitter_factor] — backoff jitter (default 0.2, honored).
+- [fetch_size] — stream batch size hint (accepted, not yet applied).
+
+{2 Query and transaction options}
+
+[Session.run], [Session.begin_transaction] and [Session.execute] accept:
+
+- [?timeout] (seconds) — the transaction timeout, sent as [tx_timeout].
+- [?metadata] — a [(string * Values.t) list] sent as [tx_metadata].
+- [Session.execute] additionally takes the required
+  [mode:Config.access_mode] (or leave it out and set the session's
+  [access_mode]).
+
+{2 Validated config records (Config)}
+
+[Config.make_workspace_config] and [Config.make_pool_config] build their
+records with validation (a [Configuration_error] on out-of-range values):
+
+- [make_workspace_config]: [connection_acquisition_timeout],
+  [max_transaction_retry_time], [initial_retry_delay],
+  [retry_delay_multiplier], [retry_delay_jitter_factor], [fetch_size],
+  [database], [impersonated_user], [disable_auto_commit_retries].
+- [make_pool_config]: [max_connection_lifetime], [liveness_check_timeout],
+  [max_connection_pool_size], [connection_timeout],
+  [connection_write_timeout], [keep_alive], [telemetry_disabled].
+
+These mirror the Python driver's settings, but the connection pool is {b not
+implemented yet}: each [Driver.connect] produces one session that owns one
+connection, so the pool options above and [disable_auto_commit_retries] have
+no effect for now.
+
+{1 Not yet implemented}
+
+- Routing: [neo4j://], server-side routing, home database.
+- Connection pool.
+- Impersonation on auto-commit queries (it works in transactions via the BEGIN
+  extra).
+- Notification filtering and telemetry.
+- The high-level API ([execute_query], [verify_connectivity]) and bookmark/auth
+  managers.
+
+See {{:https://github.com/tomob/ocaml-neo4j-driver/blob/main/PLAN.md }PLAN.md}
+for the full roadmap.
