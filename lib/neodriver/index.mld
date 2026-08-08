@@ -6,8 +6,9 @@ packages) under one namespace with short names.
 {1 Quickstart}
 
 Add the driver to your dune project with [neodriver] and [neodriver_eio] (and
-[Eio_main] to run [Eio_main.run]); see [docs/quickstart.md]. A minimal program
-that connects and runs a query:
+[Eio_main] to run [Eio_main.run]); see the
+[quickstart](https://github.com/tomob/ocaml-neo4j-driver/blob/main/docs/quickstart.md).
+A minimal program that connects and runs a query:
 
 {v
 open Neodriver

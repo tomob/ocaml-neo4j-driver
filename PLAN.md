@@ -217,7 +217,11 @@ not yet implemented).
 - **Phase C2 — quickstart** (`docs/quickstart.md`): adding the driver as a dependency (opam
   `opam install neodriver neodriver_eio`, pinning for local development; dune
   `(libraries neodriver neodriver_eio eio_main)`), plus a minimal program: connect with
-  `Driver.connect` and run a simple `RETURN` query.
+  `Driver.connect` and run a simple `RETURN` query. **Done** (commit "step C2"):
+  `docs/quickstart.md` covers prerequisites, adding the dependency (opam install, local pinning,
+  the `dune` stanza), a minimal `hello.ml` (connect + `RETURN 1 AS n`, validated to compile) and
+  explains the lazy session, `Conn.basic_auth`, `Neo4jResult.values`/`consume`, the `sw` switch
+  lifetime and the unsupported `neo4j://`. The README links to the quickstart.
 - **Phase C3 — usage documentation** (`docs/usage.md`): the packages and what to open; connecting
   (`Conn.config`, the TLS schemes `bolt://` / `bolt+s` / `bolt+ssc`, `neo4j://` not yet supported);
   sessions (`Session.run`, access modes, bookmarks); explicit transactions (`Tx`) and managed
@@ -235,7 +239,10 @@ not yet implemented).
   `@doc` on `main` and publishes `_build/default/_doc/_html/` through the Pages artifact API
   (`actions/configure-pages` / `upload-pages-artifact` / `deploy-pages`). Requires the repository
   setting Pages → Source = "Deploy from a GitHub Actions" (a manual repo setting, not a file).
-  The existing `ci.yml` keeps verifying `dune build @doc` on every push/PR.
+  The existing `ci.yml` keeps verifying `dune build @doc` on every push/PR. The `neodriver`
+  package landing page (`index.mld`) links to the quickstart via the GitHub blob URL — **to be
+  re-pointed at the GitHub Pages docs site once C5 deploys it**.
+
 - **Phase C6 — README polish**: restructure `README.md` into badges (CI, docs), prerequisites,
   a quickstart snippet linking to `docs/quickstart.md`, documentation/examples links, an honest
   features/status section (what works vs. planned, pointing at `PLAN.md`), the TestKit conformance

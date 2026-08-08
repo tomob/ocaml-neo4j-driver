@@ -7,6 +7,11 @@ Neo4j Python driver.
 
 See [PLAN.md](./PLAN.md) for the full implementation plan.
 
+## Quickstart
+
+The [quickstart](./docs/quickstart.md) shows how to add the driver to a dune
+project and run a first `RETURN` query.
+
 ## Packages
 
 | Package              | Description                                                     |
