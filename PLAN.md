@@ -119,6 +119,30 @@ ocaml-neo4j-driver/            # this repo
 
 - `pool.ml`: address→queue mapping + reservation counter, `max_connection_pool_size`, waiting on `Eio.Semaphore`/mutex+cond with `connection_acquisition_timeout`, release with RESET (or kill for defunct), **liveness check**, `max_connection_lifetime`/`stale`, `deactivate`, **`IncompleteCommit`** (ambiguous commit).
 
+### Phase A6.5 — Unblock the remaining TestKit skips (UUID + vector)
+
+The local TestKit suite (`tests.neo4j.suites`, real server) skips 12 tests:
+8 are feature-gated (5 UUID + 3 vector — the backend does not report
+`Feature:API:Type.UUID` / `Feature:API:Type.Vector`) and 4 are multi-db
+runtime skips on the community edition (a server limitation, not driver
+code). Phase A6 (pool) does not unblock any of them — pool tests live in
+`tests/stub/`, outside the real-server suite.
+
+- **Vector (3 tests)**: `Values.Vector` and the backend's `CypherVector`
+  serialization already exist; verify the round-trip (echo and parameters)
+  and add `Feature:API:Type.Vector` to `testkitbackend/features.ml`.
+- **UUID (5 tests)**: add a UUID value type — `Values.Uuid` (16 bytes),
+  PackStream hydration/dehydration of the Bolt UUID structure (tag and byte
+  order per the Python driver), `CypherUuid` encode/decode in
+  `testkitbackend/testkit_values.ml`, and add `Feature:API:Type.UUID` to
+  `features.ml`.
+- **Multi-db (4 tests)**: out of scope for driver code — they require a server
+  with multiple databases (enterprise edition); they stay skipped in the
+  community-based local run.
+
+Target: the 8 feature-gated skips become passing (114 -> 122 in the local
+suite), leaving only the 4 server-gated multi-db skips.
+
 ### Phase A7 — Routing + home db + SSR
 
 - **ROUTE** (`0x66`) with routing_context/bookmarks/db; fallback to the procedures `dbms.routing.getRoutingTable` (Bolt 4.0) and `dbms.cluster.routing.getRoutingTable` (Bolt 3).
