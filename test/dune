@@ -1,3 +1,4 @@
 (test
  (name test_main)
+ (package neodriver)
  (libraries alcotest neodriver test_integration))

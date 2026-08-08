@@ -152,7 +152,22 @@ let rec serve_behavior behavior flow =
           reply_message flow response)
         responses
 
+(* Whether binding a loopback TCP socket is allowed. Some sandboxed
+   environments (e.g. the opam build on macOS arm64) forbid it with an EPERM
+   on [bind]; the mock-server tests are then skipped rather than failed. *)
+let can_bind =
+  lazy
+    (Eio_main.run (fun env ->
+         Eio.Switch.run (fun sw ->
+             try
+               ignore
+                 (Eio.Net.listen ~reuse_addr:true ~backlog:1 ~sw (Eio.Stdenv.net env)
+                    (`Tcp (Eio.Net.Ipaddr.V4.loopback, 0)));
+               true
+             with _ -> false)))
+
 let with_server handler client =
+  if not (Lazy.force can_bind) then Alcotest.skip ();
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
