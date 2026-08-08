@@ -206,6 +206,40 @@ let close_rolls_back () =
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x11; 0x13 ] (message_tags received);
       Conn.close conn)
 
+(* fetch drains the remaining Tx result and next then reports the end. *)
+let run_fetch () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records ([ [ Packstream.Int (Int64.of_int 1) ] ], false);
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let conn = connect net clock sw port in
+      let tx = begin_tx conn in
+      let hydration = Conn.hydration conn in
+      let result =
+        match Tx.run tx ~hydration ~query:"RETURN 1" ~parameters:[] with
+        | Ok result -> result
+        | Error e -> fail (Errors.to_string e)
+      in
+      (match Neo4jResult.fetch result with
+      | Ok [ [ Values.Int 1L ] ] -> ()
+      | Ok _ -> fail "expected one record"
+      | Error e -> fail (Errors.to_string e));
+      (match Neo4jResult.next result with Ok None -> () | _ -> fail "expected end of stream");
+      (match Tx.commit tx with Ok _ -> () | Error e -> fail (Errors.to_string e));
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
+        (message_tags received);
+      Conn.close conn)
+
 let tests =
   List.map
     (fun (name, speed, fn) -> ("[Tx] " ^ name, [ test_case name speed fn ]))
@@ -216,4 +250,5 @@ let tests =
       ("failure_recovers", `Quick, failure_recovers);
       ("closed_tx_operations", `Quick, closed_tx_operations);
       ("close_rolls_back", `Quick, close_rolls_back);
+      ("run_fetch", `Quick, run_fetch);
     ]

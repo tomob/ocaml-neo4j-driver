@@ -1,6 +1,7 @@
 (* A lazily-streamed query result. [next]/[peek]/[fetch] iterate the records
-   (pulling from the connection on demand); [consume] drains the stream and
-   returns its summary; [single]/[single_optional] enforce cardinality.
+   (pulling from the connection in batches on demand); [consume] drains the
+   stream and returns its summary; [single]/[single_optional] enforce
+   cardinality.
 
    A deferred server failure is surfaced as [Error] once the buffered records
    before it have been consumed. *)
@@ -9,38 +10,52 @@ open Neodriver_core
 
 let ( let* ) = Result.bind
 
+(* Records are pulled in batches of this size when the session does not
+   configure a fetch size (mirrors the Python driver's default of 1000). *)
+let default_fetch_size = 1000
+
 type t = {
   stream : Conn.stream;
-  mutable cursor : int;
+  mutable pending : Values.t list list;
+  fetch_size : int;
   query : string;
   parameters : (string * Values.t) list;
 }
 
-let make ?(query = "") ?(parameters = []) stream = { stream; cursor = 0; query; parameters }
+let make ?(fetch_size = default_fetch_size) ?(query = "") ?(parameters = []) stream =
+  { stream; pending = []; fetch_size; query; parameters }
+
 let stream t = t.stream
 let keys t = (Conn.run_metadata t.stream).fields
 
-(* Pull batches until at least one record is buffered beyond the cursor, or the
-   stream is exhausted (either with a summary or an error). *)
+(* Pull batches until at least one record is pending, or the stream is
+   exhausted (either with a summary or an error). [pending] holds exactly the
+   records not yet delivered to the caller, so [next]/[peek] stay O(1) per
+   record regardless of how many records have been fetched so far. *)
 let rec ensure t =
-  if t.cursor < List.length (Conn.buffered t.stream) then Ok ()
-  else if Conn.has_more t.stream then
-    let* _ = Conn.pull_stream t.stream ~n:1 in
-    ensure t
-  else Ok ()
+  match t.pending with
+  | _ :: _ -> Ok ()
+  | [] ->
+      if Conn.has_more t.stream then
+        let* records = Conn.pull_stream t.stream ~n:t.fetch_size in
+        t.pending <- records;
+        ensure t
+      else Ok ()
 
 let record_at t =
-  if t.cursor < List.length (Conn.buffered t.stream) then
-    Ok (Some (List.nth (Conn.buffered t.stream) t.cursor))
-  else match Conn.error t.stream with Some error -> Error error | None -> Ok None
+  match t.pending with
+  | record :: _ -> Ok (Some record)
+  | [] -> (
+      match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
 let next t =
   let* () = ensure t in
-  match record_at t with
-  | Ok (Some _ as record) ->
-      t.cursor <- t.cursor + 1;
-      Ok record
-  | result -> result
+  match t.pending with
+  | record :: rest ->
+      t.pending <- rest;
+      Ok (Some record)
+  | [] -> (
+      match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
 let peek t =
   let* () = ensure t in

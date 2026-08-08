@@ -195,6 +195,69 @@ let already_open () =
               check string "message" "Explicit transaction already open" message
           | _ -> fail "expected Transaction_error"))
 
+(* The Result cursor pulls records in batches (config fetch_size) and
+   fetch/next/peek/values stream the remaining records lazily. *)
+let run_fetch_streams () =
+  let received = ref [] in
+  let session_config = { Session.default_config with fetch_size = Some 2 } in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records
+             ([ [ Packstream.Int (Int64.of_int 1) ]; [ Packstream.Int (Int64.of_int 2) ] ], true);
+           Test_mock.Records
+             ([ [ Packstream.Int (Int64.of_int 3) ]; [ Packstream.Int (Int64.of_int 4) ] ], true);
+           Test_mock.Records ([ [ Packstream.Int (Int64.of_int 5) ] ], false);
+         ] ))
+    (fun net clock sw port ->
+      let connect () = Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) in
+      let session = Session.create session_config ~clock ~connect in
+      let result =
+        match Session.run session ~query:"UNWIND [1..5] AS n RETURN n" ~parameters:[] with
+        | Ok result -> result
+        | Error error -> fail (Errors.to_string error)
+      in
+      let record_int = function
+        | [ Values.Int n ] -> Int64.to_int n
+        | _ -> fail "expected a single-Int record"
+      in
+      (match Neo4jResult.fetch ~n:2 result with
+      | Ok records -> check (list int) "fetch ~n:2" [ 1; 2 ] (List.map record_int records)
+      | Error error -> fail (Errors.to_string error));
+      (match Neo4jResult.next result with
+      | Ok (Some record) -> check int "next" 3 (record_int record)
+      | _ -> fail "expected the next record");
+      (match Neo4jResult.peek result with
+      | Ok (Some record) -> check int "peek" 4 (record_int record)
+      | _ -> fail "expected a peeked record");
+      (match Neo4jResult.next result with
+      | Ok (Some record) -> check int "next after peek" 4 (record_int record)
+      | _ -> fail "expected the peeked record");
+      (match Neo4jResult.fetch result with
+      | Ok records -> check (list int) "fetch remaining" [ 5 ] (List.map record_int records)
+      | Error error -> fail (Errors.to_string error));
+      (match Neo4jResult.next result with Ok None -> () | _ -> fail "expected end of stream");
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F; 0x3F; 0x3F ]
+        (message_tags received);
+      let pull_sizes =
+        List.filter_map
+          (fun bytes ->
+            let tag, fields = unpack_message bytes in
+            if tag = 0x3F then
+              Some
+                (match List.assoc_opt "n" fields with
+                | Some (Packstream.Int n) -> Int64.to_int n
+                | _ -> 0)
+            else None)
+          (List.rev !received)
+      in
+      check (list int) "pull batch sizes" [ 2; 2; 2 ] pull_sizes)
+
 let tests =
   [
     ("[Session] execute_ok", [ test_case "commit + bookmark" `Quick execute_ok ]);
@@ -203,5 +266,6 @@ let tests =
     ( "[Session] execute_client_failure",
       [ test_case "rollback client failure" `Quick execute_client_failure ] );
     ("[Session] run_captures_bookmark", [ test_case "auto-commit run" `Quick run_captures_bookmark ]);
+    ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
   ]

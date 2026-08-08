@@ -96,7 +96,7 @@ let run ?timeout ?metadata t ~query ~parameters =
     Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary -> mark_bookmark t summary)
   in
   t.auto_result := Some stream;
-  Ok (Neo4j_result.make ~query ~parameters stream)
+  Ok (Neo4j_result.make ?fetch_size:t.config.fetch_size ~query ~parameters stream)
 
 let begin_transaction_mode ?metadata ?timeout t ~mode =
   match !(t.current_tx) with
