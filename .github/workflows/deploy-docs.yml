@@ -1,0 +1,69 @@
+name: Deploy docs to GitHub Pages
+
+# Builds the odoc documentation and publishes it (together with the
+# docs/ markdown pages) to GitHub Pages. Requires the repository setting
+# Pages -> Source = "Deploy from a GitHub Actions" (a manual repo setting).
+#
+# The ci.yml workflow keeps verifying `dune build @doc` on every push/PR.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tree
+        uses: actions/checkout@v4
+
+      - name: Set-up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.4.x
+          dune-cache: true
+
+      - name: Install dependencies
+        run: opam install . --deps-only
+
+      - name: Install odoc
+        run: opam install odoc
+
+      - name: Build documentation
+        run: opam exec -- dune build @doc
+
+      - name: Stage the site
+        run: |
+          touch _build/default/_doc/_html/.nojekyll
+          mkdir -p _build/default/_doc/_html/docs
+          cp docs/*.md _build/default/_doc/_html/docs/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _build/default/_doc/_html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -255,7 +255,14 @@ not yet implemented).
   setting Pages → Source = "Deploy from a GitHub Actions" (a manual repo setting, not a file).
   The existing `ci.yml` keeps verifying `dune build @doc` on every push/PR. The `neodriver`
   package landing page (`index.mld`) links to the quickstart via the GitHub blob URL — **to be
-  re-pointed at the GitHub Pages docs site once C5 deploys it**.
+  re-pointed at the GitHub Pages docs site once C5 deploys it**. **Done** (commit "step C5"):
+  `.github/workflows/deploy-docs.yml` builds `@doc` on pushes to `main` (plus manual dispatch) with
+  `ocaml/setup-ocaml` + `opam install . --deps-only` + `odoc`, stages the site (`.nojekyll`, plus
+  `docs/*.md` copied under `docs/`) and deploys via `actions/configure-pages@v5`,
+  `upload-pages-artifact@v3` and `deploy-pages@v4` (two jobs: build + deploy with the
+  `github-pages` environment). The `index.mld` quickstart link now points at
+  `https://tomob.github.io/ocaml-neo4j-driver/docs/quickstart.md`. The only remaining step is the
+  manual repository setting Pages → Source = "Deploy from a GitHub Actions".
 
 - **Phase C6 — README polish**: restructure `README.md` into badges (CI, docs), prerequisites,
   a quickstart snippet linking to `docs/quickstart.md`, documentation/examples links, an honest
