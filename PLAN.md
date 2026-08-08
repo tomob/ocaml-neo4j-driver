@@ -240,7 +240,15 @@ not yet implemented).
   `NEO4J_USER`/`NEO4J_PASSWORD` + an `Eio_main` wrapper) and self-contained programs — `connect.ml`,
   `run_cypher.ml`, `create.ml`, `transaction.ml` (explicit Tx), `managed_transaction.ml`
   (managed + bookmarks) — built inside the workspace (compiled by `dune build`, run via
-  `dune exec`), each described in `examples/README.md`.
+  `dune exec`), each described in `examples/README.md`. **Done** (commit "step C4"): `examples/`
+  has a shared `common.ml` (env config with defaults `bolt://localhost:7687`/`neo4j`/empty password,
+  an `Eio_main` wrapper with `Session.close`, a `hydration` helper and a minimal CSV reader) and
+  five programs. `create.ml` mirrors the Python `create_data` example: it reads
+  `examples/data/employees.csv` (vendored from the reference) and issues one `MERGE` per row
+  building `Person`/`Company`/`Location` with `WORKS_AT`/`LIVES_IN`. All five were built by `dune
+  build` and **run against a live Neo4j** (`integration.sh up`), printing the server info, the
+  created-node counters, the joined rows, the committed transaction and the managed-transaction
+  bookmarks. `examples/README.md` documents each program.
 - **Phase C5 — GitHub Pages + automatic documentation**: a `deploy-docs.yml` workflow that builds
   `@doc` on `main` and publishes `_build/default/_doc/_html/` through the Pages artifact API
   (`actions/configure-pages` / `upload-pages-artifact` / `deploy-pages`). Requires the repository
