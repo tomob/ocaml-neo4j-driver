@@ -86,6 +86,7 @@ let contains_substring sub s =
 (* Connecting to a closed port fails with an aggregated Service_unavailable
    message naming the address (exercises the multi-address failure path). *)
 let closed_port () =
+  if not (Lazy.force Test_mock.can_bind) then Alcotest.skip ();
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
