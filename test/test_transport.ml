@@ -106,12 +106,15 @@ let closed_port () =
               Transport.close transport;
               fail "connect to a closed port should fail"
           | Error (Errors.Service_unavailable msg) ->
-              check bool "message names the address" true
-                (String.starts_with
-                   ~prefix:("Couldn't connect to " ^ Addressing.to_string address)
-                   msg);
-              check bool "message lists resolved addresses" true
-                (contains_substring "resolved to" msg)
+              let names_address =
+                String.starts_with
+                  ~prefix:("Couldn't connect to " ^ Addressing.to_string address)
+                  msg
+              in
+              let lists_resolved = contains_substring "resolved to" msg in
+              let fail_message = Printf.sprintf "closed_port error message: %S\n%!" msg in
+              check bool fail_message true names_address;
+              check bool "message lists resolved addresses" true lists_resolved
           | Error error -> fail (Errors.to_string error)))
 
 let tests =
