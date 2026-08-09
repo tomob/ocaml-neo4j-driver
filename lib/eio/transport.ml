@@ -24,8 +24,15 @@ type t = {
 let chunk_size = 16384
 
 let sockaddrs_of_address net = function
-  | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) ->
-      Eio.Net.getaddrinfo_stream net ~service:(string_of_int port) host
+  | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) -> (
+      try Eio.Net.getaddrinfo_stream net ~service:(string_of_int port) host
+      with
+      (* Workaround for FreeBSD (and maybe other systems?): getaddrinfo fails to 
+         resolve "localhost" when the system lacks the localhost entry in /etc/hosts. 
+         Fall back to the loopback addresses directly; other systems keep using the system
+          resolver. *)
+      | Eio.Io (Eio.Net.E _, _) when String.equal (String.lowercase_ascii host) "localhost" ->
+        [ `Tcp (Eio.Net.Ipaddr.V4.loopback, port); `Tcp (Eio.Net.Ipaddr.V6.loopback, port) ])
 
 let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
   (* One total deadline covering every TCP connect / TLS handshake attempt. *)
