@@ -324,20 +324,16 @@ let discard ?n ?qid t =
       error
 
 (* A lazily-streamed result on a connection: RUN is sent immediately, records
-   are pulled in batches on demand. [records] is kept in reverse for O(1)
-   prepend; the terminal state is a [summary] (normal end) or an [error]
-   (a server failure, surfaced after the buffered records are consumed). *)
-(* A lazily-streamed result on a connection: RUN is sent immediately, records
-   are pulled in batches on demand. [records] is kept in reverse for O(1)
-   prepend; the terminal state is a [summary] (normal end) or an [error]
-   (a server failure, surfaced after the buffered records are consumed).
-   [on_complete] fires with the final summary once the stream ends normally
-   (e.g. to capture an auto-commit bookmark). *)
+   are pulled in batches on demand into a FIFO queue (consumed records are
+   popped and freed). The terminal state is a [summary] (normal end) or an
+   [error] (a server failure, surfaced after the buffered records are
+   consumed). [on_complete] fires with the final summary once the stream ends
+   normally (e.g. to capture an auto-commit bookmark). *)
 type stream = {
   conn : t;
   run_metadata : run_metadata;
   hydration : Hydration.t;
-  mutable records : Values.t list list;
+  records : Values.t list Queue.t;
   mutable summary : Packstream.value option;
   mutable error : Errors.t option;
   mutable has_more : bool;
@@ -349,7 +345,7 @@ let stream ?(on_complete = fun _ -> ()) conn ~hydration ~run_metadata =
     conn;
     run_metadata;
     hydration;
-    records = [];
+    records = Queue.create ();
     summary = None;
     error = None;
     has_more = true;
@@ -357,17 +353,26 @@ let stream ?(on_complete = fun _ -> ()) conn ~hydration ~run_metadata =
   }
 
 let connection s = s.conn
-let buffered s = List.rev s.records
 let has_more s = s.has_more
 let error s = s.error
 let summary s = s.summary
 let run_metadata s = s.run_metadata
 
+(* The records still buffered (not yet consumed), in order. *)
+let buffered s = Queue.to_seq s.records |> List.of_seq
+
+(* Whether a record is available without pulling. *)
+let has_records s = not (Queue.is_empty s.records)
+
+(* Pop / peek the next buffered record, if any. *)
+let next_record s = Queue.take_opt s.records
+let peek_record s = Queue.peek_opt s.records
+
 let pull_stream ?n s =
   if not s.has_more then Ok []
   else
     let* records, outcome = pull ?n ?qid:s.run_metadata.qid s.conn ~hydration:s.hydration in
-    s.records <- List.rev_append records s.records;
+    List.iter (fun record -> Queue.push record s.records) records;
     match outcome with
     | Error error ->
         s.has_more <- false;

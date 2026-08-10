@@ -1,0 +1,6 @@
+(executable
+ (name bench)
+ (modules bench common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))

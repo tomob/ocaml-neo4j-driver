@@ -277,15 +277,15 @@ records with validation (a [Configuration_error] on out-of-range values):
   [connection_timeout], [connection_write_timeout], [keep_alive],
   [telemetry_disabled].
 
-These mirror the Python driver's settings, but the connection pool is {b not
-implemented yet}: each [Driver.connect] produces one session that owns one
-connection, so the pool options above and [disable_auto_commit_retries] have
+The pool honors [max_connection_pool_size], [connection_acquisition_timeout],
+[max_connection_lifetime] and [liveness_check_timeout] (a RESET on reuse);
+[connection_timeout], [connection_write_timeout], [keep_alive] and
+[telemetry_disabled] are not wired yet, and [disable_auto_commit_retries] has
 no effect for now.
 
 {1 Not yet implemented}
 
 - Routing: [neo4j://], server-side routing, home database.
-- Connection pool.
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
 - Notification filtering and telemetry.

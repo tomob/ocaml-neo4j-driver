@@ -3,6 +3,12 @@
    stream and returns its summary; [single]/[single_optional] enforce
    cardinality.
 
+   Records live in the stream's FIFO buffer; [next] pops them one at a time
+   (O(1)), pulling another batch from the connection when the buffer is empty.
+   Because each stream owns its buffer, nested results stay correct: running a
+   new query drains the previous stream into its own buffer, which [next] then
+   returns.
+
    A deferred server failure is surfaced as [Error] once the buffered records
    before it have been consumed. *)
 
@@ -16,48 +22,40 @@ let default_fetch_size = 1000
 
 type t = {
   stream : Conn.stream;
-  mutable pending : Values.t list list;
   fetch_size : int;
   query : string;
   parameters : (string * Values.t) list;
 }
 
 let make ?(fetch_size = default_fetch_size) ?(query = "") ?(parameters = []) stream =
-  { stream; pending = []; fetch_size; query; parameters }
+  { stream; fetch_size; query; parameters }
 
 let stream t = t.stream
 let keys t = (Conn.run_metadata t.stream).fields
 
-(* Pull batches until at least one record is pending, or the stream is
-   exhausted (either with a summary or an error). [pending] holds exactly the
-   records not yet delivered to the caller, so [next]/[peek] stay O(1) per
-   record regardless of how many records have been fetched so far. *)
+(* Pull batches until a record is buffered, or the stream is exhausted (either
+   with a summary or an error). *)
 let rec ensure t =
-  match t.pending with
-  | _ :: _ -> Ok ()
-  | [] ->
-      if Conn.has_more t.stream then (
-        let* records = Conn.pull_stream t.stream ~n:t.fetch_size in
-        t.pending <- records;
-        ensure t)
-      else Ok ()
+  if Conn.has_records t.stream then Ok ()
+  else if Conn.has_more t.stream then
+    let* _ = Conn.pull_stream t.stream ~n:t.fetch_size in
+    ensure t
+  else Ok ()
 
-let record_at t =
-  match t.pending with
-  | record :: _ -> Ok (Some record)
-  | [] -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
+let result t =
+  match Conn.next_record t.stream with
+  | Some record -> Ok (Some record)
+  | None -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
 let next t =
   let* () = ensure t in
-  match t.pending with
-  | record :: rest ->
-      t.pending <- rest;
-      Ok (Some record)
-  | [] -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
+  result t
 
 let peek t =
   let* () = ensure t in
-  record_at t
+  match Conn.peek_record t.stream with
+  | Some record -> Ok (Some record)
+  | None -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
 let rec fetch_loop n acc t =
   if n = 0 then Ok (List.rev acc)

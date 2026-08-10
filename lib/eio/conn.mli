@@ -167,7 +167,18 @@ val connection : stream -> t
 (** The connection the stream is running on. *)
 
 val buffered : stream -> Values.t list list
-(** The records buffered so far, in order. *)
+(** A snapshot of the records buffered so far (still unconsumed), in order. Consuming the stream
+    with [next_record] pops from the FIFO buffer. *)
+
+val has_records : stream -> bool
+(** Whether a record is buffered and available without pulling. *)
+
+val next_record : stream -> Values.t list option
+(** Pop the next buffered record, if any ([None] once the buffer is empty — the caller pulls for
+    more). *)
+
+val peek_record : stream -> Values.t list option
+(** Peek at the next buffered record, if any, without consuming it. *)
 
 val has_more : stream -> bool
 (** Whether the stream still has records to pull. *)
