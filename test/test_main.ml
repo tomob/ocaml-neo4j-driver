@@ -12,4 +12,5 @@ let () =
    @ Test_state.tests @ Test_capabilities.tests @ Test_query.tests @ Test_tx.tests
    @ Test_session.tests @ Test_driver.tests @ Test_pool.tests
    @ Test_integration.Test_handshake.tests @ Test_integration.Test_tls.tests
-   @ Test_integration.Test_query.tests @ Test_integration.Test_pool.tests)
+   @ Test_integration.Test_query.tests @ Test_integration.Test_pool.tests
+   @ Test_integration.Test_session.tests @ Test_integration.Test_values.tests)

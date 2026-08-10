@@ -149,7 +149,10 @@ let point_vector_unsupported () =
       check bool "wgs84" true (Values.point_is_wgs84 p);
       check string "point" "Point{4326:1.5, 2.5}" (Values.to_string (Values.Point p))
   | v -> fail (Values.to_string v));
-  (match Hydration.hydrate h (Structure (0x56, [ Int 0xCBL; Bytes (Bytes.create 8) ])) with
+  (match
+     Hydration.hydrate h
+       (Structure (0x56, [ Bytes (Bytes.of_string "\xcb"); Bytes (Bytes.create 8) ]))
+   with
   | Values.Vector v -> check int "vector len" 1 (Values.vector_length v)
   | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (Structure (0x3F, [ String "FancyType"; Int 6L; Int 0L; Map [] ])) with
@@ -159,7 +162,10 @@ let point_vector_unsupported () =
   | v -> fail (Values.to_string v));
   (* vector is not valid in V2 *)
   let h2 = Hydration.create Hydration.V2 in
-  match Hydration.hydrate h2 (Structure (0x56, [ Int 0xCBL; Bytes (Bytes.create 8) ])) with
+  match
+    Hydration.hydrate h2
+      (Structure (0x56, [ Bytes (Bytes.of_string "\xcb"); Bytes (Bytes.create 8) ]))
+  with
   | Values.Broken _ -> ()
   | v -> fail (Values.to_string v)
 

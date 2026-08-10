@@ -152,14 +152,17 @@ let vector_dtype_marker = function
   | Values.F32 -> 0xC6
   | Values.F64 -> 0xC1
 
+(* The vector dtype field is a single marker byte (BYTES on the wire, not an
+   integer). *)
+let vector_dtype_of_bytes = function
+  | Packstream.Bytes b when Bytes.length b = 1 -> vector_dtype_of_marker (Bytes.get_uint8 b 0)
+  | _ -> None
+
 let hydrate_vector fields =
   match fields with
   | [ dtype; data ] -> (
-      match (int_ dtype, bytes_ data) with
-      | Some dtype, Some data -> (
-          match vector_dtype_of_marker dtype with
-          | Some dtype -> Some (Values.Vector { Values.dtype; Values.data })
-          | None -> None)
+      match (vector_dtype_of_bytes dtype, bytes_ data) with
+      | Some dtype, Some data -> Some (Values.Vector { Values.dtype; Values.data })
       | _ -> None)
   | _ -> None
 
@@ -613,10 +616,9 @@ let rec dehydrate t value =
             Packstream.Int (Int64.of_int nanoseconds);
           ] )
   | Values.Vector v ->
-      Packstream.Structure
-        ( 0x56,
-          [ Packstream.Int (Int64.of_int (vector_dtype_marker v.dtype)); Packstream.Bytes v.data ]
-        )
+      let marker = Bytes.make 1 '\000' in
+      Bytes.set_uint8 marker 0 (vector_dtype_marker v.dtype);
+      Packstream.Structure (0x56, [ Packstream.Bytes marker; Packstream.Bytes v.data ])
   | Values.Unsupported u ->
       let major, minor = u.minimum_protocol_version in
       let extra =
