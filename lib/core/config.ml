@@ -10,7 +10,6 @@
 type access_mode = Read | Write
 
 type workspace_config = {
-  connection_acquisition_timeout : float;
   max_transaction_retry_time : float;
   initial_retry_delay : float;
   retry_delay_multiplier : float;
@@ -25,6 +24,7 @@ type pool_config = {
   max_connection_lifetime : float;
   liveness_check_timeout : float option;
   max_connection_pool_size : int;
+  connection_acquisition_timeout : float;
   connection_timeout : float;
   connection_write_timeout : float;
   keep_alive : bool;
@@ -35,7 +35,6 @@ let default_access_mode = Write
 
 let default_workspace_config =
   {
-    connection_acquisition_timeout = 60.0;
     max_transaction_retry_time = 30.0;
     initial_retry_delay = 1.0;
     retry_delay_multiplier = 2.0;
@@ -51,6 +50,7 @@ let default_pool_config =
     max_connection_lifetime = 3600.0;
     liveness_check_timeout = None;
     max_connection_pool_size = 100;
+    connection_acquisition_timeout = 60.0;
     connection_timeout = 30.0;
     connection_write_timeout = 30.0;
     keep_alive = true;
@@ -58,7 +58,6 @@ let default_pool_config =
   }
 
 let make_workspace_config
-    ?(connection_acquisition_timeout = default_workspace_config.connection_acquisition_timeout)
     ?(max_transaction_retry_time = default_workspace_config.max_transaction_retry_time)
     ?(initial_retry_delay = default_workspace_config.initial_retry_delay)
     ?(retry_delay_multiplier = default_workspace_config.retry_delay_multiplier)
@@ -71,7 +70,6 @@ let make_workspace_config
     List.filter_map
       (fun (name, valid) -> if valid then None else Some name)
       [
-        ("connection_acquisition_timeout", connection_acquisition_timeout >= 0.0);
         ("max_transaction_retry_time", max_transaction_retry_time >= 0.0);
         ("initial_retry_delay", initial_retry_delay >= 0.0);
         ("retry_delay_multiplier", retry_delay_multiplier >= 1.0);
@@ -83,7 +81,6 @@ let make_workspace_config
   | [] ->
       Ok
         {
-          connection_acquisition_timeout;
           max_transaction_retry_time;
           initial_retry_delay;
           retry_delay_multiplier;
@@ -99,6 +96,7 @@ let make_workspace_config
 let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connection_lifetime)
     ?(liveness_check_timeout = default_pool_config.liveness_check_timeout)
     ?(max_connection_pool_size = default_pool_config.max_connection_pool_size)
+    ?(connection_acquisition_timeout = default_pool_config.connection_acquisition_timeout)
     ?(connection_timeout = default_pool_config.connection_timeout)
     ?(connection_write_timeout = default_pool_config.connection_write_timeout)
     ?(keep_alive = default_pool_config.keep_alive)
@@ -109,6 +107,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
       [
         ("max_connection_lifetime", max_connection_lifetime >= 0.0);
         ("max_connection_pool_size", max_connection_pool_size <> 0);
+        ("connection_acquisition_timeout", connection_acquisition_timeout >= 0.0);
         ("connection_timeout", connection_timeout >= 0.0);
         ("connection_write_timeout", connection_write_timeout >= 0.0);
       ]
@@ -120,6 +119,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
           max_connection_lifetime;
           liveness_check_timeout;
           max_connection_pool_size;
+          connection_acquisition_timeout;
           connection_timeout;
           connection_write_timeout;
           keep_alive;

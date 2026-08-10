@@ -3,7 +3,6 @@ open Alcotest
 
 let defaults () =
   let workspace = Config.default_workspace_config in
-  check (float 1e-9) "connection acquisition timeout" 60.0 workspace.connection_acquisition_timeout;
   check (float 1e-9) "max transaction retry time" 30.0 workspace.max_transaction_retry_time;
   check (float 1e-9) "initial retry delay" 1.0 workspace.initial_retry_delay;
   check (float 1e-9) "retry delay multiplier" 2.0 workspace.retry_delay_multiplier;
@@ -16,6 +15,7 @@ let defaults () =
   check (float 1e-9) "max connection lifetime" 3600.0 pool.max_connection_lifetime;
   check (option (float 1e-9)) "liveness check timeout default" None pool.liveness_check_timeout;
   check int "max connection pool size" 100 pool.max_connection_pool_size;
+  check (float 1e-9) "connection acquisition timeout" 60.0 pool.connection_acquisition_timeout;
   check (float 1e-9) "connection timeout" 30.0 pool.connection_timeout;
   check (float 1e-9) "connection write timeout" 30.0 pool.connection_write_timeout;
   check bool "keep alive" true pool.keep_alive;
@@ -31,12 +31,12 @@ let validation () =
   (match Config.make_workspace_config ~retry_delay_multiplier:0.5 () with
   | Error _ -> ()
   | Ok _ -> fail "retry_delay_multiplier < 1 should be rejected");
-  (match Config.make_workspace_config ~connection_acquisition_timeout:(-1.0) () with
-  | Error _ -> ()
-  | Ok _ -> fail "negative timeout should be rejected");
   (match Config.make_pool_config ~max_connection_pool_size:0 () with
   | Error _ -> ()
   | Ok _ -> fail "max_connection_pool_size = 0 should be rejected");
+  (match Config.make_pool_config ~connection_acquisition_timeout:(-1.0) () with
+  | Error _ -> ()
+  | Ok _ -> fail "negative acquisition timeout should be rejected");
   (match Config.make_workspace_config ~fetch_size:50 () with
   | Ok workspace -> check int "custom fetch size" 50 workspace.fetch_size
   | Error error -> fail (Errors.to_string error));

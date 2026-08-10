@@ -269,13 +269,13 @@ v}
 [Config.make_workspace_config] and [Config.make_pool_config] build their
 records with validation (a [Configuration_error] on out-of-range values):
 
-- [make_workspace_config]: [connection_acquisition_timeout],
-  [max_transaction_retry_time], [initial_retry_delay],
+- [make_workspace_config]: [max_transaction_retry_time], [initial_retry_delay],
   [retry_delay_multiplier], [retry_delay_jitter_factor], [fetch_size],
   [database], [impersonated_user], [disable_auto_commit_retries].
 - [make_pool_config]: [max_connection_lifetime], [liveness_check_timeout],
-  [max_connection_pool_size], [connection_timeout],
-  [connection_write_timeout], [keep_alive], [telemetry_disabled].
+  [max_connection_pool_size], [connection_acquisition_timeout],
+  [connection_timeout], [connection_write_timeout], [keep_alive],
+  [telemetry_disabled].
 
 These mirror the Python driver's settings, but the connection pool is {b not
 implemented yet}: each [Driver.connect] produces one session that owns one

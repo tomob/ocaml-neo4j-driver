@@ -39,15 +39,16 @@ let () =
     let net = Eio.Stdenv.net env in
     let clock = Eio.Stdenv.mono_clock env in
     Eio.Switch.run (fun sw ->
-      let session =
+      let driver =
         match
           Driver.connect ~uri:"bolt://localhost:7687"
             ~auth:(Conn.basic_auth ~credentials:"your_password" ())
             net clock sw
         with
-        | Ok session -> session
+        | Ok driver -> driver
         | Error error -> failwith (Errors.to_string error)
       in
+      let session = Driver.session driver in
       match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
       | Ok result -> (
           match Neo4jResult.values result with

@@ -190,3 +190,35 @@ let with_server handler client =
           result))
 
 let with_mock behavior client = with_server (serve_behavior behavior) client
+
+(* Serve several sequential connections, each with its own [Session]-style
+   behavior, sharing the [received] log. The client connects once per session
+   (e.g. a pool that opens a fresh connection after discarding an old one). *)
+let with_mock_multi sessions client =
+  Eio_main.run (fun env ->
+      let net = Eio.Stdenv.net env in
+      let clock = Eio.Stdenv.mono_clock env in
+      Eio.Switch.run (fun sw ->
+          let listening =
+            Eio.Net.listen ~reuse_addr:true ~backlog:1 ~sw net
+              (`Tcp (Eio.Net.Ipaddr.V4.loopback, 0))
+          in
+          let port =
+            match Eio.Net.listening_addr listening with `Tcp (_, port) -> port | _ -> assert false
+          in
+          let server =
+            Eio.Fiber.fork_promise ~sw (fun () ->
+                List.iter
+                  (fun (version, received, responses) ->
+                    let flow, _ = Eio.Net.accept ~sw listening in
+                    let flow = (flow :> flow) in
+                    serve_behavior (Session (version, received, responses)) flow;
+                    (* Close the flow so a client that sends more (e.g. the pool's
+                       RESET on release of a connection we have nothing left for)
+                       fails fast instead of waiting for a response. *)
+                    Eio.Flow.close flow)
+                  sessions)
+          in
+          let result = client net clock sw port in
+          ignore (Eio.Promise.await_exn server);
+          result))

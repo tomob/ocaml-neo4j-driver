@@ -44,9 +44,12 @@ val create :
   config ->
   clock:Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   connect:(unit -> (Conn.t, Errors.t) result) ->
+  ?release:(Conn.t -> unit) ->
+  unit ->
   t
 (** Create a session. [connect] establishes the session's connection on first use (the backend
-    provides it from the Eio context). [clock] bounds the transaction retry budget and backoff. *)
+    provides it from the Eio context); [release] returns it on [close] (default [Conn.close]; a pool
+    provides [Pool.release]). [clock] bounds the transaction retry budget and backoff. *)
 
 val conn : t -> (Conn.t, Errors.t) result
 (** The session's connection, connecting on first use. *)

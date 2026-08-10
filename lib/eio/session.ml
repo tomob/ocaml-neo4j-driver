@@ -34,22 +34,26 @@ let default_config =
   }
 
 (* A session: its lazy connection, bookmarks, current transaction and the
-   pending auto-commit result stream. *)
+   pending auto-commit result stream. [connect] acquires the session's
+   connection (from a pool, or by connecting directly); [release] returns it
+   on [close] (back to the pool, or by closing it). *)
 type t = {
   config : config;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   connect : unit -> (Conn.t, Errors.t) result;
+  release : Conn.t -> unit;
   conn : Conn.t option ref;
   bookmarks : string list ref;
   current_tx : Tx.t option ref;
   auto_result : Conn.stream option ref;
 }
 
-let create config ~clock ~connect =
+let create config ~clock ~connect ?(release = Conn.close) () =
   {
     config;
     clock;
     connect;
+    release;
     conn = ref None;
     bookmarks = ref config.bookmarks;
     current_tx = ref None;
@@ -74,19 +78,13 @@ let mark_bookmark t = function
       | _ -> ())
   | _ -> ()
 
-(* Drain an auto-commit result to its end (a server failure is left on the
-   result; the connection is recovered by the next request's RESET). The
-   auto-commit bookmark is captured by the stream's on_complete hook. *)
-let rec drain stream =
-  if Conn.has_more stream then
-    match Conn.pull_stream stream with Ok _ -> drain stream | Error _ -> ()
-
 let run ?timeout ?metadata t ~query ~parameters =
   let* conn = conn t in
   (* A new auto-commit query cannot start while the previous result is still
      streaming on the connection: drain it first (like the Python driver's
-     consume of the auto result). *)
-  (match !(t.auto_result) with Some previous -> drain previous | None -> ());
+     consume of the auto result). Draining fires the stream's on_complete
+     hook, which records the auto-commit bookmark. *)
+  (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
   let hydration = Conn.hydration conn in
   let* run_metadata =
     Conn.run conn ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks) ?db:t.config.database
@@ -182,10 +180,8 @@ let execute t ~mode ?metadata ?timeout work =
   attempt ()
 
 let close (t : t) =
-  (match !(t.current_tx) with Some tx -> ignore (Tx.close tx) | None -> ());
+  !(t.current_tx) |> Option.iter (fun tx -> ignore (Tx.close tx));
   t.current_tx := None;
-  match !(t.conn) with
-  | Some conn -> Conn.close conn
-  | None ->
-      ();
-      t.conn := None
+  let conn = !(t.conn) in
+  t.conn := None;
+  Option.iter t.release conn

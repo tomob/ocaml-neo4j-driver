@@ -26,6 +26,9 @@ module Tx = Tx
 module Session = Session
 (** Per-session connection: auto-commit queries, explicit and managed transactions. *)
 
+module Pool = Pool
+(** A bounded connection pool (acquire/release/close), used by [Driver]. *)
+
 module Neo4jResult = Neo4j_result
 (** A lazily-streamed query result (next/peek/fetch/consume/single). *)
 

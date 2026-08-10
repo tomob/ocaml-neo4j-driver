@@ -5,7 +5,6 @@
 type access_mode = Read | Write  (** Access mode for a session: [Read] or [Write]. *)
 
 type workspace_config = {
-  connection_acquisition_timeout : float;
   max_transaction_retry_time : float;
   initial_retry_delay : float;
   retry_delay_multiplier : float;
@@ -15,12 +14,13 @@ type workspace_config = {
   impersonated_user : string option;
   disable_auto_commit_retries : bool;
 }
-(** Session workspace settings: timeouts, retry policy, fetch size and database selection. *)
+(** Session workspace settings: retry policy, fetch size and database selection. *)
 
 type pool_config = {
   max_connection_lifetime : float;
   liveness_check_timeout : float option;
   max_connection_pool_size : int;
+  connection_acquisition_timeout : float;
   connection_timeout : float;
   connection_write_timeout : float;
   keep_alive : bool;
@@ -38,7 +38,6 @@ val default_pool_config : pool_config
 (** Default pool configuration. *)
 
 val make_workspace_config :
-  ?connection_acquisition_timeout:float ->
   ?max_transaction_retry_time:float ->
   ?initial_retry_delay:float ->
   ?retry_delay_multiplier:float ->
@@ -57,6 +56,7 @@ val make_pool_config :
   ?max_connection_lifetime:float ->
   ?liveness_check_timeout:float option ->
   ?max_connection_pool_size:int ->
+  ?connection_acquisition_timeout:float ->
   ?connection_timeout:float ->
   ?connection_write_timeout:float ->
   ?keep_alive:bool ->

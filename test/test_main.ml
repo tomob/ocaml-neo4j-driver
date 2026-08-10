@@ -10,5 +10,6 @@ let () =
    @ Test_packstream.tests @ Test_temporal.tests @ Test_values.tests @ Test_hydration.tests
    @ Test_handshake.tests @ Test_transport.tests @ Test_conn.tests @ Test_tls.tests
    @ Test_state.tests @ Test_capabilities.tests @ Test_query.tests @ Test_tx.tests
-   @ Test_session.tests @ Test_driver.tests @ Test_integration.Test_handshake.tests
-   @ Test_integration.Test_tls.tests @ Test_integration.Test_query.tests)
+   @ Test_session.tests @ Test_driver.tests @ Test_pool.tests
+   @ Test_integration.Test_handshake.tests @ Test_integration.Test_tls.tests
+   @ Test_integration.Test_query.tests @ Test_integration.Test_pool.tests)

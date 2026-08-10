@@ -382,6 +382,12 @@ let pull_stream ?n s =
         end;
         Ok records
 
+(* Pull a stream to its end, best effort: a transport failure stops the drain
+   (the failure is left on the stream; the connection is recovered by the next
+   request's RESET). *)
+let rec drain_stream s =
+  if has_more s then match pull_stream s with Ok _ -> drain_stream s | Error _ -> ()
+
 let begin_ t ~extra =
   let re_auth = re_auth_of t.major t.minor in
   let* _ = request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra) in

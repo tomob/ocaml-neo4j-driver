@@ -16,19 +16,25 @@ generated API documentation (`dune build @doc`, then open
 ## Connecting
 
 ```ocaml
-let session =
+let driver =
   Driver.connect ~uri:"bolt://localhost:7687"
     ~auth:(Conn.basic_auth ~credentials:"password" ())
     net clock sw
+let session = Driver.session driver
 ```
 
-- `Driver.connect` parses the URI and returns a **lazily connecting**
-  `Session.t`: the server is contacted only on the first query.
+- `Driver.connect` parses the URI and returns a **pool-backed** `Driver.t`:
+  the server is contacted only on the first query. `Driver.session` returns a
+  session that borrows a connection from the pool on first use and returns it
+  (with a RESET) on close.
 - `Conn.basic_auth` builds the authentication token (default principal
   `neo4j`; only the `basic` scheme is supported).
-- `?user_agent`, `?connection_timeout` (seconds, default 30.0) and `?config`
-  (a `Session.config`) tune the connection.
-- The `sw` switch must outlive the session (it hosts the connection attempt).
+- `?user_agent`, `?connection_timeout` (seconds, default 30.0) and `?pool_config`
+  (a `Config.pool_config`: pool size, connection lifetime, liveness check and
+  the connection acquisition timeout) tune the driver; `Driver.session` takes
+  the session's `?config` (a `Session.config`).
+- The `sw` switch must outlive the sessions (it hosts the pool's connection
+  attempts).
 - `?resolver` replaces address lookup (useful for custom DNS resolution).
 
 ### Schemes and TLS
@@ -230,19 +236,21 @@ a failure is worth retrying.
 - `auth` (required) — from `Conn.basic_auth ?principal ?credentials ()`
   (principal defaults to `neo4j`, credentials to the empty string).
 - `?user_agent` — the HELLO user agent (default `Conn.default_user_agent`).
-- `?connection_timeout` (seconds) — bounds the whole connect attempt and
+- `?connection_timeout` (seconds) — bounds each connection attempt and its
   subsequent reads/writes (default 30.0; `infinity` disables the deadline).
-- `?config` — a `Session.config` (see below).
+- `?pool_config` — a `Config.pool_config` (pool size, connection lifetime,
+  liveness check, connection acquisition timeout; see below).
 - `?resolver` — `Addressing.t -> (Addressing.t list, Errors.t) result`;
   replaces the address lookup, each returned address being tried in turn.
 
 ### Session settings (`Session.config`)
 
-Base it on `Session.default_config` and update only what you need:
+`Driver.session` takes the session configuration; base it on
+`Session.default_config` and update only what you need:
 
 ```ocaml
 let config = { Session.default_config with database = Some "mydb"; bookmarks = [ "bm-1" ] } in
-Driver.connect ~uri ~auth ~config net clock sw
+Driver.session ~config driver
 ```
 
 | Field                        | Meaning                                                        | Honored? |
@@ -271,23 +279,23 @@ Driver.connect ~uri ~auth ~config net clock sw
 `Config.make_workspace_config` and `Config.make_pool_config` build their
 records with validation (a `Configuration_error` on out-of-range values):
 
-- `make_workspace_config`: `connection_acquisition_timeout`,
-  `max_transaction_retry_time`, `initial_retry_delay`,
+- `make_workspace_config`: `max_transaction_retry_time`, `initial_retry_delay`,
   `retry_delay_multiplier`, `retry_delay_jitter_factor`, `fetch_size`,
   `database`, `impersonated_user`, `disable_auto_commit_retries`.
 - `make_pool_config`: `max_connection_lifetime`, `liveness_check_timeout`,
-  `max_connection_pool_size`, `connection_timeout`,
-  `connection_write_timeout`, `keep_alive`, `telemetry_disabled`.
+  `max_connection_pool_size`, `connection_acquisition_timeout`,
+  `connection_timeout`, `connection_write_timeout`, `keep_alive`,
+  `telemetry_disabled`.
 
-These mirror the Python driver's settings, but the connection pool is **not
-implemented yet**: each `Driver.connect` produces one session that owns one
-connection, so the pool options above and `disable_auto_commit_retries` have
+The pool honors `max_connection_pool_size`, `connection_acquisition_timeout`,
+`max_connection_lifetime` and `liveness_check_timeout` (a RESET on reuse);
+`connection_timeout`, `connection_write_timeout`, `keep_alive` and
+`telemetry_disabled` are not wired yet, and `disable_auto_commit_retries` has
 no effect for now.
 
 ## Not yet implemented
 
 - Routing: `neo4j://`, server-side routing, home database.
-- Connection pool.
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
 - Notification filtering and telemetry.

@@ -18,14 +18,15 @@ open Neodriver
 let () =
   Eio_main.run (fun env ->
     Eio.Switch.run (fun sw ->
-      let session =
+      let driver =
         match
           Driver.connect ~uri:"bolt://localhost:7687" ~auth:(Conn.basic_auth ())
             (Eio.Stdenv.net env) (Eio.Stdenv.mono_clock env) sw
         with
-        | Ok session -> session
+        | Ok driver -> driver
         | Error error -> failwith (Errors.to_string error)
       in
+      let session = Driver.session driver in
       match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
       | Ok result -> (
           match Neo4jResult.values result with
@@ -43,13 +44,15 @@ project, running this program and what is going on under the hood.
 - Plain `bolt://` and TLS `bolt+s://` / `bolt+ssc://` connections.
 - Auto-commit queries with lazy streaming results (`Neo4jResult` / `Summary`).
 - Explicit and managed transactions with automatic retry.
+- A bounded connection pool (`Driver.session` borrows a connection, returned
+  with a RESET on close).
 - Bookmarks.
 - Temporal types with named time zones (embedded IANA database plus an LMT
   fallback before 1970).
 - Basic authentication (LOGON after HELLO on Bolt >= 5.1).
 - TestKit conformance: 114 of 126 tests passing (12 skipped).
 
-Not yet implemented: `neo4j://` routing, the connection pool, notification
+Not yet implemented: `neo4j://` routing, notification
 filtering, telemetry and the high-level `execute_query`/`verify_connectivity`
 API. See [PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
 

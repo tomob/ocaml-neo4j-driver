@@ -38,11 +38,8 @@ let begin_transaction conn ~extra =
 (* Drain the transaction's still-open results (like the Python driver's
    _consume_results) so COMMIT/ROLLBACK can follow. Best effort: a server
    failure is left on the stream. *)
-let rec drain_one s =
-  if Conn.has_more s then match Conn.pull_stream s with Ok _ -> drain_one s | Error _ -> ()
-
 let drain_pending t =
-  List.iter drain_one t.streams;
+  List.iter Conn.drain_stream t.streams;
   t.streams <- []
 
 let run t ~hydration ~query ~parameters =
@@ -60,9 +57,15 @@ let commit t =
   let* () = check_open t in
   if not (failed t) then drain_pending t;
   match Conn.commit t.conn with
-  | Error _ as error ->
+  | Error (Errors.Neo4j _ as error) ->
+      (* The server answered with a FAILURE: the transaction was not applied. *)
       t.state <- Failed;
-      error
+      Error error
+  | Error error ->
+      (* A connection-level failure during COMMIT: the outcome is unknown (the
+         commit may have been applied). Surface an IncompleteCommit. *)
+      t.state <- Failed;
+      Error (Errors.Incomplete_commit (Errors.to_string error))
   | Ok metadata ->
       let bookmark = metadata_string "bookmark" metadata in
       t.bookmark := bookmark;

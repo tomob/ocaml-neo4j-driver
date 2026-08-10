@@ -1,10 +1,9 @@
 (* User-facing entry point of the Eio backend: parse a driver URI, build the
-   connection and session configuration and wire the Eio resources into a
-   ready (lazily connecting) session.
+   connection and pool configuration and wire the Eio resources into a
+   pool-backed driver. Sessions borrow a connection from the pool on first use
+   and return it (RESET) on close.
 
-   There is no connection pool yet: a [Driver.connect] produces a single
-   [Session.t] that owns its own (lazily established) connection. Routing
-   ([neo4j://] schemes) is rejected by [Conn.connect] on first use until
+   Routing ([neo4j://] schemes) is rejected by [Conn.connect] on first use until
    routing is implemented. *)
 
 open Neodriver_core
@@ -12,7 +11,10 @@ open Neodriver_core
 let ( let* ) = Result.bind
 let default_connection_timeout = 30.0
 
-let connect ?resolver ~uri ~auth ?user_agent ?connection_timeout ?config net clock sw =
+type t = { pool : Pool.t; clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t }
+
+let connect ?resolver ~uri ~auth ?user_agent ?connection_timeout
+    ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let conn_config =
     Conn.
@@ -25,6 +27,18 @@ let connect ?resolver ~uri ~auth ?user_agent ?connection_timeout ?config net clo
         auth;
       }
   in
-  let session_config = match config with Some config -> config | None -> Session.default_config in
   let connect () = Conn.connect ?resolver net clock sw conn_config in
-  Ok (Session.create session_config ~clock ~connect)
+  let pool = Pool.create ~pool_config ~connect clock in
+  Ok { pool; clock }
+
+let session ?config t =
+  let config = match config with Some config -> config | None -> Session.default_config in
+  let connect () = Pool.acquire t.pool in
+  let release conn = Pool.release t.pool conn in
+  Session.create config ~clock:t.clock ~connect ~release ()
+
+(* A connection for driver-level operations (e.g. verify connectivity); return
+   it with [release]. *)
+let acquire t = Pool.acquire t.pool
+let release t conn = Pool.release t.pool conn
+let close t = Pool.close t.pool

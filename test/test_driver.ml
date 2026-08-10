@@ -45,7 +45,8 @@ let neo4j_uri_lazy () =
       match
         Driver.connect ~uri:"neo4j://localhost:7687" ~auth:(Conn.basic_auth ()) net clock sw
       with
-      | Ok session -> (
+      | Ok driver -> (
+          let session = Driver.session driver in
           match Session.run session ~query:"RETURN 1" ~parameters:[] with
           | Error (Errors.Service_unavailable message) ->
               check string "message" "Routing (neo4j://) is not supported yet" message
@@ -65,7 +66,8 @@ let ipv6_uri () =
       match
         Driver.connect ~resolver ~uri:"bolt://[::1]:7687" ~auth:(Conn.basic_auth ()) net clock sw
       with
-      | Ok session -> (
+      | Ok driver -> (
+          let session = Driver.session driver in
           (match Session.run session ~query:"RETURN 1" ~parameters:[] with
           | Error _ -> ()
           | Ok _ -> fail "expected a connection failure");
@@ -98,7 +100,7 @@ let connect_and_run () =
             ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
             ~auth:(Conn.basic_auth ()) net clock sw
         with
-        | Ok session -> session
+        | Ok driver -> Driver.session driver
         | Error e -> fail (Errors.to_string e)
       in
       (match Session.run session ~query:"RETURN 1" ~parameters:[] with
@@ -129,9 +131,9 @@ let custom_config () =
         match
           Driver.connect
             ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
-            ~auth:(Conn.basic_auth ()) ~config net clock sw
+            ~auth:(Conn.basic_auth ()) net clock sw
         with
-        | Ok session -> session
+        | Ok driver -> Driver.session ~config driver
         | Error e -> fail (Errors.to_string e)
       in
       (match Session.run session ~query:"RETURN 1" ~parameters:[] with

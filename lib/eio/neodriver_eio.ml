@@ -10,5 +10,6 @@ module Bolt = Bolt
 module State = State
 module Tx = Tx
 module Session = Session
+module Pool = Pool
 module Neo4jResult = Neo4j_result
 module Summary = Summary

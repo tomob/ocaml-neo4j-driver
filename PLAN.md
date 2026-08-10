@@ -117,7 +117,29 @@ ocaml-neo4j-driver/            # this repo
 
 ### Phase A6 — Pool
 
-- `pool.ml`: address→queue mapping + reservation counter, `max_connection_pool_size`, waiting on `Eio.Semaphore`/mutex+cond with `connection_acquisition_timeout`, release with RESET (or kill for defunct), **liveness check**, `max_connection_lifetime`/`stale`, `deactivate`, **`IncompleteCommit`** (ambiguous commit).
+- `pool.ml`: address→queue mapping + reservation counter,
+`max_connection_pool_size`, waiting on `Eio.Semaphore`/mutex+cond with
+`connection_acquisition_timeout`, release with RESET (or kill for defunct),
+**liveness check**, `max_connection_lifetime`/`stale`, `deactivate`,
+**`IncompleteCommit`** (ambiguous commit). **Done** (commit "step A6"):
+`lib/eio/pool.ml` implements a bounded single-address pool (a `Mutex` + FIFO
+idle queue + `Eio.Semaphore` of `max_connection_pool_size`, `acquire` bounded
+by `connection_acquisition_timeout` via `Eio.Time.Timeout.run_exn`, lifetime /
+liveness checks on reuse, `release` with RESET, closing defunct connections;
+address-level deactivation deferred to routing). `Driver` is now pool-backed:
+`Driver.connect` returns a `Driver.t`, `Driver.session` borrows a connection
+(returned with a RESET on close) and `Driver.close` closes the pool;
+`Session.create` gained a `release` callback. `Tx.commit` surfaces
+`Errors.Incomplete_commit` when a connection is lost mid-commit (a server
+FAILURE is a known outcome). The TestKit backend migrates to `Driver.t`
+(NewDriver/NewSession/DriverClose/driver-level ops via the pool). Public API
+ripple (quickstart/usage/README/examples/test_driver) updated. Unit tests
+(`test_pool.ml` on the mock: reuse, defunct, lifetime, liveness, acquisition
+timeout) and integration tests (`test_integration/test_pool.ml`: sessions
+sharing the pool, reuse, pool-size bound with concurrent sessions, pool
+close). Fixes a nested-result regression from the batched-PULL refactor
+(`Neo4jResult` now reads the stream's shared buffer again). TestKit stays OK
+(114, 12 skipped).
 
 ### Phase A6.5 — Unblock the remaining TestKit skips (UUID + vector)
 

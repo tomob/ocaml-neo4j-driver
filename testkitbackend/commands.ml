@@ -50,12 +50,13 @@ let opt_string key fields =
 type auth = { scheme : string; principal : string; credentials : string }
 
 type driver = {
-  uri : Addressing.uri;
+  uri_string : string;
   auth : auth;
   user_agent : string;
   connection_timeout : float;
   max_transaction_retry_time : float;
   resolver_registered : bool;
+  driver : Driver.t;
   conn : Conn.t option ref;
 }
 
@@ -106,22 +107,6 @@ let auth_of fields =
       | _ -> raise (Backend_error "authorizationToken has no data"))
   | _ -> raise (Backend_error "authorizationToken is required")
 
-let conn_config driver =
-  Conn.
-    {
-      host = driver.uri.host;
-      port = driver.uri.port;
-      scheme = driver.uri.scheme;
-      connection_timeout = driver.connection_timeout;
-      user_agent = driver.user_agent;
-      auth =
-        {
-          scheme = driver.auth.scheme;
-          principal = driver.auth.principal;
-          credentials = driver.auth.credentials;
-        };
-    }
-
 (* Ask the harness to resolve an address (custom resolver) and return the
    addresses to try. The follow-up ResolverResolutionCompleted request is
    consumed and processed here (it is not dispatched through the normal loop). *)
@@ -165,20 +150,20 @@ let resolver ctx address =
   | Some addresses -> parse addresses
   | None -> Error (Errors.Service_unavailable "no resolver resolution received")
 
-(* Open the driver's connection on first use. *)
-let ensure_conn ctx (driver : driver) =
+(* A connection for driver-level operations (acquired from the pool on first
+   use, returned to it on DriverClose). *)
+let ensure_conn (driver : driver) =
   match !(driver.conn) with
   | Some conn -> Ok conn
   | None -> (
-      let custom = if driver.resolver_registered then Some (resolver ctx) else None in
-      match Conn.connect ?resolver:custom ctx.net ctx.clock ctx.sw (conn_config driver) with
+      match Driver.acquire driver.driver with
       | Error error -> Error error
       | Ok conn ->
           driver.conn := Some conn;
           Ok conn)
 
-let conn_of ctx (driver : driver) =
-  match ensure_conn ctx driver with Ok conn -> conn | Error error -> raise (Driver_error error)
+let conn_of (driver : driver) =
+  match ensure_conn driver with Ok conn -> conn | Error error -> raise (Driver_error error)
 
 (* The session's connection (created lazily by the Session itself). *)
 let session_conn (session : session) =
@@ -196,7 +181,7 @@ let start_test _fields = ("RunTest", `Assoc [])
 let get_features _fields =
   ("FeatureList", `Assoc [ ("features", `List (List.map (fun f -> `String f) Features.features)) ])
 
-let new_driver fields =
+let new_driver ctx fields =
   let uri_string = string "uri" fields in
   let user_agent = Option.value ~default:"ocaml-neo4j-driver" (opt_string "userAgent" fields) in
   let auth = auth_of fields in
@@ -217,18 +202,26 @@ let new_driver fields =
         match float_of_string_opt ms with Some f -> f /. 1000.0 | None -> 30.0)
     | _ -> 30.0
   in
-  match Addressing.parse_uri uri_string with
+  let custom = if resolver_registered then Some (resolver ctx) else None in
+  let conn_auth =
+    Conn.{ scheme = auth.scheme; principal = auth.principal; credentials = auth.credentials }
+  in
+  match
+    Driver.connect ?resolver:custom ~uri:uri_string ~auth:conn_auth ~user_agent ~connection_timeout
+      ctx.net ctx.clock ctx.sw
+  with
   | Error error -> raise (Driver_error error)
-  | Ok uri ->
+  | Ok driver ->
       let id = new_id () in
       Hashtbl.add drivers id
         {
-          uri;
+          uri_string;
           auth;
           user_agent;
           connection_timeout;
           max_transaction_retry_time;
           resolver_registered;
+          driver;
           conn = ref None;
         };
       ("Driver", `Assoc [ ("id", `Int id) ])
@@ -239,12 +232,14 @@ let driver_close fields =
     (fun _ session -> if session.driver_id = id then close_session_conns session)
     sessions;
   (match Hashtbl.find_opt drivers id with
-  | Some driver -> ( match !(driver.conn) with Some conn -> Conn.close conn | None -> ())
+  | Some driver ->
+      (match !(driver.conn) with Some conn -> Driver.release driver.driver conn | None -> ());
+      Driver.close driver.driver
   | None -> ());
   Hashtbl.remove drivers id;
   ("Driver", `Assoc [ ("id", `Int id) ])
 
-let new_session ctx fields =
+let new_session fields =
   let driver_id = int "driverId" fields in
   let driver = get_driver driver_id in
   let database = opt_string "database" fields in
@@ -261,8 +256,6 @@ let new_session ctx fields =
         List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) bookmarks
     | _ -> []
   in
-  let custom = if driver.resolver_registered then Some (resolver ctx) else None in
-  let connect () = Conn.connect ?resolver:custom ctx.net ctx.clock ctx.sw (conn_config driver) in
   let config =
     Session.
       {
@@ -278,7 +271,7 @@ let new_session ctx fields =
       }
   in
   let id = new_id () in
-  Hashtbl.add sessions id { driver_id; session = Session.create config ~clock:ctx.clock ~connect };
+  Hashtbl.add sessions id { driver_id; session = Driver.session ~config driver.driver };
   ("Session", `Assoc [ ("id", `Int id) ])
 
 let session_close fields =
@@ -301,16 +294,16 @@ let resolver_resolution_completed fields =
   Hashtbl.add custom_resolutions request_id addresses;
   None
 
-let verify_connectivity ctx fields =
+let verify_connectivity fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  ignore (conn_of ctx driver);
+  ignore (conn_of driver);
   ("Driver", `Assoc [ ("id", `Int id) ])
 
-let get_server_info ctx fields =
+let get_server_info fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  let conn = conn_of ctx driver in
+  let conn = conn_of driver in
   let major, minor = Conn.version conn in
   let agent = Option.value ~default:"" (Conn.server_agent conn) in
   ( "ServerInfo",
@@ -321,10 +314,10 @@ let get_server_info ctx fields =
         ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
       ] )
 
-let check_multi_db_support ctx fields =
+let check_multi_db_support fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  let conn = conn_of ctx driver in
+  let conn = conn_of driver in
   let major, _minor = Conn.version conn in
   ("MultiDBSupport", `Assoc [ ("id", `Int id); ("available", `Bool (major >= 4)) ])
 
@@ -618,13 +611,13 @@ let handle ctx name data =
   | "StartTest" -> Some (start_test fields)
   | "StartSubTest" -> Some (start_test fields)
   | "GetFeatures" -> Some (get_features fields)
-  | "NewDriver" -> Some (new_driver fields)
+  | "NewDriver" -> Some (new_driver ctx fields)
   | "DriverClose" -> Some (driver_close fields)
-  | "NewSession" -> Some (new_session ctx fields)
+  | "NewSession" -> Some (new_session fields)
   | "SessionClose" -> Some (session_close fields)
-  | "VerifyConnectivity" -> Some (verify_connectivity ctx fields)
-  | "GetServerInfo" -> Some (get_server_info ctx fields)
-  | "CheckMultiDBSupport" -> Some (check_multi_db_support ctx fields)
+  | "VerifyConnectivity" -> Some (verify_connectivity fields)
+  | "GetServerInfo" -> Some (get_server_info fields)
+  | "CheckMultiDBSupport" -> Some (check_multi_db_support fields)
   | "SessionRun" -> Some (session_run ctx fields)
   | "ResultNext" -> Some (result_next fields)
   | "ResultPeek" -> Some (result_peek fields)

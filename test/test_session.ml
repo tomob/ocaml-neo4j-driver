@@ -22,7 +22,7 @@ let message_tags received = List.map (fun bytes -> fst (unpack_message bytes)) (
 (* A session whose connection connects to the mock server at [port]. *)
 let session net clock sw port =
   let connect () = Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) in
-  Session.create Session.default_config ~clock ~connect
+  Session.create Session.default_config ~clock ~connect ()
 
 let transient_error () =
   Errors.of_neo4j_code ~code:"Neo.TransientError.General.DatabaseUnavailable" ~message:"transient"
@@ -216,7 +216,7 @@ let run_fetch_streams () =
          ] ))
     (fun net clock sw port ->
       let connect () = Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) in
-      let session = Session.create session_config ~clock ~connect in
+      let session = Session.create session_config ~clock ~connect () in
       let result =
         match Session.run session ~query:"UNWIND [1..5] AS n RETURN n" ~parameters:[] with
         | Ok result -> result

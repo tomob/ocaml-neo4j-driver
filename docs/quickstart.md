@@ -51,15 +51,16 @@ let () =
     let net = Eio.Stdenv.net env in
     let clock = Eio.Stdenv.mono_clock env in
     Eio.Switch.run (fun sw ->
-      let session =
+      let driver =
         match
           Driver.connect ~uri:"bolt://localhost:7687"
             ~auth:(Conn.basic_auth ~credentials:"your_password" ())
             net clock sw
         with
-        | Ok session -> session
+        | Ok driver -> driver
         | Error error -> failwith (Errors.to_string error)
       in
+      let session = Driver.session driver in
       (match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
       | Ok result -> (
           match Neo4jResult.values result with
@@ -79,20 +80,19 @@ You should see `n = 1`.
 
 ## What is going on
 
-- `Driver.connect` parses the URI and returns a **lazily connecting**
-  [session](`Session`): no server contact happens until the first query, so
-  the error returned is the same whether the URI is invalid, the server is
-  unreachable or the credentials are wrong. It returns a `Session.t` — there
-  is no connection pool yet, so each `connect` produces one session that owns
-  its own connection.
+- `Driver.connect` parses the URI and returns a **pool-backed** [driver](`Driver`):
+  no server contact happens until the first query, so the error returned is the
+  same whether the URI is invalid, the server is unreachable or the credentials
+  are wrong. `Driver.session` returns a session that borrows a connection from
+  the driver's pool on first use and returns it (with a RESET) on close.
 - `Conn.basic_auth` builds the authentication token (default principal
   `neo4j`; only the `basic` scheme is supported so far).
 - `Session.run` sends the query and returns a lazily streamed
   [result](`Neo4jResult`). `Neo4jResult.values` drains it into a list of
   records, each a list of [`Values.t`](`Values`); `Neo4jResult.consume`
   instead returns the [`Summary`](`Summary`) of the query.
-- The `sw` switch passed to `Driver.connect` hosts the session's connection
-  attempt, so it must outlive the session (it does here, as the session is
+- The `sw` switch passed to `Driver.connect` hosts the pool's connection
+  attempts, so it must outlive the sessions (it does here, as the session is
   closed inside `Eio.Switch.run`).
 - Routing (`neo4j://`) is not implemented yet: a `neo4j://` URI fails on first
   use with a `Service_unavailable` error. Only `bolt://`, `bolt+s://` (TLS

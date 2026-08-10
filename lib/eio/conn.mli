@@ -187,6 +187,10 @@ val pull_stream : ?n:int -> stream -> (Values.t list list, Errors.t) result
     before it are kept. Once the stream ends normally, its summary is stored.
     @return [Error _] for transport failures. *)
 
+val drain_stream : stream -> unit
+(** Pull a stream to its end, best effort: a transport failure stops the drain (the failure is left
+    on the stream; the connection is recovered by the next request's RESET). *)
+
 val server_agent : t -> string option
 (** The server agent string reported in the HELLO response, if any. *)
 

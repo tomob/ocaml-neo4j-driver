@@ -16,16 +16,17 @@ let connect ~net ~clock ~sw =
       ~auth:(Conn.basic_auth ~principal:user ~credentials:password ())
       net clock sw
   with
-  | Ok session -> session
+  | Ok driver -> driver
   | Error error -> failwith (Errors.to_string error)
 
-(* Run [f] on a session, closing the session afterwards. *)
+(* Run [f] on a session (borrowed from the driver's pool), closing the session
+   afterwards so its connection returns to the pool. *)
 let with_session f =
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
       Eio.Switch.run (fun sw ->
-          let session = connect ~net ~clock ~sw in
+          let session = connect ~net ~clock ~sw |> Driver.session in
           Fun.protect ~finally:(fun () -> Session.close session) (fun () -> f session)))
 
 (* A hydration scope for the session's connection. *)
