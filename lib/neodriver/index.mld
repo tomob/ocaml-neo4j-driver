@@ -8,6 +8,7 @@ packages) under one namespace with short names.
 
 - Bolt protocol 3.0, 4.2-4.4, 5.0-5.8 and 6.0.
 - Plain [bolt://] and TLS [bolt+s://] / [bolt+ssc://] connections.
+- [neo4j://] routing (minimal: ROUTE message, per-database routing tables).
 - Auto-commit queries with lazy streaming results ([Neo4jResult] / [Summary]).
 - Explicit and managed transactions with automatic retry.
 - Bookmarks.

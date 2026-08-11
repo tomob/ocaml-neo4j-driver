@@ -10,17 +10,6 @@ let auth ?(principal = "neo4j") ?(credentials = "password") () =
 let config host port scheme =
   Conn.{ host; port; scheme; connection_timeout = 5.0; user_agent = "test-agent"; auth = auth () }
 
-(* Routing schemes (neo4j://) are rejected until routing is implemented. *)
-let routing_not_supported () =
-  Eio_main.run (fun env ->
-      let net = Eio.Stdenv.net env in
-      let clock = Eio.Stdenv.mono_clock env in
-      Eio.Switch.run (fun sw ->
-          let config = config "localhost" 7687 Addressing.Neo4j in
-          match Conn.connect net clock sw config with
-          | Ok _ -> fail "routing should not be supported yet"
-          | Error _ -> ()))
-
 let unpack_message bytes =
   match Packstream.unpack bytes with
   | Ok (Packstream.Structure (tag, fields)) ->
@@ -46,6 +35,67 @@ let show_state = function
 
 let check_state conn expected =
   check string "server state" expected (show_state (Conn.server_state conn))
+
+(* ROUTE (Bolt 4.3+): the wire message and the returned routing table. *)
+let route_via_mock () =
+  let received = ref [] in
+  let rt =
+    Packstream.Map
+      [
+        ("ttl", Packstream.Int 300L);
+        ( "servers",
+          Packstream.List
+            [
+              Packstream.Map
+                [
+                  ("addresses", Packstream.List [ Packstream.String "127.0.0.1:7687" ]);
+                  ("role", Packstream.String "ROUTE");
+                ];
+              Packstream.Map
+                [
+                  ("addresses", Packstream.List [ Packstream.String "127.0.0.1:7687" ]);
+                  ("role", Packstream.String "READ");
+                ];
+              Packstream.Map
+                [
+                  ("addresses", Packstream.List [ Packstream.String "127.0.0.1:7687" ]);
+                  ("role", Packstream.String "WRITE");
+                ];
+            ] );
+      ]
+  in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ((5, 0), received, [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt) ] ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn -> (
+          (match Conn.route conn ~routing_context:[ ("policy", "eu") ] ~bookmarks:[ "b1" ] with
+          | Error e -> fail (Errors.to_string e)
+          | Ok value -> (
+              match Routing_table.parse value with
+              | Some table ->
+                  check int "ttl" 300 (Routing_table.ttl_seconds table);
+                  check int "routers" 1 (List.length (Routing_table.routers table));
+                  check int "readers" 1 (List.length (Routing_table.readers table));
+                  check int "writers" 1 (List.length (Routing_table.writers table))
+              | None -> fail "expected a parseable routing table"));
+          let tag, fields =
+            match Packstream.unpack (List.hd !received) with
+            | Ok (Packstream.Structure (tag, fields)) -> (tag, fields)
+            | _ -> fail "expected a structure"
+          in
+          check int "route tag" 0x66 tag;
+          match fields with
+          | [ Packstream.Map ctx; Packstream.List bm; Packstream.Map extra ] ->
+              check string "routing context" "eu" (map_value ctx "policy");
+              (match bm with
+              | [ Packstream.String b ] -> check string "bookmark" "b1" b
+              | _ -> fail "expected one bookmark");
+              check string "no db in extra" "" (map_value extra "db")
+          | _ -> fail "expected [routing_context; bookmarks; extra] fields")
+      | Error e -> fail (Errors.to_string e))
 
 (* Conn.connect negotiates the version reported by the mock server (inline auth,
    Bolt 5.0). *)
@@ -377,8 +427,7 @@ let failure_gql_code () =
 
 let tests =
   [
-    ( "[Conn] routing_not_supported",
-      [ test_case "routing scheme rejected" `Quick routing_not_supported ] );
+    ("[Conn] route_via_mock", [ test_case "ROUTE message + routing table" `Quick route_via_mock ]);
     ("[Conn] connect_via_mock", [ test_case "connect negotiates" `Quick connect_via_mock ]);
     ("[Conn] connect_via_mock_tls", [ test_case "bolt+ssc connects" `Quick connect_via_mock_tls ]);
     ( "[Conn] hello_inline_auth",

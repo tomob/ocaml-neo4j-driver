@@ -94,10 +94,10 @@ You should see [n = 1].
 - The [sw] switch passed to [Driver.connect] hosts the pool's connection
   attempts, so it must outlive the sessions (it does here, as the session is
   closed inside [Eio.Switch.run]).
-- Routing ([neo4j://]) is not implemented yet: a [neo4j://] URI fails on
-  first use with a [Service_unavailable] error. Only [bolt://], [bolt+s://]
-  (TLS with certificate validation) and [bolt+ssc://] (TLS, self-signed
-  allowed) are supported.
+- Routing ([neo4j://] and its [+s]/[+ssc] variants) is supported in minimal
+  form: routing tables are fetched over the ROUTE message and addresses are
+  selected per access mode. Server-side routing, address deactivation and the
+  home-db cache are deferred.
 
 {1 Next steps}
 

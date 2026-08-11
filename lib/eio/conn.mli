@@ -132,6 +132,18 @@ val rollback : t -> (unit, Errors.t) result
 (** Send a ROLLBACK message (end the transaction, discarding its writes). On a [Failed] connection
     the server already discarded the transaction implicitly, so a RESET is sent instead. *)
 
+val route :
+  ?db:string ->
+  ?imp_user:string ->
+  t ->
+  routing_context:(string * string) list ->
+  bookmarks:string list ->
+  (Packstream.value, Errors.t) result
+(** Fetch the routing table of [db] (default database when [None]) via the ROUTE message (Bolt
+    4.3+). The [routing_context] (from the URI query) and [bookmarks] are sent with the request.
+    @return the [rt] routing-table value (for {!Neodriver_core.Routing_table.parse}).
+    @return [Error _] for Bolt < 4.3 (the procedure fallback is deferred). *)
+
 val pull :
   ?n:int ->
   ?qid:int ->

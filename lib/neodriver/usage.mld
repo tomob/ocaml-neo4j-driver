@@ -36,8 +36,9 @@ v}
 - [bolt+s://] — TLS, certificate validated against the OS trust store.
 - [bolt+ssc://] — TLS, any certificate accepted (self-signed allowed).
 
-[neo4j://] (routing) is not implemented: a [neo4j://] URI fails on first use
-with a [Service_unavailable] error.
+[neo4j://] (routing) is supported in minimal form: routing tables are fetched
+over the ROUTE message and addresses are selected per access mode. Server-side
+routing, address deactivation and the home-db cache are deferred.
 
 {1 Sessions}
 
@@ -285,7 +286,8 @@ no effect for now.
 
 {1 Not yet implemented}
 
-- Routing: [neo4j://], server-side routing, home database.
+- Server-side routing (SSR) and the home-db cache ([neo4j://] routing itself is
+  implemented in minimal form).
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
 - Notification filtering and telemetry.

@@ -94,6 +94,17 @@ val commit : Transport.t -> (Packstream.value, Errors.t) result
 val rollback : Transport.t -> (Packstream.value, Errors.t) result
 (** Send a ROLLBACK message and read the response. *)
 
+val route :
+  Transport.t ->
+  routing_context:Packstream.value ->
+  bookmarks:Packstream.value ->
+  extra:Packstream.value ->
+  (Packstream.value, Errors.t) result
+(** Send a ROUTE message (Bolt 4.3+): the routing table request for a database. [routing_context] is
+    the URI routing context map, [bookmarks] the bookmark list and [extra] the database name (Bolt
+    4.3) or a [db]/[imp_user] map (Bolt 4.4+). The response metadata carries the [rt] routing table.
+*)
+
 val pull :
   Transport.t ->
   extra:Packstream.value ->

@@ -3,7 +3,7 @@
    A [t] represents an established, authenticated Bolt connection (transport +
    agreed protocol version). Authentication is sent inline in HELLO for Bolt
    <= 5.0, or via a separate LOGON message for Bolt >= 5.1. Routing
-   (neo4j:// schemes) is not implemented yet. *)
+   (neo4j:// schemes) is handled by the Driver's routing cluster (cluster.ml). *)
 
 open Neodriver_packstream
 open Neodriver_core
@@ -49,11 +49,9 @@ let timeout_of_config clock config =
 let bolt_agent_version major minor = major > 5 || (major = 5 && minor >= 3)
 
 let tls_of_scheme host = function
-  | Addressing.Bolt -> Ok Transport.Plain
-  | Addressing.Bolt_secure -> Ok (Transport.Verify host)
-  | Addressing.Bolt_self_signed -> Ok (Transport.Trust_all host)
-  | Addressing.Neo4j | Addressing.Neo4j_secure | Addressing.Neo4j_self_signed ->
-      Error (Errors.Service_unavailable "Routing (neo4j://) is not supported yet")
+  | Addressing.Bolt | Addressing.Neo4j -> Ok Transport.Plain
+  | Addressing.Bolt_secure | Addressing.Neo4j_secure -> Ok (Transport.Verify host)
+  | Addressing.Bolt_self_signed | Addressing.Neo4j_self_signed -> Ok (Transport.Trust_all host)
 
 let bolt_agent user_agent =
   Packstream.Map
@@ -157,14 +155,7 @@ let authenticate conn config =
 
 let connect ?resolver net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in
-  (* [config.host] carries an IPv6 literal without brackets (the URI parser
-     strips them), so bracket it again or the re-parse would split the port off
-     the last colon and mistype the address as IPv4. *)
-  let host_port =
-    if String.contains config.host ':' then Printf.sprintf "[%s]:%d" config.host config.port
-    else Printf.sprintf "%s:%d" config.host config.port
-  in
-  let* initial = Addressing.parse ~default_host:"localhost" ~default_port:7687 host_port in
+  let initial = Addressing.of_host_port config.host config.port in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in
   let connect_single address =
     let* transport =
@@ -414,6 +405,42 @@ let rollback t =
   else
     let* _ = request t ~message:State.Rollback ~re_auth (fun () -> Bolt.rollback t.transport) in
     Ok ()
+
+(* Fetch the routing table of [db] (the default database when [None]) over the
+   ROUTE message (Bolt 4.3+; the older procedure fallback is deferred — see
+   PLAN.md phase A7). *)
+let route ?db ?imp_user t ~routing_context ~bookmarks =
+  if t.major < 4 || (t.major = 4 && t.minor < 3) then
+    Error (Errors.Service_unavailable "Routing requires Bolt 4.3 or newer")
+  else
+    let re_auth = re_auth_of t.major t.minor in
+    let at_least_4_4 = t.major > 4 || (t.major = 4 && t.minor >= 4) in
+    let* metadata =
+      request t ~message:State.Route ~re_auth (fun () ->
+          let extra =
+            if at_least_4_4 then
+              let fields =
+                (match db with Some db -> [ ("db", Packstream.String db) ] | None -> [])
+                @
+                match imp_user with
+                | Some user -> [ ("imp_user", Packstream.String user) ]
+                | None -> []
+              in
+              Packstream.Map fields
+            else match db with Some db -> Packstream.String db | None -> Packstream.Null
+          in
+          Bolt.route t.transport
+            ~routing_context:
+              (Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) routing_context))
+            ~bookmarks:(Packstream.List (List.map (fun b -> Packstream.String b) bookmarks))
+            ~extra)
+    in
+    match metadata with
+    | Packstream.Map fields -> (
+        match List.assoc_opt "rt" fields with
+        | Some rt -> Ok rt
+        | None -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table"))
+    | _ -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table")
 
 let server_agent t = !(t.server_agent)
 let capabilities t = capabilities_of t

@@ -22,6 +22,12 @@ let config_error fmt =
 let host = function IPv4 (host, _) | IPv6 (host, _, _, _) -> host
 let port = function IPv4 (_, port) | IPv6 (_, port, _, _) -> port
 
+(* An address from a host (an IPv6 literal without brackets, as carried by a
+   parsed URI) and a port, mirroring what parsing the bracketed "host:port"
+   form would produce. *)
+let of_host_port host port =
+  if String.contains host ':' then IPv6 (host, port, 0, 0) else IPv4 (host, port)
+
 let to_string = function
   | IPv4 (host, port) -> Printf.sprintf "%s:%d" host port
   | IPv6 (host, port, _, _) -> Printf.sprintf "[%s]:%d" host port

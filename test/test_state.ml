@@ -22,6 +22,7 @@ let show_message = function
   | State.Commit -> "Commit"
   | State.Rollback -> "Rollback"
   | State.Reset -> "Reset"
+  | State.Route -> "Route"
 
 let check_transition ?re_auth ?has_more from message expected =
   let actual = State.server_transition ?re_auth ?has_more from message in
@@ -39,6 +40,7 @@ let server_re_auth () =
   check_transition State.Streaming State.Pull State.Ready;
   check_transition State.Streaming State.Discard State.Ready;
   check_transition State.Streaming State.Reset State.Ready;
+  check_transition State.Ready State.Route State.Ready;
   check_transition State.Tx_ready_or_tx_streaming State.Commit State.Ready;
   check_transition State.Tx_ready_or_tx_streaming State.Rollback State.Ready;
   check_transition State.Tx_ready_or_tx_streaming State.Reset State.Ready;

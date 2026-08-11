@@ -22,7 +22,8 @@ type message =
   | Begin
   | Commit
   | Rollback
-  | Reset  (** Request messages that drive state transitions. *)
+  | Reset
+  | Route  (** Request messages that drive state transitions. *)
 
 val server_transition : ?re_auth:bool -> ?has_more:bool -> t -> message -> t
 (** The server state after [message] is handled. With [re_auth=true] (Bolt >= 5.1) HELLO enters

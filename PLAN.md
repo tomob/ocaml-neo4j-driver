@@ -177,10 +177,34 @@ for the multi-db tests).
 
 ### Phase A7 — Routing + home db + SSR
 
-- **ROUTE** (`0x66`) with routing_context/bookmarks/db; fallback to the procedures `dbms.routing.getRoutingTable` (Bolt 4.0) and `dbms.cluster.routing.getRoutingTable` (Bolt 3).
-- `routing_table.ml` per database: `routers/readers/writers` + TTL + `is_fresh`, refresh under lock, "initial address first" rediscovery, **load balancing** on the least-loaded address.
-- Error reactions: `ServiceUnavailable/DatabaseUnavailable → deactivate`; `NotALeader/ForbiddenOnReadOnlyDatabase → remove writer`.
-- Home db cache (TTL, keyed by `impersonated_user`/token), `ssr.enabled` hint, pinning after the first result, fallback when SSR is unavailable.
+**Minimal routing — Done** (commit "Add minimal routing (phase A7)"): [neo4j://] (and
+its [+s]/[+ssc] variants) drivers now route:
+
+- **ROUTE** (`0x66`) with routing_context/bookmarks/db (+[imp_user] on Bolt 4.4+; the Bolt 4.3 form
+  sends the database directly). `State.Route` (Ready -> Ready); `Conn.route` returns the [rt]
+  value. Enables the [neo4j://] TLS variants in `Conn.tls_of_scheme`.
+- **`routing_table.ml`** (core): `{ttl_seconds; routers; readers; writers}` parsed from the [rt]
+  metadata, round-robin `pick` per role.
+- **`cluster.ml`** (eio): per-database routing tables (fetched over ROUTE on demand, cached with
+  the server TTL, refreshed under a lock), a pool per cluster address and round-robin address
+  selection by access mode (readers for [Read], writers for [Write]). `Driver` uses a [Cluster]
+  for [neo4j://] URIs; `Session.connect` now carries the session's [access_mode]/[database].
+- Integration test: `neo4j://` against the local standalone server (its routing table lists the
+  single server in every role) — read + write through the routed driver. Unit tests for the ROUTE
+  wire message (mock), `routing_table` parsing/pick and the state transition.
+
+**Deferred (follow-ups):**
+- **Address deactivation**: `ServiceUnavailable`/`DatabaseUnavailable → deactivate an address`;
+  `NotALeader`/`ForbiddenOnReadOnlyDatabase → remove the writer`. For now a failed acquire just
+  refreshes the routing table and retries.
+- **Load balancing** on the least-loaded address (currently round-robin).
+- **Procedure fallback** for Bolt 3 / 4.0–4.2 (`CALL dbms.routing.getRoutingTable(...)` /
+  `dbms.cluster.routing.getRoutingTable(...)`); routing currently requires Bolt 4.3+.
+- **Server-side routing (SSR)**: the `ssr.enabled` hint and using the [rt] metadata returned in
+  RUN responses.
+- **Home-db cache** (TTL, keyed by `impersonated_user`/token).
+- **TestKit routing backend**: `GetRoutingTable`/`ForcedRoutingTableUpdate` + `Backend:RTFetch`/
+  `Backend:RTForceUpdate` (for `tests.stub.suites`).
 
 ### Phase A8 — Bookmarks and auth management
 

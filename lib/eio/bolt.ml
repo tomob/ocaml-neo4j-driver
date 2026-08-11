@@ -22,6 +22,7 @@ let run_tag = 0x10
 let begin_tag = 0x11
 let commit_tag = 0x12
 let rollback_tag = 0x13
+let route_tag = 0x66
 let discard_tag = 0x2F
 let pull_tag = 0x3F
 let record_tag = 0x71
@@ -98,6 +99,13 @@ let commit transport =
 
 let rollback transport =
   let* () = send transport ~tag:rollback_tag [] in
+  respond transport
+
+(* ROUTE (Bolt 4.3+): ask the server for the routing table of a database. The
+   fields are [routing_context, bookmarks, extra], where [extra] is the
+   database name (Bolt 4.3) or a map of [db]/[imp_user] (Bolt 4.4+). *)
+let route transport ~routing_context ~bookmarks ~extra =
+  let* () = send transport ~tag:route_tag [ routing_context; bookmarks; extra ] in
   respond transport
 
 (* Read the RECORD messages of a result up to its summary (SUCCESS/FAILURE/IGNORED).

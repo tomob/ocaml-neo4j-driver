@@ -38,18 +38,16 @@ let bad_uri () =
       | Ok _ -> fail "expected an error for a bad URI"
       | Error _ -> fail "expected a Configuration_error")
 
-(* neo4j:// is accepted by Driver.connect (no eager rejection); it fails on
-   first use with a Service_unavailable (routing not implemented yet). *)
+(* neo4j:// is accepted by Driver.connect (no eager rejection); connecting
+   happens lazily on first use (here against a closed port, so the first use
+   fails with a Service_unavailable). *)
 let neo4j_uri_lazy () =
   with_env (fun net clock sw ->
-      match
-        Driver.connect ~uri:"neo4j://localhost:7687" ~auth:(Conn.basic_auth ()) net clock sw
-      with
+      match Driver.connect ~uri:"neo4j://127.0.0.1:1" ~auth:(Conn.basic_auth ()) net clock sw with
       | Ok driver -> (
           let session = Driver.session driver in
           match Session.run session ~query:"RETURN 1" ~parameters:[] with
-          | Error (Errors.Service_unavailable message) ->
-              check string "message" "Routing (neo4j://) is not supported yet" message
+          | Error (Errors.Service_unavailable _) -> ()
           | Error _ -> fail "expected a Service_unavailable"
           | Ok _ -> fail "expected a failure on first use")
       | Error _ -> fail "connect should not reject neo4j:// eagerly")

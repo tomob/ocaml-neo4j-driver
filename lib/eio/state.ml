@@ -8,7 +8,19 @@
    older behaviour where HELLO carries the credentials and enters READY. *)
 
 type t = Connected | Ready | Streaming | Tx_ready_or_tx_streaming | Failed | Authentication
-type message = Hello | Logon | Logoff | Run | Pull | Discard | Begin | Commit | Rollback | Reset
+
+type message =
+  | Hello
+  | Logon
+  | Logoff
+  | Run
+  | Pull
+  | Discard
+  | Begin
+  | Commit
+  | Rollback
+  | Reset
+  | Route
 
 let failed = function Failed -> true | _ -> false
 let ready = function Ready -> true | _ -> false
@@ -22,6 +34,7 @@ let server_transition ?(re_auth = true) ?(has_more = false) state message =
     | Ready, Run -> Streaming
     | Ready, Begin -> Tx_ready_or_tx_streaming
     | Ready, Logoff -> if re_auth then Authentication else state
+    | Ready, Route -> Ready
     | Streaming, (Pull | Discard) -> Ready
     | Streaming, Reset -> Ready
     | Tx_ready_or_tx_streaming, (Commit | Rollback) -> Ready

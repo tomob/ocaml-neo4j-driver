@@ -29,6 +29,9 @@ module Session = Session
 module Pool = Pool
 (** A bounded connection pool (acquire/release/close), used by [Driver]. *)
 
+module Cluster = Cluster
+(** Minimal routing for [neo4j://] drivers (routing tables + per-address pools). *)
+
 module Neo4jResult = Neo4j_result
 (** A lazily-streamed query result (next/peek/fetch/consume/single). *)
 

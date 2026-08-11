@@ -37,6 +37,10 @@ val host : t -> string
 val port : t -> int
 (** The port part of an address. *)
 
+val of_host_port : string -> int -> t
+(** An address from a host and port. A host containing [':'] (an IPv6 literal without brackets, as
+    carried by a parsed URI) becomes an [IPv6] address. *)
+
 val to_string : t -> string
 (** Render an address as "host:port" (IPv6 host in brackets). *)
 

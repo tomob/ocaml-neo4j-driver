@@ -10,3 +10,4 @@ module Temporal = Temporal
 module Values = Values
 module Hydration = Hydration
 module Capabilities = Capabilities
+module Routing_table = Routing_table

@@ -42,6 +42,17 @@ let parse_list () =
   | Ok _ -> fail "bad port in list should be rejected"
   | Error _ -> ()
 
+(* of_host_port: an address from a host and port, bracketing IPv6 literals like
+   the "host:port" parse round-trip. *)
+let of_host_port () =
+  check string "ipv4" "db:7687" (Addressing.to_string (Addressing.of_host_port "db" 7687));
+  check string "ipv6" "[::1]:7687" (Addressing.to_string (Addressing.of_host_port "::1" 7687));
+  match Addressing.parse "localhost:7687" with
+  | Ok parsed ->
+      check string "round trip" (Addressing.to_string parsed)
+        (Addressing.to_string (Addressing.of_host_port "localhost" 7687))
+  | Error error -> fail (Errors.to_string error)
+
 let uri_ok uri expected_scheme expected_host expected_port =
   match Addressing.parse_uri uri with
   | Ok parsed ->
@@ -121,11 +132,12 @@ let connect_failure_message () =
 
 let tests =
   [
-    ("[Adressing] parse", [ test_case "address parsing" `Quick parse ]);
-    ("[Adressing] parse_list", [ test_case "list parsing" `Quick parse_list ]);
-    ("[Adressing] uri", [ test_case "uri parsing" `Quick uri ]);
-    ("[Adressing] routing_context", [ test_case "routing context" `Quick routing_context ]);
-    ("[Adressing] resolved", [ test_case "resolved address" `Quick resolved ]);
-    ( "[Adressing] connect_failure_message",
+    ("[Addressing] parse", [ test_case "address parsing" `Quick parse ]);
+    ("[Addressing] parse_list", [ test_case "list parsing" `Quick parse_list ]);
+    ("[Addressing] of_host_port", [ test_case "host + port constructor" `Quick of_host_port ]);
+    ("[Addressing] uri", [ test_case "uri parsing" `Quick uri ]);
+    ("[Addressing] routing_context", [ test_case "routing context" `Quick routing_context ]);
+    ("[Addressing] resolved", [ test_case "resolved address" `Quick resolved ]);
+    ( "[Addressing] connect_failure_message",
       [ test_case "aggregated connection error message" `Quick connect_failure_message ] );
   ]

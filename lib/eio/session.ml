@@ -40,7 +40,7 @@ let default_config =
 type t = {
   config : config;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
-  connect : unit -> (Conn.t, Errors.t) result;
+  connect : mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result;
   release : Conn.t -> unit;
   conn : Conn.t option ref;
   bookmarks : string list ref;
@@ -64,7 +64,7 @@ let conn (t : t) =
   match !(t.conn) with
   | Some conn -> Ok conn
   | None -> (
-      match t.connect () with
+      match t.connect ~mode:t.config.access_mode ~database:t.config.database with
       | Error _ as error -> error
       | Ok conn ->
           t.conn := Some conn;

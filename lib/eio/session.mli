@@ -43,12 +43,13 @@ type t
 val create :
   config ->
   clock:Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
-  connect:(unit -> (Conn.t, Errors.t) result) ->
+  connect:(mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result) ->
   ?release:(Conn.t -> unit) ->
   unit ->
   t
-(** Create a session. [connect] establishes the session's connection on first use (the backend
-    provides it from the Eio context); [release] returns it on [close] (default [Conn.close]; a pool
+(** Create a session. [connect] establishes the session's connection on first use with the session's
+    [access_mode] and [database] (a routed driver selects the address from its routing table; a
+    direct driver ignores them); [release] returns it on [close] (default [Conn.close]; a pool
     provides [Pool.release]). [clock] bounds the transaction retry budget and backoff. *)
 
 val conn : t -> (Conn.t, Errors.t) result

@@ -25,3 +25,6 @@ module Hydration = Hydration
 
 module Capabilities = Capabilities
 (** Per-version Bolt protocol capabilities. *)
+
+module Routing_table = Routing_table
+(** Routing tables for [neo4j://] (routed) drivers. *)

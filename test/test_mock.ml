@@ -222,3 +222,45 @@ let with_mock_multi sessions client =
           let result = client net clock sw port in
           ignore (Eio.Promise.await_exn server);
           result))
+
+(* Serve [n] concurrent mock servers on separate ports, each serving its own
+   sequence of [Session]-style connections. [make_connections] receives the
+   servers' ports (needed to build routing tables that address the mocks) and
+   returns the per-server connection lists; [client] receives the ports. *)
+let with_servers n make_connections client =
+  if not (Lazy.force can_bind) then Alcotest.skip ();
+  Eio_main.run (fun env ->
+      let net = Eio.Stdenv.net env in
+      let clock = Eio.Stdenv.mono_clock env in
+      Eio.Switch.run (fun sw ->
+          let listeners =
+            List.init n (fun _ ->
+                let listening =
+                  Eio.Net.listen ~reuse_addr:true ~backlog:1 ~sw net
+                    (`Tcp (Eio.Net.Ipaddr.V4.loopback, 0))
+                in
+                let port =
+                  match Eio.Net.listening_addr listening with
+                  | `Tcp (_, port) -> port
+                  | _ -> assert false
+                in
+                (listening, port))
+          in
+          let ports = List.map snd listeners in
+          let connections = make_connections ports in
+          let servers =
+            List.map2
+              (fun (listening, _) connection_list ->
+                Eio.Fiber.fork_promise ~sw (fun () ->
+                    List.iter
+                      (fun (version, received, responses) ->
+                        let flow, _ = Eio.Net.accept ~sw listening in
+                        let flow = (flow :> flow) in
+                        serve_behavior (Session (version, received, responses)) flow;
+                        Eio.Flow.close flow)
+                      connection_list))
+              listeners connections
+          in
+          let result = client net clock sw ports in
+          List.iter (fun server -> ignore (Eio.Promise.await_exn server)) servers;
+          result))

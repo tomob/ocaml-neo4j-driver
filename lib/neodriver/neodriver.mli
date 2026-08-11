@@ -32,6 +32,9 @@ module Hydration = Neodriver_core.Hydration
 module Capabilities = Neodriver_core.Capabilities
 (** Per-version Bolt protocol capabilities. *)
 
+module Routing_table = Neodriver_core.Routing_table
+(** Routing tables for [neo4j://] (routed) drivers. *)
+
 module Conn = Neodriver_eio.Conn
 (** Minimal Bolt connection (connect, authenticate, run/pull/discard, transactions). *)
 
@@ -49,6 +52,9 @@ module Bolt = Neodriver_eio.Bolt
 
 module State = Neodriver_eio.State
 (** Bolt server-state machine. *)
+
+module Cluster = Neodriver_eio.Cluster
+(** Minimal routing for [neo4j://] drivers (routing tables + per-address pools). *)
 
 module Neo4jResult = Neodriver_eio.Neo4jResult
 (** A lazily-streamed query result (next/peek/fetch/consume/single). *)
