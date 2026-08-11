@@ -211,7 +211,7 @@ converts between PackStream and [Values.t]; you rarely touch it directly.
 {1 Errors}
 
 [Session.run], [Tx.run] and friends return [(_, Errors.t) result]. [Errors.t]
-covers server errors ([Neo4j of { code; message; classification }]),
+covers server errors ([Neo4j of { code; message; classification; gql_status }]),
 [Service_unavailable], [Transaction_error], [Configuration_error] and more.
 [Errors.to_string] renders a message; [Errors.is_retryable] tells you whether
 a failure is worth retrying.

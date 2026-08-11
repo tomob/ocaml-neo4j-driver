@@ -182,7 +182,11 @@ and vector v =
     |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
     |> List.of_seq |> String.concat " "
   in
-  field "CypherVector" (`Assoc [ ("dtype", `String (dtype_string v.dtype)); ("data", `String hex) ])
+  `Assoc
+    [
+      ("name", `String "CypherVector");
+      ("data", `Assoc [ ("dtype", `String (dtype_string v.dtype)); ("data", `String hex) ]);
+    ]
 
 and dtype_string = function
   | Values.I8 -> "i8"
@@ -191,6 +195,15 @@ and dtype_string = function
   | Values.I64 -> "i64"
   | Values.F32 -> "f32"
   | Values.F64 -> "f64"
+
+and dtype_of_string = function
+  | "i8" -> Values.I8
+  | "i16" -> Values.I16
+  | "i32" -> Values.I32
+  | "i64" -> Values.I64
+  | "f32" -> Values.F32
+  | "f64" -> Values.F64
+  | other -> invalid_arg ("unknown vector dtype " ^ other)
 
 and unsupported u =
   let data =
@@ -350,4 +363,12 @@ let rec of_yojson json =
   | "CypherDateTime" -> Values.DateTime (datetime_of data)
   | "CypherDuration" -> Values.Duration (duration_of data)
   | "CypherPoint" -> Values.Point (point_of data)
+  | "CypherVector" -> (
+      match data with
+      | `Assoc fields -> (
+          match (List.assoc_opt "dtype" fields, List.assoc_opt "data" fields) with
+          | Some (`String dtype), Some (`String hex) ->
+              Values.Vector { Values.dtype = dtype_of_string dtype; data = bytes_of_hex hex }
+          | _ -> invalid_arg "bad CypherVector")
+      | _ -> invalid_arg "bad CypherVector")
   | _ -> invalid_arg ("unsupported TestKit value " ^ name)

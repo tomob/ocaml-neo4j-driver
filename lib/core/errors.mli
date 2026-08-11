@@ -13,8 +13,10 @@ type server_error = {
   message : string;
   classification : classification;
   retryable : bool;
+  gql_status : string option;
 }
-(** A server (Neo4j) error as reported over the wire. *)
+(** A server (Neo4j) error as reported over the wire. [gql_status] is the GQL status code from the
+    FAILURE metadata (Bolt >= 5.2), when the server provides one. *)
 
 type specific =
   | Constraint
@@ -61,6 +63,10 @@ val is_retryable : t -> bool
 val of_neo4j_code : code:string -> message:string -> t
 (** Build a server error from a neo4j code and message, applying the classification and legacy
     re-write maps. *)
+
+val of_neo4j_code_with_gql_status : gql_status:string option -> code:string -> message:string -> t
+(** Like {!of_neo4j_code}, but also records the [gql_status] from the Bolt >= 5.2 FAILURE metadata.
+*)
 
 val code : t -> string option
 (** The neo4j code of a server error, or [None] for driver errors. *)

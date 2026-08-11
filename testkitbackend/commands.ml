@@ -45,6 +45,14 @@ let int key fields =
 let opt_string key fields =
   match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
 
+(* The [errorId] of a RetryableNegative: a JSON integer, a numeric string, an
+   empty string (no driver error) or absent. *)
+let opt_error_id fields =
+  match List.assoc_opt "errorId" fields with
+  | Some (`Int n) -> Some n
+  | Some (`String s) when s <> "" -> int_of_string_opt s
+  | _ -> None
+
 (* --- Backend state --- *)
 
 type auth = { scheme : string; principal : string; credentials : string }
@@ -644,15 +652,21 @@ let driver_error_json error =
   let retryable = Errors.is_retryable error in
   match error with
   | Errors.Neo4j server ->
-      ( "DriverError",
-        `Assoc
-          [
-            ("id", `Int id);
-            ("retryable", `Bool retryable);
-            ("errorType", `String "neodriver.Neo4jError");
-            ("msg", `String server.message);
-            ("code", `String server.code);
-          ] )
+      let fields =
+        [
+          ("id", `Int id);
+          ("retryable", `Bool retryable);
+          ("errorType", `String "neodriver.Neo4jError");
+          ("msg", `String server.message);
+          ("code", `String server.code);
+        ]
+      in
+      let fields =
+        match server.gql_status with
+        | Some status -> ("gqlStatus", `String status) :: fields
+        | None -> fields
+      in
+      ("DriverError", `Assoc fields)
   | _ ->
       ( "DriverError",
         `Assoc
@@ -703,16 +717,13 @@ let rec managed_work ctx session_id tx =
                   | Some data -> data
                   | None -> `Assoc []
                 in
-                match opt_string "errorId" (match data with `Assoc f -> f | _ -> []) with
-                | Some error_id when error_id <> "" -> (
-                    match int_of_string_opt error_id with
-                    | Some error_id -> (
-                        match Hashtbl.find_opt errors error_id with
-                        | Some error -> Error (Session.Driver error)
-                        | None ->
-                            Error (Session.Driver (Errors.Service_unavailable "unknown error id")))
-                    | None -> Error (Session.Driver (Errors.Service_unavailable "bad error id")))
-                | _ -> Error Session.Client)
+                match opt_error_id (match data with `Assoc f -> f | _ -> []) with
+                | Some error_id -> (
+                    match Hashtbl.find_opt errors error_id with
+                    | Some error -> Error (Session.Driver error)
+                    | None -> Error (Session.Driver (Errors.Service_unavailable "unknown error id"))
+                    )
+                | None -> Error Session.Client)
             | _ -> (
                 match dispatch ctx json with
                 | None -> loop ()

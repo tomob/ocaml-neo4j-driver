@@ -30,4 +30,5 @@ let features : string list =
     "Feature:API:Type.Spatial";
     "Feature:API:Type.Temporal";
     "Feature:API:Type.UnsupportedType";
+    "Feature:API:Type.Vector";
   ]

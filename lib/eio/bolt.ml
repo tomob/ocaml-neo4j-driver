@@ -63,9 +63,11 @@ let respond transport =
   match tag with
   | t when t = success_tag -> Ok (Option.value ~default:(Packstream.Map []) payload)
   | t when t = failure_tag ->
-      let code = failure_code (Option.value ~default:(Packstream.Map []) payload) in
-      let message = Option.value ~default:"" (Option.bind payload (field_string "message")) in
-      Error (Errors.of_neo4j_code ~code ~message)
+      let payload = Option.value ~default:(Packstream.Map []) payload in
+      let code = failure_code payload in
+      let message = Option.value ~default:"" (field_string "message" payload) in
+      let gql_status = field_string "gql_status" payload in
+      Error (Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message)
   | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")
   | tag ->
       Error (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
@@ -116,7 +118,8 @@ let rec collect_records acc transport =
       let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
       let code = failure_code metadata in
       let message = Option.value ~default:"" (field_string "message" metadata) in
-      Ok (List.rev acc, Error (Errors.of_neo4j_code ~code ~message))
+      let gql_status = field_string "gql_status" metadata in
+      Ok (List.rev acc, Error (Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message))
   | t when t = ignored_tag ->
       Ok (List.rev acc, Error (Errors.Service_unavailable "Unexpected IGNORED response"))
   | tag ->

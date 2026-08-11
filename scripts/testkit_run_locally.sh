@@ -14,6 +14,7 @@
 #                            loopback port 7687)
 #   NEO4J_USER=neo4j
 #   NEO4J_PASS=testpassword
+#   NEO4J_EDITION=community   # reported as TEST_NEO4J_EDITION (aura/enterprise enable features like vectors)
 #   TESTKIT_BACKEND_PORT=9876
 #   TESTKIT_VERSION=2026.06 # the real Neo4j server version (agent "Neo4j/2026.06") passed to tests.neo4j.suites / TEST_NEO4J_VERSION
 #   TESTKIT_NETWORK=neo4j-testkit-net
@@ -29,6 +30,7 @@ PY="${NEO4J_TESTKIT_DIR}/.venv/bin/python"
 NEO4J_HOST_PORT="${NEO4J_HOST_PORT:-17687}"
 NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-testpassword}"
+NEO4J_EDITION="${NEO4J_EDITION:-community}"
 TESTKIT_BACKEND_PORT="${TESTKIT_BACKEND_PORT:-9876}"
 TESTKIT_VERSION="${TESTKIT_VERSION:-2026.06}"
 TESTKIT_NETWORK="${TESTKIT_NETWORK:-neo4j-testkit-net}"
@@ -96,6 +98,6 @@ export TEST_NEO4J_USER="${NEO4J_USER}"
 export TEST_NEO4J_PASS="${NEO4J_PASS}"
 export TEST_NEO4J_SCHEME=bolt
 export TEST_NEO4J_VERSION="${TESTKIT_VERSION}"
-export TEST_NEO4J_EDITION=community
+export TEST_NEO4J_EDITION="${NEO4J_EDITION}"
 export TEST_NEO4J_DEFAULT_DB=neo4j
 "${PY}" -m tests.neo4j.suites "${TESTKIT_VERSION}" local
