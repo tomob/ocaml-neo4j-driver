@@ -197,6 +197,7 @@ let round_trip () =
       Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:(Temporal.Offset 7200) (-7200L) 0);
       Values.Duration (Temporal.Duration.of_fields ~months:2 ~days:3 ~seconds:4L ~nanoseconds:5);
       Values.Point { srid = 4326; x = 1.5; y = 2.5; z = None };
+      Values.Uuid "01020304-0506-0708-090a-0b0c0d0e0f12";
       Values.Node
         {
           element_id = "n1";

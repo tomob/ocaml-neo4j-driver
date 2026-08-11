@@ -28,6 +28,10 @@ let marker_null = 0xC0
 let marker_float_64 = 0xC1
 let marker_false = 0xC2
 let marker_true = 0xC3
+
+(* The UUID marker (Bolt 6.1): a fixed-size type like Float/Bool/Int, followed
+   by 16 big-endian bytes. *)
+let marker_uuid = 0xE0
 let marker_int_8 = 0xC8
 let marker_int_16 = 0xC9
 let marker_int_32 = 0xCA
@@ -57,6 +61,7 @@ type value =
   | List of value list
   | Map of (string * value) list
   | Structure of int * value list
+  | Uuid of string  (** A UUID (Bolt 6.1), in its canonical hyphenated lowercase text. *)
 
 type error =
   | Unexpected_end_of_data
@@ -79,6 +84,31 @@ let error_to_string = function
 
 (* Interpret a signed 32-bit word as an unsigned length. *)
 let uint32_to_int n = Int64.to_int (Int64.logand (Int64.of_int32 n) 0xFFFFFFFFL)
+
+(* The canonical hyphenated text of a UUID from its 16 big-endian bytes. *)
+let uuid_of_bytes b =
+  if Bytes.length b <> 16 then invalid_arg "uuid_of_bytes: expected 16 bytes"
+  else begin
+    let hex =
+      Bytes.to_string b |> String.to_seq
+      |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
+      |> List.of_seq |> String.concat ""
+    in
+    Printf.sprintf "%s-%s-%s-%s-%s" (String.sub hex 0 8) (String.sub hex 8 4) (String.sub hex 12 4)
+      (String.sub hex 16 4) (String.sub hex 20 12)
+  end
+
+(* The 16 big-endian bytes of a UUID from its hyphenated text. *)
+let uuid_bytes_of_string s =
+  let s = String.concat "" (String.split_on_char '-' s) in
+  if String.length s <> 32 then invalid_arg "uuid_bytes_of_string: bad UUID"
+  else begin
+    let b = Bytes.create 16 in
+    for i = 0 to 15 do
+      Bytes.set b i (Char.chr (int_of_string ("0x" ^ String.sub s (2 * i) 2)))
+    done;
+    b
+  end
 
 (* --- Packing --- *)
 
@@ -154,6 +184,12 @@ let rec pack_value p = function
   | Float f ->
       write_byte p marker_float_64;
       write_int64_be p (Int64.bits_of_float f)
+  | Uuid s ->
+      write_byte p marker_uuid;
+      let b = uuid_bytes_of_string s in
+      ensure_capacity p (Bytes.length b);
+      Bytes.blit b 0 p.data p.pos (Bytes.length b);
+      p.pos <- p.pos + Bytes.length b
   | String s ->
       let len = String.length s in
       if len < 16 then write_byte p (marker_tiny_string lor len)
@@ -299,6 +335,7 @@ let rec unpack_value limits depth u =
   | m when m = marker_false -> Bool false
   | m when m = marker_true -> Bool true
   | m when m = marker_float_64 -> Float (Int64.float_of_bits (read_int64_be u))
+  | m when m = marker_uuid -> Uuid (uuid_of_bytes (read_bytes u 16))
   | m when m = marker_int_8 ->
       let n = read_byte u in
       Int (Int64.of_int (if n >= 128 then n - 256 else n))
@@ -367,6 +404,7 @@ let rec to_string = function
   | Float f -> string_of_float f
   | String s -> Printf.sprintf "%S" s
   | Bytes b -> Printf.sprintf "<bytes:%d>" (Bytes.length b)
+  | Uuid u -> u
   | List items -> "[" ^ String.concat ", " (List.map to_string items) ^ "]"
   | Map entries ->
       "{"

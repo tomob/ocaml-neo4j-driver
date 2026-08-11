@@ -46,6 +46,9 @@ let round_trip () =
       String (String.make 65536 'f');
       Bytes (Bytes.of_string "xy");
       Bytes (Bytes.create 0);
+      Uuid "00000000-0000-0000-0000-000000000000";
+      Uuid "ffffffff-ffff-ffff-ffff-ffffffffffff";
+      Uuid "01020304-0506-0708-090a-0b0c0d0e0f12";
       List [];
       List [ Null; Int 1L; String "two" ];
       Map [];
@@ -66,7 +69,9 @@ let byte_vector () =
   check string "string A" "\x81A" (Bytes.to_string (Packstream.pack (String "A")));
   check string "empty list" "\x90" (Bytes.to_string (Packstream.pack (List [])));
   check string "empty map" "\xa0" (Bytes.to_string (Packstream.pack (Map [])));
-  check string "struct" "\xb1N\xc0" (Bytes.to_string (Packstream.pack (Structure (0x4E, [ Null ]))))
+  check string "struct" "\xb1N\xc0" (Bytes.to_string (Packstream.pack (Structure (0x4E, [ Null ]))));
+  check string "uuid" "\xe0\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+    (Bytes.to_string (Packstream.pack (Uuid "00010203-0405-0607-0809-0a0b0c0d0e0f")))
 
 let truncated () =
   (match Packstream.unpack (Bytes.of_string "\xc1") with
@@ -75,7 +80,12 @@ let truncated () =
       check string "truncated float" "Unexpected end of data" (Packstream.error_to_string e));
   match Packstream.unpack (Bytes.of_string "\x91") with
   | Ok _ -> fail "truncated list should fail"
-  | Error e -> check string "truncated list" "Unexpected end of data" (Packstream.error_to_string e)
+  | Error e -> (
+      check string "truncated list" "Unexpected end of data" (Packstream.error_to_string e);
+      match Packstream.unpack (Bytes.of_string "\xe0\x00\x01") with
+      | Ok _ -> fail "truncated uuid should fail"
+      | Error e ->
+          check string "truncated uuid" "Unexpected end of data" (Packstream.error_to_string e))
 
 let unknown_marker () =
   match Packstream.unpack (Bytes.of_string "\xc4") with

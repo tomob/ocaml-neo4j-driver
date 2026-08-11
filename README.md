@@ -50,7 +50,9 @@ project, running this program and what is going on under the hood.
 - Temporal types with named time zones (embedded IANA database plus an LMT
   fallback before 1970).
 - Basic authentication (LOGON after HELLO on Bolt >= 5.1).
-- TestKit conformance: 114 of 126 tests passing (12 skipped).
+- Vector and UUID value types (Bolt 6).
+- TestKit conformance: 119 of 126 tests passing (7 skipped — vector on the
+  community server and multi-db; 4 skipped with `NEO4J_EDITION=aura`).
 
 Not yet implemented: `neo4j://` routing, notification
 filtering, telemetry and the high-level `execute_query`/`verify_connectivity`

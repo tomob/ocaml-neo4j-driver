@@ -56,6 +56,7 @@ and t =
   | DateTime of Temporal.DateTime.t
   | Duration of Temporal.Duration.t
   | Vector of vector
+  | Uuid of string
   | Unsupported of unsupported
   | Broken of broken
 
@@ -117,5 +118,6 @@ and to_string = function
   | DateTime dt -> Temporal.DateTime.to_string dt
   | Duration d -> Temporal.Duration.to_string d
   | Vector v -> Printf.sprintf "Vector<%s:%d>" (vector_dtype_to_string v.dtype) (vector_length v)
+  | Uuid u -> u
   | Unsupported u -> Printf.sprintf "UnsupportedType<%s>" u.name
   | Broken b -> Printf.sprintf "<broken: %s>" b.error

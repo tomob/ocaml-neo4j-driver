@@ -12,7 +12,9 @@ type value =
   | List of value list
   | Map of (string * value) list
   | Structure of int * value list
-      (** A PackStream value; [Structure] carries a tag byte and its fields. *)
+  | Uuid of string
+      (** A PackStream value; [Structure] carries a tag byte and its fields. [Uuid] (Bolt 6.1)
+          carries a UUID in its canonical hyphenated lowercase text. *)
 
 type error =
   | Unexpected_end_of_data

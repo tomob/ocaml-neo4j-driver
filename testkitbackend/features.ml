@@ -18,6 +18,7 @@ let features : string list =
     "Feature:Bolt:5.7";
     "Feature:Bolt:5.8";
     "Feature:Bolt:6.0";
+    "Feature:Bolt:6.1";
     "Feature:Bolt:HandshakeManifestV1";
     (* Implemented API surface (B0b). *)
     "Feature:API:Driver:GetServerInfo";
@@ -31,4 +32,5 @@ let features : string list =
     "Feature:API:Type.Temporal";
     "Feature:API:Type.UnsupportedType";
     "Feature:API:Type.Vector";
+    "Feature:API:Type.UUID";
   ]

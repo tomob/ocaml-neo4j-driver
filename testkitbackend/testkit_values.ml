@@ -42,6 +42,7 @@ let rec to_yojson = function
   | Values.DateTime dt -> datetime dt
   | Values.Duration d -> duration d
   | Values.Vector v -> vector v
+  | Values.Uuid u -> field "CypherUUID" (`String u)
   | Values.Unsupported u -> unsupported u
   | Values.Broken _ -> invalid_arg "Broken values cannot be encoded"
 
@@ -363,6 +364,8 @@ let rec of_yojson json =
   | "CypherDateTime" -> Values.DateTime (datetime_of data)
   | "CypherDuration" -> Values.Duration (duration_of data)
   | "CypherPoint" -> Values.Point (point_of data)
+  | "CypherUUID" -> (
+      match value with `String s -> Values.Uuid s | _ -> invalid_arg "bad CypherUUID")
   | "CypherVector" -> (
       match data with
       | `Assoc fields -> (

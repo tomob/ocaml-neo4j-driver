@@ -50,7 +50,9 @@ let values () =
   let duration =
     Values.Duration (Temporal.Duration.of_fields ~months:1 ~days:0 ~seconds:0L ~nanoseconds:0)
   in
-  check string "duration" "P1M" (Values.to_string duration)
+  check string "duration" "P1M" (Values.to_string duration);
+  check string "uuid" "01020304-0506-0708-090a-0b0c0d0e0f12"
+    (Values.to_string (Values.Uuid "01020304-0506-0708-090a-0b0c0d0e0f12"))
 
 let list_map () =
   let v = Values.List [ Values.Int 1L; Values.Map [ ("k", Values.String "v") ] ] in

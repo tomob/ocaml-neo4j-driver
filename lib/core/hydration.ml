@@ -195,6 +195,7 @@ let rec hydrate t value =
   | Packstream.Float f -> Values.Float f
   | Packstream.String s -> Values.String s
   | Packstream.Bytes b -> Values.Bytes b
+  | Packstream.Uuid u -> Values.Uuid u
   | Packstream.List items ->
       let items = List.map (hydrate t) items in
       if List.exists (function Values.Broken _ -> true | _ -> false) items then
@@ -494,6 +495,7 @@ let rec dehydrate t value =
   | Values.Float f -> Packstream.Float f
   | Values.String s -> Packstream.String s
   | Values.Bytes b -> Packstream.Bytes b
+  | Values.Uuid u -> Packstream.Uuid u
   | Values.List items -> Packstream.List (List.map (dehydrate t) items)
   | Values.Map entries -> Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) entries)
   | Values.Node n ->

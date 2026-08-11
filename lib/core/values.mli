@@ -66,6 +66,7 @@ and t =
   | DateTime of Temporal.DateTime.t
   | Duration of Temporal.Duration.t
   | Vector of vector
+  | Uuid of string  (** A UUID (Bolt 6.1), in its canonical hyphenated lowercase text. *)
   | Unsupported of unsupported
   | Broken of broken  (** A hydrated value exchanged with the server. *)
 

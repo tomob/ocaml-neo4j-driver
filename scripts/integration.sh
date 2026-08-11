@@ -19,6 +19,7 @@
 #   NEO4J_PASS=testpassword
 #   NEO4J_SCHEME=bolt
 #   NEO4J_LOG=/var/lib/neo4j/logs/neo4j.log
+#   NEO4J_BOLT_MAX_VERSION=6.1   # server's max Bolt protocol version (UUID needs 6.1)
 set -euo pipefail
 
 NEO4J_IMAGE="${NEO4J_IMAGE:-neo4j:latest}"
@@ -29,6 +30,10 @@ NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-testpassword}"
 NEO4J_SCHEME="${NEO4J_SCHEME:-bolt}"
 NEO4J_LOG="${NEO4J_LOG:-/var/lib/neo4j/logs/neo4j.log}"
+# The server's maximum Bolt protocol version. Bolt 6.1 (the UUID type) is not
+# offered by default; the TestKit runner forces it via the internal
+# internal.dbms.bolt.max_protocol_version setting (NEO4J_* env -> server config).
+NEO4J_BOLT_MAX_VERSION="${NEO4J_BOLT_MAX_VERSION:-6.1}"
 # Optional docker network the container joins (its name is then the network
 # alias). Empty by default.
 NEO4J_NETWORK="${NEO4J_NETWORK:-}"
@@ -102,6 +107,10 @@ up() {
     -e "NEO4J_dbms_ssl_policy_bolt_public__certificate=public.crt" \
     -e "NEO4J_dbms_ssl_policy_bolt_client__auth=NONE" \
     -e "NEO4J_server_bolt_tls__level=OPTIONAL" \
+    -e "NEO4J_internal_dbms_bolt_max__protocol__version=${NEO4J_BOLT_MAX_VERSION}" \
+    -e "NEO4J_internal_dbms_latest__runtime__version=2147483647" \
+    -e "NEO4J_internal_dbms_latest__kernel__version=254" \
+    -e "NEO4J_internal_cypher_uuid__type__enabled=true" \
     "${NEO4J_IMAGE}" >/dev/null
   wait_ready
 }

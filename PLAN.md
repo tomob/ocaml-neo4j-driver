@@ -137,33 +137,43 @@ ripple (quickstart/usage/README/examples/test_driver) updated. Unit tests
 (`test_pool.ml` on the mock: reuse, defunct, lifetime, liveness, acquisition
 timeout) and integration tests (`test_integration/test_pool.ml`: sessions
 sharing the pool, reuse, pool-size bound with concurrent sessions, pool
-close). Fixes a nested-result regression from the batched-PULL refactor
-(`Neo4jResult` now reads the stream's shared buffer again). TestKit stays OK
-(114, 12 skipped).
+  close). Fixes a nested-result regression from the batched-PULL refactor
+  (`Neo4jResult` now reads the stream's shared buffer again). TestKit stays OK
+  (119, 7 skipped).
 
-### Phase A6.5 — Unblock the remaining TestKit skips (UUID + vector)
+### Phase A6.5 — Unblock the remaining TestKit skips (UUID + vector) — Done
 
-The local TestKit suite (`tests.neo4j.suites`, real server) skips 12 tests:
-8 are feature-gated (5 UUID + 3 vector — the backend does not report
-`Feature:API:Type.UUID` / `Feature:API:Type.Vector`) and 4 are multi-db
-runtime skips on the community edition (a server limitation, not driver
-code). Phase A6 (pool) does not unblock any of them — pool tests live in
-`tests/stub/`, outside the real-server suite.
+The local TestKit suite (`tests.neo4j.suites`, real server) previously skipped
+12 tests: 8 feature-gated (5 UUID + 3 vector — the backend did not report
+`Feature:API:Type.UUID` / `Feature:API:Type.Vector`) and 4 multi-db runtime
+skips on the community edition (a server limitation, not driver code).
 
-- **Vector (3 tests)**: `Values.Vector` and the backend's `CypherVector`
-  serialization already exist; verify the round-trip (echo and parameters)
-  and add `Feature:API:Type.Vector` to `testkitbackend/features.ml`.
-- **UUID (5 tests)**: add a UUID value type — `Values.Uuid` (16 bytes),
-  PackStream hydration/dehydration of the Bolt UUID structure (tag and byte
-  order per the Python driver), `CypherUuid` encode/decode in
-  `testkitbackend/testkit_values.ml`, and add `Feature:API:Type.UUID` to
-  `features.ml`.
+- **Vector (3 tests) — Done**: `Values.Vector` round-trip (the dtype marker is
+  a single `BYTES` byte, not an `INT`, on the wire), `CypherVector`
+  encode/decode in `testkitbackend/testkit_values.ml`, and
+  `Feature:API:Type.Vector` reported. They run when the harness claims a
+  vector-capable edition (`NEO4J_EDITION=aura` or an enterprise server); the
+  community edition keeps skipping them (server limitation).
+- **UUID (5 tests) — Done**: `Values.Uuid` (canonical hyphenated string) +
+  `Packstream.Uuid` (marker `0xE0`, 16 big-endian bytes, Bolt 6.1),
+  hydration/dehydration, `CypherUUID` encode/decode in
+  `testkitbackend/testkit_values.ml`, and `Feature:API:Type.UUID` +
+  `Feature:Bolt:6.1` reported. The local server only offers Bolt 6.0 unless
+  the preview is enabled: `scripts/integration.sh` sets
+  `NEO4J_BOLT_MAX_VERSION=6.1` plus the internal UUID preview flags
+  (`internal.cypher.uuid_type.enabled`, `internal.dbms.latest.*`), matching the
+  TestKit runner. Note: the server's aligned store format cannot commit UUID
+  properties; `test_uuid_stored_on_node` writes and reads back inside a
+  transaction and rolls back.
 - **Multi-db (4 tests)**: out of scope for driver code — they require a server
   with multiple databases (enterprise edition); they stay skipped in the
   community-based local run.
 
-Target: the 8 feature-gated skips become passing (114 -> 122 in the local
-suite), leaving only the 4 server-gated multi-db skips.
+The 8 feature-gated skips now pass: local TestKit is **OK (skipped=7)** on the
+community edition (3 vector + 4 multi-db) and **OK (skipped=4)** with
+`NEO4J_EDITION=aura` (only multi-db). See `scripts/README.md` for how to run
+each configuration (including an external enterprise server via `NEO4J_URI`
+for the multi-db tests).
 
 ### Phase A7 — Routing + home db + SSR
 
@@ -247,7 +257,7 @@ not yet implemented).
   principal `neo4j` / empty credentials. The `Neodriver` aggregator now re-exports
   `Conn`/`Session`/`Tx`/`Transport`/`Bolt`/`State` (plus `Neo4jResult`/`Summary`/`Driver`). Unit
   tested (`test_driver.ml`: basic_auth, bad URI, lazy neo4j:// rejection, connect+run on the mock,
-  session config flowing into the RUN extra); TestKit unchanged (OK, 12 skipped).
+  session config flowing into the RUN extra); TestKit unchanged (OK, 7 skipped).
 - **Phase C1 — API documentation (odoc)**: audit all `.mli` files (public declarations must carry
   a doc comment) and document the new API; add odoc index pages (a top-level `index.mld` and one
   per package) so `dune build @doc` produces a browsable site with a landing page; keep
@@ -328,7 +338,7 @@ not yet implemented).
   managed transactions, bookmarks, named-zone temporal types, basic auth; a not-yet-implemented
   list pointing at `PLAN.md`), the four-package table (including the `neodriver` aggregator),
   documentation/examples links (quickstart, usage, examples, the Pages API reference), the TestKit
-  conformance note (114/126, 12 skipped), the corrected prerequisites (OCaml >= 5.2, dune >= 3.13)
+  conformance note (119/126, 7 skipped), the corrected prerequisites (OCaml >= 5.2, dune >= 3.13)
   and the MIT license. The original reference-implementation paragraph is kept.
 
 ---

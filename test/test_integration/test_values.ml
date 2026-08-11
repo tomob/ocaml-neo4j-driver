@@ -73,6 +73,7 @@ let rec equal_value a b =
       | _ -> false)
   | Values.Duration d1, Values.Duration d2 -> Temporal.Duration.equal d1 d2
   | Values.Vector v1, Values.Vector v2 -> v1.dtype = v2.dtype && Bytes.equal v1.data v2.data
+  | Values.Uuid x, Values.Uuid y -> x = y
   | _ -> false
 
 let check_echo session name value = check bool name true (equal_value value (echo session value))
@@ -173,12 +174,103 @@ let named_zones () =
           assert_named_zone "pre-1970" None "datetime(\"1900-06-01T12:00:00[Europe/Warsaw]\")";
           Session.close session))
 
+(* UUID round-trips (Bolt 6.1): parameter echo, server-created via uuid(), and
+   stored on a node property. Requires a server that negotiates Bolt 6.1
+   (integration.sh enables it via NEO4J_BOLT_MAX_VERSION=6.1). *)
+let uuid_round_trips () =
+  with_env (fun env ->
+      Eio_main.run (fun e ->
+          let net = Eio.Stdenv.net e in
+          let clock = Eio.Stdenv.mono_clock e in
+          Eio.Switch.run (fun sw ->
+              match Driver.connect ~uri:(uri_of env) ~auth:(auth_of env) net clock sw with
+              | Error error -> fail (Errors.to_string error)
+              | Ok driver ->
+                  let conn =
+                    match Driver.acquire driver with
+                    | Ok conn -> conn
+                    | Error error -> fail (Errors.to_string error)
+                  in
+                  let major, minor = Conn.version conn in
+                  Driver.release driver conn;
+                  if major < 6 || (major = 6 && minor < 1) then Alcotest.skip ()
+                  else begin
+                    let session = Driver.session driver in
+                    let fixed = "01020304-0506-0708-090a-0b0c0d0e0f12" in
+                    List.iter
+                      (fun u -> check_echo session ("uuid " ^ u) (Values.Uuid u))
+                      [
+                        "00000000-0000-0000-0000-000000000000";
+                        "ffffffff-ffff-ffff-ffff-ffffffffffff";
+                        fixed;
+                      ];
+                    (* server-created from a string *)
+                    (match
+                       Session.run session ~query:"RETURN uuid($raw) AS u"
+                         ~parameters:[ ("raw", Values.String fixed) ]
+                     with
+                    | Ok result -> (
+                        match Neo4jResult.values result with
+                        | Ok [ [ Values.Uuid u ] ] -> check string "cypher uuid" fixed u
+                        | Ok _ -> fail "expected one uuid"
+                        | Error e -> fail (Errors.to_string e))
+                    | Error e -> fail (Errors.to_string e));
+                    (* stored on a node property: write and read it back inside
+                        a transaction, then roll back. (The server's aligned
+                        store format rejects committing UUID properties, so —
+                        like the TestKit's test_uuid_stored_on_node — the write
+                        is only exercised within the transaction.) *)
+                    let uid =
+                      let b = Bytes.create 16 in
+                      for i = 0 to 15 do
+                        Bytes.set b i (Char.chr (Random.bits () land 0xFF))
+                      done;
+                      Bytes.set b 6 (Char.chr (Bytes.get_uint8 b 6 land 0x0F lor 0x40));
+                      Bytes.set b 8 (Char.chr (Bytes.get_uint8 b 8 land 0x3F lor 0x80));
+                      let hex =
+                        Bytes.to_string b |> String.to_seq
+                        |> Seq.map (fun c -> Printf.sprintf "%02x" (Char.code c))
+                        |> List.of_seq |> String.concat ""
+                      in
+                      Values.Uuid
+                        (Printf.sprintf "%s-%s-%s-%s-%s" (String.sub hex 0 8) (String.sub hex 8 4)
+                           (String.sub hex 12 4) (String.sub hex 16 4) (String.sub hex 20 12))
+                    in
+                    let session2 = Driver.session driver in
+                    let hydration =
+                      match Session.conn session2 with
+                      | Ok conn -> Conn.hydration conn
+                      | Error e -> fail (Errors.to_string e)
+                    in
+                    let tx =
+                      match Session.begin_transaction session2 with
+                      | Ok tx -> tx
+                      | Error e -> fail (Errors.to_string e)
+                    in
+                    (match
+                       Tx.run tx ~hydration ~query:"CREATE (n:Thing {uid: $uid}) RETURN n.uid"
+                         ~parameters:[ ("uid", uid) ]
+                     with
+                    | Ok result -> (
+                        match Neo4jResult.values result with
+                        | Ok [ [ v ] ] -> check bool "node property uuid" true (equal_value uid v)
+                        | Ok _ -> fail "expected one value"
+                        | Error e -> fail (Errors.to_string e))
+                    | Error e -> fail (Errors.to_string e));
+                    (match Tx.rollback tx with Ok () -> () | Error e -> fail (Errors.to_string e));
+                    Session.close session2;
+                    Session.close session;
+                    Driver.close driver
+                  end)))
+
 let tests =
   [
     ( "[Integration > Values] echo round-trips",
       [ test_case "scalars, collections, spatial, temporal" `Quick echo_round_trips ] );
     ( "[Integration > Values] vector round-trips",
       [ test_case "all vector dtypes" `Quick vector_round_trips ] );
+    ( "[Integration > Values] uuid round-trips",
+      [ test_case "echo, uuid(), node property" `Quick uuid_round_trips ] );
     ( "[Integration > Values] named time zones",
       [ test_case "modern and pre-1970" `Quick named_zones ] );
   ]
