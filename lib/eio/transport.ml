@@ -101,6 +101,16 @@ let read_exact t buf off len =
   with
   | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Read timed out")
   | End_of_file -> Error (Errors.Service_unavailable "Connection closed")
+  | exn ->
+      (* A socket-level failure (e.g. a peer resetting the connection mid-read)
+         must surface as a service-unavailable error, not leak as a raw
+         exception: callers treat an [Error] as a failed connection attempt and
+         fall through to the next resolved address. Cancellation is re-raised
+         so the Eio cancellation context stays in control. *)
+      if cancelled exn then raise exn
+      else
+        Error
+          (Errors.Service_unavailable (Printf.sprintf "Read failed: %s" (Printexc.to_string exn)))
 
 let write t buf =
   let buffer = Cstruct.of_bytes buf in
@@ -108,8 +118,10 @@ let write t buf =
   try Ok (Eio.Time.Timeout.run_exn t.timeout write) with
   | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Write timed out")
   | exn ->
-      Error
-        (Errors.Service_unavailable (Printf.sprintf "Write failed: %s" (Printexc.to_string exn)))
+      if cancelled exn then raise exn
+      else
+        Error
+          (Errors.Service_unavailable (Printf.sprintf "Write failed: %s" (Printexc.to_string exn)))
 
 let write_message t message =
   let len = Bytes.length message in
