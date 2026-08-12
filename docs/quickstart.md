@@ -96,7 +96,8 @@ You should see `n = 1`.
   closed inside `Eio.Switch.run`).
 - Routing (`neo4j://` and its `+s`/`+ssc` variants) is supported in minimal
   form: routing tables are fetched over the ROUTE message and addresses are
-  selected per access mode. Server-side routing, address deactivation and the
+  selected per access mode; failed servers are deactivated (dropped from the
+  routing tables until a refresh re-lists them). Server-side routing and the
   home-db cache are deferred.
 
 ## Next steps

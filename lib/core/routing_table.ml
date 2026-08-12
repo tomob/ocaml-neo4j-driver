@@ -67,3 +67,17 @@ let least_loaded ~load addresses =
       None addresses
   in
   Option.map fst best
+
+(* Drop [addr] from a role list; addresses compare by string form to match the
+   rest of the codebase (pools, routers, load). *)
+let drop_address addr = List.filter (fun a -> Addressing.to_string a <> Addressing.to_string addr)
+
+let remove_address addr t =
+  {
+    t with
+    routers = drop_address addr t.routers;
+    readers = drop_address addr t.readers;
+    writers = drop_address addr t.writers;
+  }
+
+let remove_writer addr t = { t with writers = drop_address addr t.writers }

@@ -199,11 +199,21 @@ its [+s]/[+ssc] variants) drivers now route:
   the per-(database, mode) round-robin counters were removed. Unit tests cover the core selection
   (`test_routing_table.ml`), the pool count (`test_pool.ml`) and the cluster behaviour across
   readers (`test_cluster.ml`).
+- **Address deactivation — Done** (modeled on the Python driver): a failed server is dropped from
+  the cluster until a refresh re-lists it. `Cluster.deactivate` removes the address from every
+  routing table and closes its pool; `Cluster.on_write_failure` drops it from the [writers] of one
+  database only (NotALeader / read-only failure). `Conn` gained an `on_error` callback (installed
+  on pool connections) reported on failed requests — the cluster filters it: `ServiceUnavailable`
+  / `DatabaseUnavailable` → `deactivate`, `NotALeader` / `ForbiddenOnReadOnlyDatabase` →
+  `on_write_failure` (keyed by the connection's last database). During discovery a router that
+  fails to connect, answers ROUTE with a non-fatal error or returns a table without routers or
+  readers is deactivated in favour of the next router; errors fatal during discovery
+  (`is_fatal_during_discovery`) abort the fetch immediately. A table is fresh only when it still
+  has routers and an address for the requested mode (an emptied role forces a refresh), and a
+  failed `Pool.acquire` (server down) deactivates the address and retries within the acquisition
+  timeout. `Routing_table.remove_address` / `remove_writer` are the pure core helpers.
 
 **Deferred (follow-ups):**
-- **Address deactivation**: `ServiceUnavailable`/`DatabaseUnavailable → deactivate an address`;
-  `NotALeader`/`ForbiddenOnReadOnlyDatabase → remove the writer`. For now a failed acquire just
-  refreshes the routing table and retries.
 - **Procedure fallback** for Bolt 3 / 4.0–4.2 (`CALL dbms.routing.getRoutingTable(...)` /
   `dbms.cluster.routing.getRoutingTable(...)`); routing currently requires Bolt 4.3+.
 - **Server-side routing (SSR)**: the `ssr.enabled` hint and using the [rt] metadata returned in

@@ -60,6 +60,18 @@ val version : t -> int * int
 val server_state : t -> State.t
 (** The tracked server protocol state. *)
 
+val set_on_error : t -> (t -> Errors.t -> unit) -> unit
+(** Install a callback invoked with [t] and the error whenever a request on the connection fails:
+    failed auto-RESETs and failed messages in {!run} and {!route}, and server failures surfaced by
+    {!pull} and {!discard}. The routing cluster installs it to deactivate the connection's address.
+*)
+
+val last_database : t -> string option
+(** The [db] of the last {!run} on the connection, if any. *)
+
+val set_last_database : t -> string option -> unit
+(** Record the [db] of the next {!run}. *)
+
 val reset : t -> (unit, Errors.t) result
 (** Send a RESET and wait for the response; the server returns to [Ready]. *)
 

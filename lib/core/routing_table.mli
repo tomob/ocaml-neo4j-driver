@@ -33,3 +33,10 @@ val writers : t -> Addressing.t list
 val least_loaded : load:(Addressing.t -> int) -> Addressing.t list -> Addressing.t option
 (** Choose the least-loaded address of a role: the smallest [load], ties broken by list order.
     Returns [None] for an empty list. *)
+
+val remove_address : Addressing.t -> t -> t
+(** Drop [addr] from routers, readers and writers (full deactivation). The TTL is kept. *)
+
+val remove_writer : Addressing.t -> t -> t
+(** Drop [addr] from the writers only (a NotALeader / read-only failure). Routers and readers are
+    untouched. *)

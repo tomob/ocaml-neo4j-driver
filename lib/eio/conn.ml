@@ -29,6 +29,8 @@ type t = {
   server_agent : string option ref;
   address : Addressing.t;
   current_auth : auth option ref;
+  on_error : (t -> Errors.t -> unit) ref;
+  last_database : string option ref;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
@@ -90,6 +92,13 @@ let version t = (t.major, t.minor)
 let server_state t = !(t.state)
 let address t = t.address
 
+(* The connection reports request failures to an optional callback (installed by
+   the routing cluster to deactivate dead addresses). *)
+let set_on_error t on_error = t.on_error := on_error
+let last_database t = !(t.last_database)
+let set_last_database t database = t.last_database := database
+let report t error = !(t.on_error) t error
+
 (* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
    V2 = Bolt 5, V3 = Bolt 6). *)
 let hydration t =
@@ -112,14 +121,24 @@ let reset t =
    [has_more result] decides whether the state stays in STREAMING after the
    message (used by PULL/DISCARD). *)
 let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
-  let* () = if State.failed !(t.state) then reset t else Ok () in
-  match action () with
-  | Ok result ->
-      t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
-      Ok result
-  | Error _ as error ->
-      t.state := State.Failed;
-      error
+  let pre_error =
+    match if State.failed !(t.state) then reset t else Ok () with
+    | Ok () -> None
+    | Error error -> Some error
+  in
+  match pre_error with
+  | Some error ->
+      report t error;
+      Error error
+  | None -> (
+      match action () with
+      | Ok result ->
+          t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
+          Ok result
+      | Error error ->
+          t.state := State.Failed;
+          report t error;
+          Error error)
 
 (* Part 1 of the connection pipeline: open a TCP (optionally TLS) transport to a
    single address. *)
@@ -185,6 +204,8 @@ let connect ?resolver net clock sw config =
       server_agent = ref None;
       address;
       current_auth = ref None;
+      on_error = ref (fun _ _ -> ());
+      last_database = ref None;
     }
   in
   let* () = authenticate conn config in
@@ -261,6 +282,7 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
   Packstream.Map items
 
 let run ?mode ?db ?bookmarks ?timeout ?metadata t ~hydration ~query ~parameters =
+  t.last_database := db;
   let parameters =
     Packstream.Map
       (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)) parameters)
@@ -297,7 +319,11 @@ let pull ?n ?qid t ~hydration =
   | Error _ as error -> error
   | Ok (records, outcome) ->
       let records = List.map (List.map (Hydration.hydrate hydration)) records in
-      (match outcome with Error _ -> t.state := State.Failed | Ok _ -> ());
+      (match outcome with
+      | Error error ->
+          t.state := State.Failed;
+          report t error
+      | Ok _ -> ());
       Ok (records, outcome)
 
 let discard ?n ?qid t =
@@ -310,9 +336,10 @@ let discard ?n ?qid t =
   in
   match outcome with
   | Ok _ -> Ok ()
-  | Error _ as error ->
+  | Error error ->
       t.state := State.Failed;
-      error
+      report t error;
+      Error error
 
 (* A lazily-streamed result on a connection: RUN is sent immediately, records
    are pulled in batches on demand into a FIFO queue (consumed records are

@@ -425,6 +425,25 @@ let failure_gql_code () =
           | Error error -> fail (Errors.to_string error));
           Conn.close conn)
 
+(* Conn.run records the database it last ran on. *)
+let last_database_recorded () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 0), ref [], [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          check bool "no database initially" true (Option.is_none (Conn.last_database conn));
+          (match
+             Conn.run ~db:"mydb" conn ~hydration:(Conn.hydration conn) ~query:"RETURN 1"
+               ~parameters:[]
+           with
+          | Ok _ ->
+              check (option string) "database recorded" (Some "mydb") (Conn.last_database conn)
+          | Error error -> fail (Errors.to_string error));
+          Conn.close conn)
+
 let tests =
   [
     ("[Conn] route_via_mock", [ test_case "ROUTE message + routing table" `Quick route_via_mock ]);
@@ -451,4 +470,6 @@ let tests =
     ( "[Conn] re_auth_after_mark",
       [ test_case "mark_unauthenticated forces LOGON" `Quick re_auth_after_mark ] );
     ("[Conn] failure_gql_code", [ test_case "FAILURE neo4j_code extracted" `Quick failure_gql_code ]);
+    ( "[Conn] last_database_recorded",
+      [ test_case "run records the database" `Quick last_database_recorded ] );
   ]

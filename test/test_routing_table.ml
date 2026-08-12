@@ -101,6 +101,70 @@ let least_loaded_empty () =
              | Some table -> table
              | None -> fail "expected a table"))))
 
+(* Full deactivation drops the address from every role and keeps the TTL. *)
+let remove_address_drops_all_roles () =
+  let addr host = Addressing.of_host_port host 7687 in
+  let table =
+    match
+      Routing_table.parse
+        (rt_value ~ttl:42L
+           [
+             server [ "r1:7687"; "r2:7687" ] "ROUTE";
+             server [ "r1:7687" ] "READ";
+             server [ "r1:7687"; "r3:7687" ] "WRITE";
+           ])
+    with
+    | Some table -> table
+    | None -> fail "expected a table"
+  in
+  let table = Routing_table.remove_address (addr "r1") table in
+  check int "ttl kept" 42 (Routing_table.ttl_seconds table);
+  check int "routers" 1 (List.length (Routing_table.routers table));
+  check int "readers" 0 (List.length (Routing_table.readers table));
+  check int "writers" 1 (List.length (Routing_table.writers table));
+  check bool "router r2 kept" true
+    (List.mem "r2:7687" (List.map Addressing.to_string (Routing_table.routers table)));
+  check bool "writer r3 kept" true
+    (List.mem "r3:7687" (List.map Addressing.to_string (Routing_table.writers table)))
+
+(* remove_writer drops the address from the writers only. *)
+let remove_writer_drops_writers_only () =
+  let addr host = Addressing.of_host_port host 7687 in
+  let table =
+    match
+      Routing_table.parse
+        (rt_value
+           [
+             server [ "r1:7687" ] "ROUTE"; server [ "r2:7687" ] "READ"; server [ "r1:7687" ] "WRITE";
+           ])
+    with
+    | Some table -> table
+    | None -> fail "expected a table"
+  in
+  let table = Routing_table.remove_writer (addr "r1") table in
+  check int "routers kept" 1 (List.length (Routing_table.routers table));
+  check int "readers kept" 1 (List.length (Routing_table.readers table));
+  check int "writers" 0 (List.length (Routing_table.writers table))
+
+(* Removing an address that is not in the table changes nothing. *)
+let remove_address_absent_is_noop () =
+  let addr host = Addressing.of_host_port host 7687 in
+  let table =
+    match
+      Routing_table.parse
+        (rt_value
+           [
+             server [ "r1:7687" ] "ROUTE"; server [ "r1:7687" ] "READ"; server [ "r1:7687" ] "WRITE";
+           ])
+    with
+    | Some table -> table
+    | None -> fail "expected a table"
+  in
+  let table = Routing_table.remove_address (addr "nope") table in
+  check int "routers" 1 (List.length (Routing_table.routers table));
+  check int "readers" 1 (List.length (Routing_table.readers table));
+  check int "writers" 1 (List.length (Routing_table.writers table))
+
 let tests =
   [
     ("[RoutingTable] parse_valid", [ test_case "roles and addresses" `Quick parse_valid ]);
@@ -111,4 +175,10 @@ let tests =
     ( "[RoutingTable] least_loaded_ties_first",
       [ test_case "ties broken by order" `Quick least_loaded_ties_first ] );
     ("[RoutingTable] least_loaded_empty", [ test_case "empty role" `Quick least_loaded_empty ]);
+    ( "[RoutingTable] remove_address_drops_all_roles",
+      [ test_case "full deactivation" `Quick remove_address_drops_all_roles ] );
+    ( "[RoutingTable] remove_writer_drops_writers_only",
+      [ test_case "writer removal" `Quick remove_writer_drops_writers_only ] );
+    ( "[RoutingTable] remove_address_absent_is_noop",
+      [ test_case "absent address" `Quick remove_address_absent_is_noop ] );
   ]
