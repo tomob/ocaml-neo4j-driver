@@ -46,8 +46,9 @@ let session = Driver.session driver
 | `bolt+ssc://`  | TLS, any certificate accepted (self-signed allowed)     |
 
 `neo4j://` (routing) is supported in minimal form: routing tables are fetched
-over the ROUTE message and addresses are selected per access mode. Server-side
-routing, address deactivation and the home-db cache are deferred.
+over the ROUTE message and addresses are selected per access mode on the
+least-loaded server (fewest in-use connections). Server-side routing, address
+deactivation and the home-db cache are deferred.
 
 ## Sessions
 

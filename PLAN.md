@@ -184,20 +184,26 @@ its [+s]/[+ssc] variants) drivers now route:
   sends the database directly). `State.Route` (Ready -> Ready); `Conn.route` returns the [rt]
   value. Enables the [neo4j://] TLS variants in `Conn.tls_of_scheme`.
 - **`routing_table.ml`** (core): `{ttl_seconds; routers; readers; writers}` parsed from the [rt]
-  metadata, round-robin `pick` per role.
+  metadata, least-loaded `pick` per role (fewest in-use connections, deterministic tie-break).
 - **`cluster.ml`** (eio): per-database routing tables (fetched over ROUTE on demand, cached with
-  the server TTL, refreshed under a lock), a pool per cluster address and round-robin address
+  the server TTL, refreshed under a lock), a pool per cluster address and least-loaded address
   selection by access mode (readers for [Read], writers for [Write]). `Driver` uses a [Cluster]
   for [neo4j://] URIs; `Session.connect` now carries the session's [access_mode]/[database].
 - Integration test: `neo4j://` against the local standalone server (its routing table lists the
   single server in every role) — read + write through the routed driver. Unit tests for the ROUTE
   wire message (mock), `routing_table` parsing/pick and the state transition.
+- **Load balancing — Done** (replaces the initial round-robin): `Cluster.acquire` selects the
+  least-loaded address of the role — the pool with the fewest checked-out connections
+  (`Pool.in_use_count`, derived from the acquisition semaphore) — with a deterministic tie-break
+  (first in the routing-table order). `Routing_table.pick` became `Routing_table.least_loaded`;
+  the per-(database, mode) round-robin counters were removed. Unit tests cover the core selection
+  (`test_routing_table.ml`), the pool count (`test_pool.ml`) and the cluster behaviour across
+  readers (`test_cluster.ml`).
 
 **Deferred (follow-ups):**
 - **Address deactivation**: `ServiceUnavailable`/`DatabaseUnavailable → deactivate an address`;
   `NotALeader`/`ForbiddenOnReadOnlyDatabase → remove the writer`. For now a failed acquire just
   refreshes the routing table and retries.
-- **Load balancing** on the least-loaded address (currently round-robin).
 - **Procedure fallback** for Bolt 3 / 4.0–4.2 (`CALL dbms.routing.getRoutingTable(...)` /
   `dbms.cluster.routing.getRoutingTable(...)`); routing currently requires Bolt 4.3+.
 - **Server-side routing (SSR)**: the `ssr.enabled` hint and using the [rt] metadata returned in

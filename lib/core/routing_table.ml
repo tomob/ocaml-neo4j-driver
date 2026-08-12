@@ -54,11 +54,16 @@ let parse value =
       | _ -> None)
   | _ -> None
 
-(* Round-robin over the addresses of one role. *)
-let pick counter addresses =
-  match addresses with
-  | [] -> None
-  | _ ->
-      let i = !counter mod List.length addresses in
-      incr counter;
-      Some (List.nth addresses i)
+(* The least-loaded address of one role: the smallest [load], ties broken by
+   list order (deterministic — the Python driver uses random.choice instead). *)
+let least_loaded ~load addresses =
+  let best =
+    List.fold_left
+      (fun best addr ->
+        let load = load addr in
+        match best with
+        | None -> Some (addr, load)
+        | Some (_, best_load) -> if load < best_load then Some (addr, load) else best)
+      None addresses
+  in
+  Option.map fst best

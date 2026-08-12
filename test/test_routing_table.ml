@@ -1,4 +1,4 @@
-(* Unit tests for Routing_table: parsing an [rt] value and round-robin address
+(* Unit tests for Routing_table: parsing an [rt] value and least-loaded address
    selection. *)
 
 open Neodriver
@@ -59,37 +59,56 @@ let parse_malformed () =
   check bool "not a map" false (Option.is_some (Routing_table.parse (String "nope")));
   check bool "empty" false (Option.is_some (Routing_table.parse (Map [])))
 
-(* Round-robin alternates over the addresses of a role. *)
-let pick_round_robin () =
-  let table =
-    match Routing_table.parse (rt_value [ server [ "r1:7687"; "r2:7687"; "r3:7687" ] "READ" ]) with
-    | Some table -> table
-    | None -> fail "expected a table"
+(* Least-loaded selection picks the address with the smallest load. *)
+let least_loaded_picks_min () =
+  let addresses =
+    [
+      Addressing.of_host_port "r1" 7687;
+      Addressing.of_host_port "r2" 7687;
+      Addressing.of_host_port "r3" 7687;
+    ]
   in
-  let counter = ref 0 in
-  let host () =
-    Addressing.host (Option.get (Routing_table.pick counter (Routing_table.readers table)))
+  let host addr = Addressing.host (Option.get addr) in
+  let pick loads =
+    let load addr = List.assoc (Addressing.host addr) loads in
+    host (Routing_table.least_loaded ~load addresses)
   in
-  check string "first" "r1" (host ());
-  check string "second" "r2" (host ());
-  check string "third" "r3" (host ());
-  check string "wraps" "r1" (host ())
+  check string "single min" "r2" (pick [ ("r1", 2); ("r2", 0); ("r3", 1) ]);
+  check string "re-chooses the new min" "r2" (pick [ ("r1", 3); ("r2", 1); ("r3", 2) ])
+
+(* Ties are broken by list order (deterministic). *)
+let least_loaded_ties_first () =
+  let addresses =
+    [
+      Addressing.of_host_port "r1" 7687;
+      Addressing.of_host_port "r2" 7687;
+      Addressing.of_host_port "r3" 7687;
+    ]
+  in
+  let load addr = if Addressing.host addr = "r3" then 2 else 1 in
+  match Routing_table.least_loaded ~load addresses with
+  | Some addr -> check string "first tied address" "r1" (Addressing.host addr)
+  | None -> fail "expected an address"
 
 (* An empty role yields no address. *)
-let pick_empty () =
-  let table =
-    match Routing_table.parse (rt_value [ server [ "r1:7687" ] "ROUTE" ]) with
-    | Some table -> table
-    | None -> fail "expected a table"
-  in
-  check bool "no readers" true
-    (Option.is_none (Routing_table.pick (ref 0) (Routing_table.readers table)))
+let least_loaded_empty () =
+  check bool "no addresses" true
+    (Option.is_none
+       (Routing_table.least_loaded
+          ~load:(fun _ -> 0)
+          (Routing_table.readers
+             (match Routing_table.parse (rt_value [ server [ "r1:7687" ] "ROUTE" ]) with
+             | Some table -> table
+             | None -> fail "expected a table"))))
 
 let tests =
   [
     ("[RoutingTable] parse_valid", [ test_case "roles and addresses" `Quick parse_valid ]);
     ("[RoutingTable] parse_skips_bad", [ test_case "unknown roles ignored" `Quick parse_skips_bad ]);
     ("[RoutingTable] parse_malformed", [ test_case "malformed values" `Quick parse_malformed ]);
-    ("[RoutingTable] pick_round_robin", [ test_case "round robin" `Quick pick_round_robin ]);
-    ("[RoutingTable] pick_empty", [ test_case "empty role" `Quick pick_empty ]);
+    ( "[RoutingTable] least_loaded_picks_min",
+      [ test_case "minimum load" `Quick least_loaded_picks_min ] );
+    ( "[RoutingTable] least_loaded_ties_first",
+      [ test_case "ties broken by order" `Quick least_loaded_ties_first ] );
+    ("[RoutingTable] least_loaded_empty", [ test_case "empty role" `Quick least_loaded_empty ]);
   ]

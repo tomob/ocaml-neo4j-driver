@@ -30,6 +30,6 @@ val readers : t -> Addressing.t list
 val writers : t -> Addressing.t list
 (** The cluster's writer addresses. *)
 
-val pick : int ref -> Addressing.t list -> Addressing.t option
-(** Round-robin over a role's addresses using the given counter (an [Addressing.t list] is a slice
-    of the table for that role). *)
+val least_loaded : load:(Addressing.t -> int) -> Addressing.t list -> Addressing.t option
+(** Choose the least-loaded address of a role: the smallest [load], ties broken by list order.
+    Returns [None] for an empty list. *)

@@ -262,12 +262,37 @@ let session_close_once () =
       Session.close session;
       check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F ] (message_tags received))
 
+(* The in-use count tracks checked-out connections: 0 when idle, 1 while held,
+   back to 0 after release, and 1 again when the idle connection is reused. *)
+let in_use_count () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+    (fun net clock sw port ->
+      let pool = pool net clock sw port () in
+      check int "fresh pool" 0 (Pool.in_use_count pool);
+      (match Pool.acquire pool with
+      | Ok conn ->
+          check int "held connection" 1 (Pool.in_use_count pool);
+          Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      check int "released" 0 (Pool.in_use_count pool);
+      match Pool.acquire pool with
+      | Ok conn ->
+          check int "reused connection" 1 (Pool.in_use_count pool);
+          Pool.release pool conn
+      | Error e -> fail (Errors.to_string e))
+
 let tests =
   [
     ("[Pool] reuse", [ test_case "reuse idle" `Quick reuse ]);
     ("[Pool] defunct", [ test_case "failed conn not reused" `Quick defunct_not_reused ]);
     ("[Pool] lifetime", [ test_case "expired not reused" `Quick lifetime_expired ]);
     ("[Pool] liveness", [ test_case "reset on reuse" `Quick liveness_check ]);
+    ("[Pool] in-use count", [ test_case "checked-out tracking" `Quick in_use_count ]);
     ("[Pool] acquisition timeout", [ test_case "timeout" `Quick acquisition_timeout ]);
     ("[Pool] closed", [ test_case "closed pool" `Quick closed_pool ]);
     ("[Pool] session close once", [ test_case "idempotent close" `Quick session_close_once ]);

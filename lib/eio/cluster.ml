@@ -1,11 +1,11 @@
-(* Minimal routing for [neo4j://] drivers.
+(* Routing for [neo4j://] drivers.
 
    A [t] holds the routing tables per database (fetched over the ROUTE message,
    refreshed on TTL expiry or a failed fetch) and a pool per cluster address.
-   Addresses are chosen round-robin per role and access mode. The richer
-   routing behaviours — address deactivation, load balancing, server-side
-   routing, the home-db cache and the pre-4.3 procedure fallback — are deferred
-   to follow-ups (see PLAN.md phase A7). *)
+   Addresses are chosen per role and access mode on the least-loaded server
+   (fewest in-use connections). The richer routing behaviours — address
+   deactivation, server-side routing, the home-db cache and the pre-4.3
+   procedure fallback — are deferred to follow-ups (see PLAN.md phase A7). *)
 
 open Neodriver_core
 
@@ -21,7 +21,6 @@ type t = {
   errors : (string option, Errors.t * Mtime.t) Hashtbl.t;
   in_flight : (string option, bool) Hashtbl.t;
   pools : (string, Pool.t) Hashtbl.t;
-  counters : (string option * Config.access_mode, int ref) Hashtbl.t;
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
 }
@@ -41,7 +40,6 @@ let create ~pool_config ~connect ~routing_context ~initial clock =
     errors = Hashtbl.create 4;
     in_flight = Hashtbl.create 4;
     pools = Hashtbl.create 4;
-    counters = Hashtbl.create 4;
     lock = Eio.Mutex.create ();
     cond = Eio.Condition.create ();
   }
@@ -65,6 +63,13 @@ let pool_for cluster addr =
       in
       Hashtbl.add cluster.pools key pool;
       pool
+
+(* Load of an address: in-use connections of its pool, or 0 if no pool exists
+   yet (pools are created lazily for the chosen address only). *)
+let load_of cluster addr =
+  match Hashtbl.find_opt cluster.pools (Addressing.to_string addr) with
+  | Some pool -> Pool.in_use_count pool
+  | None -> 0
 
 (* Fetch a fresh routing table for [database], trying each router in turn: a
    connection is opened directly to the router for the ROUTE request and closed
@@ -165,22 +170,15 @@ let acquire cluster ~mode ~database =
         (fun () ->
           let* table = resolve_table cluster ~database in
           with_lock cluster (fun () ->
-              (* A separate round-robin counter per database and access mode, so
-                 each role's phase is independent of the other role's picks. *)
-              let counter =
-                match Hashtbl.find_opt cluster.counters (database, mode) with
-                | Some counter -> counter
-                | None ->
-                    let counter = ref 0 in
-                    Hashtbl.add cluster.counters (database, mode) counter;
-                    counter
-              in
               let addresses =
                 match mode with
                 | Config.Read -> Routing_table.readers table
                 | Config.Write -> Routing_table.writers table
               in
-              match Routing_table.pick counter addresses with
+              (* The least-loaded address of the role's slice (fewest in-use
+                 connections), so concurrent sessions spread across the cluster
+                 instead of piling up on one server. *)
+              match Routing_table.least_loaded ~load:(load_of cluster) addresses with
               | Some addr -> Ok (pool_for cluster addr)
               | None -> Error (Errors.Service_unavailable "routing table has no suitable address")))
     with Eio.Time.Timeout ->

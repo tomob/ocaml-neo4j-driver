@@ -17,6 +17,10 @@ val create :
     free connection; [pool_config.max_connection_lifetime] (seconds) expires idle connections;
     [pool_config.liveness_check_timeout] enables a RESET liveness check on reuse. *)
 
+val in_use_count : t -> int
+(** The number of connections currently checked out of the pool (the load a routing cluster uses to
+    balance across addresses). *)
+
 val acquire : t -> (Conn.t, Errors.t) result
 (** Get a connection, reusing an idle one (lifetime- and liveness-checked) or creating a new one.
     @return

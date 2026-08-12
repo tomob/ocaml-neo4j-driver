@@ -1,5 +1,5 @@
-(** Minimal routing for [neo4j://] drivers: per-database routing tables (fetched over the ROUTE
-    message) and a pool per cluster address. See cluster.ml for the implementation. *)
+(** Routing for [neo4j://] drivers: per-database routing tables (fetched over the ROUTE message) and
+    a pool per cluster address. See cluster.ml for the implementation. *)
 
 open Neodriver_core
 
@@ -19,9 +19,9 @@ val create :
     server-provided TTL. *)
 
 val acquire : t -> mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result
-(** Get a connection for [mode] and [database]: the routing table (refreshed when stale) selects an
-    address round-robin among the matching role (readers for [Read], writers for [Write]) and a
-    per-address pool serves the connection. *)
+(** Get a connection for [mode] and [database]: the routing table (refreshed when stale) selects the
+    least-loaded address (fewest in-use connections) among the matching role (readers for [Read],
+    writers for [Write]) and a per-address pool serves the connection. *)
 
 val release : t -> Conn.t -> unit
 (** Return a connection to its pool (found via the connection's address; a connection whose pool is

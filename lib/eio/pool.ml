@@ -39,6 +39,10 @@ let create ~pool_config ~connect clock =
 
 let now t = Eio.Time.Mono.now t.clock
 
+(* The number of connections currently checked out: every checked-out connection
+   holds exactly one permit, so it is the pool bound minus the available permits. *)
+let in_use_count t = t.pool_config.max_connection_pool_size - Eio.Semaphore.get_value t.permits
+
 let with_lock m f =
   Eio.Mutex.lock m;
   Fun.protect ~finally:(fun () -> Eio.Mutex.unlock m) f
