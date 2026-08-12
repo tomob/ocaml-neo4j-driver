@@ -7,6 +7,7 @@ type t = {
   supports_multiple_databases : bool;
   supports_re_auth : bool;
   supports_notification_filtering : bool;
+  supports_route_message : bool;
   supports_ssr : bool;
   supports_telemetry : bool;
 }

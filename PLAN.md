@@ -212,10 +212,17 @@ its [+s]/[+ssc] variants) drivers now route:
   has routers and an address for the requested mode (an emptied role forces a refresh), and a
   failed `Pool.acquire` (server down) deactivates the address and retries within the acquisition
   timeout. `Routing_table.remove_address` / `remove_writer` are the pure core helpers.
+- **Procedure fallback — Done**: `Conn.route` falls back to the routing procedure on Bolt 3 /
+  4.0–4.2 (gated by the new `Capabilities.supports_route_message`, same 4.3 threshold as
+  `supports_ssr`): Bolt 3 runs `CALL dbms.cluster.routing.getRoutingTable($context)` (no db, no
+  bookmarks); Bolt 4.0–4.2 runs `CALL dbms.routing.getRoutingTable($context)` (default database) or
+  `CALL dbms.routing.getRoutingTable($context, $database)` on the `system` database. The single
+  returned record is zipped with its RUN `fields` into the same `{ttl; servers}` shape as the
+  ROUTE `rt`, so `Routing_table.parse` works unchanged. `imp_user` (Bolt < 4.3) and a `database`
+  on Bolt 3 are `ConfigurationError`. Unit tests cover the procedure wire messages (RUN/PULL
+  instead of ROUTE, mock) and a cluster acquire through a Bolt 4.2 router.
 
 **Deferred (follow-ups):**
-- **Procedure fallback** for Bolt 3 / 4.0–4.2 (`CALL dbms.routing.getRoutingTable(...)` /
-  `dbms.cluster.routing.getRoutingTable(...)`); routing currently requires Bolt 4.3+.
 - **Server-side routing (SSR)**: the `ssr.enabled` hint and using the [rt] metadata returned in
   RUN responses.
 - **Home-db cache** (TTL, keyed by `impersonated_user`/token).

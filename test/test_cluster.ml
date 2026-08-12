@@ -35,6 +35,18 @@ let rt ?(ttl = 300L) routers readers writers =
         Packstream.List [ server routers "ROUTE"; server readers "READ"; server writers "WRITE" ] );
     ]
 
+(* The RUN metadata of the routing procedure: its [fields]. *)
+let procedure_fields_meta =
+  [ ("fields", Packstream.List [ Packstream.String "ttl"; Packstream.String "servers" ]) ]
+
+(* The single record the routing procedure returns: [ttl] followed by the
+   [servers] list (the same shape as the ROUTE message's [rt]). *)
+let procedure_record ?(ttl = 300L) routers readers writers =
+  [
+    Packstream.Int ttl;
+    Packstream.List [ server routers "ROUTE"; server readers "READ"; server writers "WRITE" ];
+  ]
+
 let message_tag bytes =
   match Packstream.unpack bytes with
   | Ok (Packstream.Structure (tag, _)) -> tag
@@ -417,6 +429,47 @@ let acquire_retries_after_dead_reader () =
       Cluster.release cluster c1;
       Cluster.close cluster)
 
+(* A Bolt 4.2 router serves its routing table through the procedure fallback:
+   the cluster's acquire routes over RUN/PULL instead of the ROUTE message. *)
+let routing_via_procedure_bolt42 () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A (Bolt 4.2): the procedure RUN/PULL returning a table routing
+           readers through B *)
+        [
+          ( (4, 2),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta procedure_fields_meta;
+              Test_mock.Records ([ procedure_record [ a ] [ b ] [ b ] ], false);
+            ] );
+        ];
+        (* reader B: one pool connection *)
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
+          clock
+      in
+      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None in
+      let c1 = match acquire () with Ok conn -> conn | Error e -> fail (Errors.to_string e) in
+      check int "acquired connection is on B" (List.nth ports 1) (Addressing.port (Conn.address c1));
+      let router_log = tags (List.nth received 0) in
+      check int "procedure RUN on the router" 1 (count_tag 0x10 router_log);
+      check int "procedure PULL on the router" 1 (count_tag 0x3F router_log);
+      check int "no ROUTE message on the router" 0 (count_tag 0x66 router_log);
+      Cluster.release cluster c1;
+      Cluster.close cluster)
+
 let tests =
   [
     ( "[Cluster] acquire falls back to the next router",
@@ -435,4 +488,6 @@ let tests =
       [ test_case "single-flight routing" `Quick concurrent_acquires_single_fetch ] );
     ( "[Cluster] failed fetch negative cache",
       [ test_case "no re-fetch after failure" `Quick failed_fetch_negative_cache ] );
+    ( "[Cluster] routing via the procedure fallback",
+      [ test_case "Bolt 4.2 router" `Quick routing_via_procedure_bolt42 ] );
   ]

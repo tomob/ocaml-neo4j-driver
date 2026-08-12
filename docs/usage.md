@@ -46,8 +46,9 @@ let session = Driver.session driver
 | `bolt+ssc://`  | TLS, any certificate accepted (self-signed allowed)     |
 
 `neo4j://` (routing) is supported in minimal form: routing tables are fetched
-over the ROUTE message and addresses are selected per access mode on the
-least-loaded server (fewest in-use connections). Failed servers are
+over the ROUTE message (Bolt 4.3+) or, on older servers, by calling the
+`dbms.routing.getRoutingTable` procedure; addresses are selected per access
+mode on the least-loaded server (fewest in-use connections). Failed servers are
 deactivated (dropped from the routing tables and their pools closed) until a
 refresh re-lists them; a `NotALeader`/read-only failure removes the address
 from the writers only. Server-side routing and the home-db cache are deferred.

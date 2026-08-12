@@ -433,41 +433,128 @@ let rollback t =
     let* _ = request t ~message:State.Rollback ~re_auth (fun () -> Bolt.rollback t.transport) in
     Ok ()
 
-(* Fetch the routing table of [db] (the default database when [None]) over the
-   ROUTE message (Bolt 4.3+; the older procedure fallback is deferred — see
-   PLAN.md phase A7). *)
-let route ?db ?imp_user t ~routing_context ~bookmarks =
-  if t.major < 4 || (t.major = 4 && t.minor < 3) then
-    Error (Errors.Service_unavailable "Routing requires Bolt 4.3 or newer")
+(* The routing-procedure query, its parameters and the RUN [extra] for the
+   given Bolt version: Bolt 3 uses the cluster procedure with no [db] and no
+   bookmarks; Bolt 4.0-4.2 uses the multi-db procedure on the [system]
+   database (passing [$database] when one is selected). *)
+let routing_procedure_request db ~routing_context ~bookmarks ~major =
+  let context =
+    Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) routing_context)
+  in
+  if major = 3 then
+    ( "CALL dbms.cluster.routing.getRoutingTable($context)",
+      Packstream.Map [ ("context", context) ],
+      build_extra ~mode:Config.Read () )
   else
-    let re_auth = re_auth_of t.major t.minor in
-    let at_least_4_4 = t.major > 4 || (t.major = 4 && t.minor >= 4) in
-    let* metadata =
-      request t ~message:State.Route ~re_auth (fun () ->
-          let extra =
-            if at_least_4_4 then
-              let fields =
-                (match db with Some db -> [ ("db", Packstream.String db) ] | None -> [])
-                @
-                match imp_user with
-                | Some user -> [ ("imp_user", Packstream.String user) ]
-                | None -> []
-              in
-              Packstream.Map fields
-            else match db with Some db -> Packstream.String db | None -> Packstream.Null
+    match db with
+    | None ->
+        ( "CALL dbms.routing.getRoutingTable($context)",
+          Packstream.Map [ ("context", context) ],
+          build_extra ~mode:Config.Read ~db:"system" ~bookmarks () )
+    | Some database ->
+        ( "CALL dbms.routing.getRoutingTable($context, $database)",
+          Packstream.Map [ ("context", context); ("database", Packstream.String database) ],
+          build_extra ~mode:Config.Read ~db:"system" ~bookmarks () )
+
+(* A safe zip of the RUN [fields] with the record's values: mismatched lengths
+   (a server answering with an unexpected shape) become [None], not
+   [invalid_arg]. *)
+let rec zip_fields keys values =
+  match (keys, values) with
+  | [], [] -> Some []
+  | key :: keys, value :: values -> (
+      match zip_fields keys values with Some rest -> Some ((key, value) :: rest) | None -> None)
+  | _ -> None
+
+(* The routing-table fallback for Bolt 3 / 4.0-4.2: CALL the server's routing
+   procedure and zip its [fields] with the single returned record — the same
+   {ttl; servers} shape as the ROUTE message's [rt], so the caller's
+   [Routing_table.parse] works unchanged. [imp_user] (no procedure supports it)
+   and a [database] on Bolt 3 (no multi-db) are [Configuration_error]. *)
+let route_procedure ?db ?imp_user t ~routing_context ~bookmarks =
+  let major, minor = version t in
+  match imp_user with
+  | Some _ ->
+      Error
+        (Errors.Configuration_error
+           "Impersonation is not supported by the routing procedure (Bolt < 4.3)")
+  | None -> (
+      match (major, db) with
+      | 3, Some _ ->
+          Error
+            (Errors.Configuration_error
+               "Database selection is not supported by the routing procedure on Bolt 3")
+      | _ -> (
+          let query, parameters, extra =
+            routing_procedure_request db ~routing_context ~bookmarks ~major
           in
-          Bolt.route t.transport
-            ~routing_context:
-              (Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) routing_context))
-            ~bookmarks:(Packstream.List (List.map (fun b -> Packstream.String b) bookmarks))
-            ~extra)
-    in
-    match metadata with
-    | Packstream.Map fields -> (
-        match List.assoc_opt "rt" fields with
-        | Some rt -> Ok rt
-        | None -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table"))
-    | _ -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table")
+          let re_auth = re_auth_of major minor in
+          let* run_metadata =
+            request t ~message:State.Run ~re_auth (fun () ->
+                Bolt.run t.transport ~query ~parameters ~extra)
+            |> Result.map run_metadata_of
+          in
+          let* records, outcome =
+            request
+              ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
+              t ~message:State.Pull ~re_auth
+              (fun () -> Bolt.pull t.transport ~extra:(pull_extra ()))
+          in
+          match outcome with
+          | Error error ->
+              t.state := State.Failed;
+              report t error;
+              Error error
+          | Ok _ -> (
+              match records with
+              | [] -> Error (Errors.Service_unavailable "routing procedure returned no records")
+              | record :: _ -> (
+                  match zip_fields run_metadata.fields record with
+                  | Some fields -> Ok (Packstream.Map fields)
+                  | None ->
+                      Error
+                        (Errors.Service_unavailable
+                           "routing procedure returned mismatched fields and record")))))
+
+(* Fetch the routing table of [db] (the default database when [None]) over the
+   ROUTE message (Bolt 4.3+). *)
+let route_message ?db ?imp_user t ~routing_context ~bookmarks =
+  let re_auth = re_auth_of t.major t.minor in
+  let at_least_4_4 = t.major > 4 || (t.major = 4 && t.minor >= 4) in
+  let* metadata =
+    request t ~message:State.Route ~re_auth (fun () ->
+        let extra =
+          if at_least_4_4 then
+            let fields =
+              (match db with Some db -> [ ("db", Packstream.String db) ] | None -> [])
+              @
+              match imp_user with
+              | Some user -> [ ("imp_user", Packstream.String user) ]
+              | None -> []
+            in
+            Packstream.Map fields
+          else match db with Some db -> Packstream.String db | None -> Packstream.Null
+        in
+        Bolt.route t.transport
+          ~routing_context:
+            (Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) routing_context))
+          ~bookmarks:(Packstream.List (List.map (fun b -> Packstream.String b) bookmarks))
+          ~extra)
+  in
+  match metadata with
+  | Packstream.Map fields -> (
+      match List.assoc_opt "rt" fields with
+      | Some rt -> Ok rt
+      | None -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table"))
+  | _ -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table")
+
+(* Fetch the routing table of [db] (the default database when [None]) over the
+   ROUTE message (Bolt 4.3+) or, on older servers, by calling the routing
+   procedure (see [route_procedure]). *)
+let route ?db ?imp_user t ~routing_context ~bookmarks =
+  if (Capabilities.of_version t.major t.minor).supports_route_message then
+    route_message ?db ?imp_user t ~routing_context ~bookmarks
+  else route_procedure ?db ?imp_user t ~routing_context ~bookmarks
 
 let server_agent t = !(t.server_agent)
 let capabilities t = capabilities_of t

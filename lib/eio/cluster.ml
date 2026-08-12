@@ -8,8 +8,8 @@
    from every routing table and its pool closed, so subsequent acquires skip it
    until a refresh re-lists it. A NotALeader / read-only failure removes the
    address from the database's writers only. The richer routing behaviours —
-   server-side routing, the home-db cache and the pre-4.3 procedure fallback —
-   are deferred to follow-ups (see PLAN.md phase A7). *)
+   server-side routing and the home-db cache — are deferred to follow-ups (see
+   PLAN.md phase A7). *)
 
 open Neodriver_core
 

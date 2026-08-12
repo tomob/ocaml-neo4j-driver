@@ -25,6 +25,11 @@ let unpack_message bytes =
 let map_value fields key =
   match List.assoc_opt key fields with Some (Packstream.String value) -> value | _ -> ""
 
+let message_tag bytes =
+  match Packstream.unpack bytes with
+  | Ok (Packstream.Structure (tag, _)) -> tag
+  | _ -> fail "expected a structure"
+
 let show_state = function
   | State.Connected -> "Connected"
   | State.Ready -> "Ready"
@@ -97,8 +102,204 @@ let route_via_mock () =
           | _ -> fail "expected [routing_context; bookmarks; extra] fields")
       | Error e -> fail (Errors.to_string e))
 
-(* Conn.connect negotiates the version reported by the mock server (inline auth,
-   Bolt 5.0). *)
+(* The servers list of the routing procedure's record (the same shape as the
+   ROUTE message's [rt] servers). *)
+let procedure_servers =
+  Packstream.List
+    [
+      Packstream.Map
+        [
+          ("addresses", Packstream.List [ Packstream.String "127.0.0.1:7687" ]);
+          ("role", Packstream.String "ROUTE");
+        ];
+      Packstream.Map
+        [
+          ("addresses", Packstream.List [ Packstream.String "127.0.0.1:7687" ]);
+          ("role", Packstream.String "READ");
+        ];
+      Packstream.Map
+        [
+          ("addresses", Packstream.List [ Packstream.String "127.0.0.1:7687" ]);
+          ("role", Packstream.String "WRITE");
+        ];
+    ]
+
+let procedure_fields_meta =
+  [ ("fields", Packstream.List [ Packstream.String "ttl"; Packstream.String "servers" ]) ]
+
+(* The string value of [key] inside a nested map (e.g. the [context] parameter
+   of the routing procedure). *)
+let nested_map_value fields key inner_key =
+  match List.assoc_opt key fields with
+  | Some (Packstream.Map inner) -> map_value inner inner_key
+  | _ -> ""
+
+(* The RUN message of a procedure route: [query; parameters; extra]. *)
+let unpack_run bytes =
+  match Packstream.unpack bytes with
+  | Ok
+      (Packstream.Structure
+         (0x10, [ Packstream.String query; Packstream.Map parameters; Packstream.Map extra ])) ->
+      (query, parameters, extra)
+  | _ -> fail "expected a RUN message"
+
+(* The routing procedure fallback (Bolt 4.0-4.2, default database): RUN/PULL of
+   [dbms.routing.getRoutingTable] on the [system] database, the record zipped
+   into the [rt] shape. *)
+let route_procedure_bolt42 () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (4, 2),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success_meta procedure_fields_meta;
+           Test_mock.Records ([ [ Packstream.Int 300L; procedure_servers ] ], false);
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          (match Conn.route conn ~routing_context:[ ("policy", "eu") ] ~bookmarks:[ "b1" ] with
+          | Error e -> fail (Errors.to_string e)
+          | Ok value -> (
+              match Routing_table.parse value with
+              | Some table ->
+                  check int "ttl" 300 (Routing_table.ttl_seconds table);
+                  check int "routers" 1 (List.length (Routing_table.routers table));
+                  check int "readers" 1 (List.length (Routing_table.readers table));
+                  check int "writers" 1 (List.length (Routing_table.writers table))
+              | None -> fail "expected a parseable routing table"));
+          let tags = List.map message_tag (List.rev !received) in
+          check (list int) "wire order" [ 0x01; 0x10; 0x3F ] tags;
+          check int "no ROUTE message" 0 (List.length (List.filter (fun tag -> tag = 0x66) tags));
+          let query, parameters, extra = unpack_run (List.nth (List.rev !received) 1) in
+          check string "procedure query" "CALL dbms.routing.getRoutingTable($context)" query;
+          check string "routing context" "eu" (nested_map_value parameters "context" "policy");
+          check string "system db" "system" (map_value extra "db");
+          check string "read mode" "r" (map_value extra "mode");
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
+(* The Bolt 4.0-4.2 procedure with an explicit database: the query takes a
+   [$database] parameter. *)
+let route_procedure_bolt42_with_db () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (4, 2),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success_meta procedure_fields_meta;
+           Test_mock.Records ([ [ Packstream.Int 300L; procedure_servers ] ], false);
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          (match Conn.route ~db:"neo4j" conn ~routing_context:[] ~bookmarks:[] with
+          | Error e -> fail (Errors.to_string e)
+          | Ok _ -> ());
+          let query, parameters, extra = unpack_run (List.nth (List.rev !received) 1) in
+          check string "procedure query" "CALL dbms.routing.getRoutingTable($context, $database)"
+            query;
+          check string "database parameter" "neo4j" (map_value parameters "database");
+          check string "system db" "system" (map_value extra "db");
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
+(* The Bolt 3 procedure: [dbms.cluster.routing.getRoutingTable], a RUN without
+   [db] and without [bookmarks]. *)
+let route_procedure_bolt3 () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (3, 0),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success_meta procedure_fields_meta;
+           Test_mock.Records ([ [ Packstream.Int 300L; procedure_servers ] ], false);
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          (match Conn.route conn ~routing_context:[ ("policy", "eu") ] ~bookmarks:[ "b1" ] with
+          | Error e -> fail (Errors.to_string e)
+          | Ok value -> (
+              match Routing_table.parse value with
+              | Some table -> check int "ttl" 300 (Routing_table.ttl_seconds table)
+              | None -> fail "expected a parseable routing table"));
+          let query, parameters, extra = unpack_run (List.nth (List.rev !received) 1) in
+          check string "procedure query" "CALL dbms.cluster.routing.getRoutingTable($context)" query;
+          check string "routing context" "eu" (nested_map_value parameters "context" "policy");
+          check string "no db in extra" "" (map_value extra "db");
+          check bool "no bookmarks in extra" true (not (List.mem_assoc "bookmarks" extra));
+          check string "read mode" "r" (map_value extra "mode");
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
+(* Impersonation is rejected below Bolt 4.3 before anything is sent. *)
+let route_procedure_rejects_impersonation () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session ((4, 2), received, [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          (match Conn.route ~imp_user:"alice" conn ~routing_context:[] ~bookmarks:[] with
+          | Ok _ -> fail "imp_user should be rejected below Bolt 4.3"
+          | Error (Errors.Configuration_error _) -> ()
+          | Error e -> fail (Errors.to_string e));
+          check int "only the HELLO on the wire" 1 (List.length !received);
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
+(* A database is rejected on Bolt 3 (no multi-db). *)
+let route_procedure_rejects_db_on_bolt3 () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session ((3, 0), received, [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          (match Conn.route ~db:"neo4j" conn ~routing_context:[] ~bookmarks:[] with
+          | Ok _ -> fail "a database should be rejected on Bolt 3"
+          | Error (Errors.Configuration_error _) -> ()
+          | Error e -> fail (Errors.to_string e));
+          check int "only the HELLO on the wire" 1 (List.length !received);
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
+(* A procedure that returns no records fails with a descriptive error. *)
+let route_procedure_empty_records () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (4, 2),
+         ref [],
+         [
+           Test_mock.Success;
+           Test_mock.Success_meta procedure_fields_meta;
+           Test_mock.Records ([], false);
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          (match Conn.route conn ~routing_context:[] ~bookmarks:[] with
+          | Ok _ -> fail "empty records should fail"
+          | Error (Errors.Service_unavailable message) ->
+              check bool "no records message" true
+                (String.starts_with ~prefix:"routing procedure returned no records" message)
+          | Error e -> fail (Errors.to_string e));
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
 let connect_via_mock () =
   Test_mock.with_mock
     (Test_mock.Session ((5, 0), ref [], [ Test_mock.Success ]))
@@ -447,6 +648,18 @@ let last_database_recorded () =
 let tests =
   [
     ("[Conn] route_via_mock", [ test_case "ROUTE message + routing table" `Quick route_via_mock ]);
+    ( "[Conn] route_procedure_bolt42",
+      [ test_case "procedure fallback on 4.2" `Quick route_procedure_bolt42 ] );
+    ( "[Conn] route_procedure_bolt42_with_db",
+      [ test_case "procedure fallback with database" `Quick route_procedure_bolt42_with_db ] );
+    ( "[Conn] route_procedure_bolt3",
+      [ test_case "procedure fallback on 3.0" `Quick route_procedure_bolt3 ] );
+    ( "[Conn] route_procedure_rejects_impersonation",
+      [ test_case "imp_user rejected below 4.3" `Quick route_procedure_rejects_impersonation ] );
+    ( "[Conn] route_procedure_rejects_db_on_bolt3",
+      [ test_case "database rejected on 3.0" `Quick route_procedure_rejects_db_on_bolt3 ] );
+    ( "[Conn] route_procedure_empty_records",
+      [ test_case "empty procedure result" `Quick route_procedure_empty_records ] );
     ("[Conn] connect_via_mock", [ test_case "connect negotiates" `Quick connect_via_mock ]);
     ("[Conn] connect_via_mock_tls", [ test_case "bolt+ssc connects" `Quick connect_via_mock_tls ]);
     ( "[Conn] hello_inline_auth",

@@ -6,7 +6,8 @@
    - multiple results ([qid]) and multiple databases ([db]): Bolt 4.0
    - LOGON/LOGOFF (re-auth): Bolt 5.1
    - notification filtering: Bolt 5.2
-   - the ROUTE message (server-side routing): Bolt 4.3
+   - the ROUTE message: Bolt 4.3
+   - server-side routing (ssr.enabled hint): Bolt 4.3
    - the TELEMETRY message: Bolt 5.4 *)
 
 type t = {
@@ -14,6 +15,7 @@ type t = {
   supports_multiple_databases : bool;
   supports_re_auth : bool;
   supports_notification_filtering : bool;
+  supports_route_message : bool;
   supports_ssr : bool;
   supports_telemetry : bool;
 }
@@ -25,6 +27,7 @@ let of_version major minor =
     supports_multiple_databases = major >= 4;
     supports_re_auth = at_least 5 1;
     supports_notification_filtering = at_least 5 2;
+    supports_route_message = at_least 4 3;
     supports_ssr = at_least 4 3;
     supports_telemetry = at_least 5 4;
   }

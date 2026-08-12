@@ -151,10 +151,19 @@ val route :
   routing_context:(string * string) list ->
   bookmarks:string list ->
   (Packstream.value, Errors.t) result
-(** Fetch the routing table of [db] (default database when [None]) via the ROUTE message (Bolt
-    4.3+). The [routing_context] (from the URI query) and [bookmarks] are sent with the request.
-    @return the [rt] routing-table value (for {!Neodriver_core.Routing_table.parse}).
-    @return [Error _] for Bolt < 4.3 (the procedure fallback is deferred). *)
+(** Fetch the routing table of [db] (default database when [None]). On Bolt 4.3+ this uses the ROUTE
+    message; the [routing_context] (from the URI query) and [bookmarks] are sent with the request
+    and the [rt] routing-table value is returned. On older servers (Bolt 3 / 4.0–4.2) the routing
+    procedure is called instead: [CALL dbms.cluster.routing.getRoutingTable($context)] (Bolt 3) or
+    [CALL dbms.routing.getRoutingTable($context[, $database])] on the [system] database (Bolt
+    4.0–4.2); the single returned record is zipped with its field names into the same
+    [ttl]/[servers] shape as the ROUTE [rt] value.
+    @return the routing-table value (for {!Neodriver_core.Routing_table.parse}).
+    @return
+      [Error _] for a failed fetch (a procedure that is missing on the server is a non-fatal
+      discovery error, e.g. a standalone 3.5 instance), or a [Errors.Configuration_error] for
+      [imp_user] on Bolt < 4.3 (procedures do not support impersonation) and for [db] on Bolt 3 (no
+      multi-db). *)
 
 val pull :
   ?n:int ->
