@@ -31,7 +31,9 @@ let message_tags received = List.map (fun bytes -> fst (unpack_message bytes)) (
 (* A session whose connection connects to the mock server at [port]. *)
 let session net clock sw port =
   let connect ~mode:_ ~database:_ =
-    Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt)
+    match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+    | Ok conn -> Ok (conn, None)
+    | Error error -> Error error
   in
   Session.create Session.default_config ~clock ~connect ()
 
@@ -227,7 +229,9 @@ let run_fetch_streams () =
          ] ))
     (fun net clock sw port ->
       let connect ~mode:_ ~database:_ =
-        Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt)
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
       in
       let session = Session.create session_config ~clock ~connect () in
       let result =
@@ -272,6 +276,41 @@ let run_fetch_streams () =
       in
       check (list int) "pull batch sizes" [ 2; 2; 2 ] pull_sizes)
 
+(* The effective database the connect callback reports is used for the
+   auto-commit RUN: a default-database session whose connection resolves the
+   home database sends it in the RUN extra. *)
+let run_uses_effective_database () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ((5, 4), received, [ Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false) ]))
+    (fun net clock sw port ->
+      let connect ~mode:_ ~database:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, Some "homedb")
+        | Error error -> Error error
+      in
+      let session = Session.create Session.default_config ~clock ~connect () in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok _ -> ()
+      | Error error -> fail (Errors.to_string error));
+      Session.close session;
+      let run_extra =
+        List.rev !received
+        |> List.find_map (fun bytes ->
+            match Packstream.unpack bytes with
+            | Ok
+                (Packstream.Structure
+                   (0x10, [ Packstream.String _; Packstream.Map _; Packstream.Map extra ])) ->
+                Some extra
+            | _ -> None)
+      in
+      check string "db in the RUN extra" "homedb"
+        (match run_extra with
+        | Some extra -> (
+            match List.assoc_opt "db" extra with Some (Packstream.String db) -> db | _ -> "")
+        | None -> fail "expected a RUN message"))
+
 let tests =
   [
     ("[Session] execute_ok", [ test_case "commit + bookmark" `Quick execute_ok ]);
@@ -280,6 +319,8 @@ let tests =
     ( "[Session] execute_client_failure",
       [ test_case "rollback client failure" `Quick execute_client_failure ] );
     ("[Session] run_captures_bookmark", [ test_case "auto-commit run" `Quick run_captures_bookmark ]);
+    ( "[Session] run_uses_effective_database",
+      [ test_case "resolved home db in RUN" `Quick run_uses_effective_database ] );
     ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
   ]

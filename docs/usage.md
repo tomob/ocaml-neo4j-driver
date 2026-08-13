@@ -53,7 +53,9 @@ deactivated (dropped from the routing tables and their pools closed) until a
 refresh re-lists them; a `NotALeader`/read-only failure removes the address
 from the writers only. Server-side routing is enabled for routed drivers (the
 routing context in HELLO, the `ssr.enabled` hint and the `rt` tables from RUN
-responses); the home-db cache is deferred.
+responses). A default-database session resolves its effective database to the
+server's home database (from the ROUTE response, cached per impersonated user
+with `pool_config.home_db_cache_ttl`) and sends it in RUN/BEGIN.
 
 ## Sessions
 
@@ -292,7 +294,8 @@ records with validation (a `Configuration_error` on out-of-range values):
 - `make_pool_config`: `max_connection_lifetime`, `liveness_check_timeout`,
   `max_connection_pool_size`, `connection_acquisition_timeout`,
   `connection_timeout`, `connection_write_timeout`, `keep_alive`,
-  `telemetry_disabled`.
+  `telemetry_disabled`, `home_db_cache_ttl` (how long a routed driver
+  remembers a resolved home database; default `infinity`).
 
 The pool honors `max_connection_pool_size`, `connection_acquisition_timeout`,
 `max_connection_lifetime` and `liveness_check_timeout` (a RESET on reuse);
@@ -302,9 +305,6 @@ no effect for now.
 
 ## Not yet implemented
 
-- The home-db cache (`neo4j://` routing itself is implemented in minimal form,
-  including server-side routing: the routing context in HELLO, the `ssr.enabled`
-  hint and the `rt` tables from RUN responses).
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
 - Notification filtering and telemetry.

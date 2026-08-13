@@ -11,8 +11,12 @@ let server addresses role =
       ("role", Packstream.String role);
     ]
 
-let rt_value ?(ttl = 300L) servers =
-  Packstream.Map [ ("ttl", Packstream.Int ttl); ("servers", Packstream.List servers) ]
+let rt_value ?(ttl = 300L) ?db servers =
+  let fields =
+    [ ("ttl", Packstream.Int ttl); ("servers", Packstream.List servers) ]
+    @ match db with Some db -> [ ("db", Packstream.String db) ] | None -> []
+  in
+  Packstream.Map fields
 
 let parse_valid () =
   let value =
@@ -165,11 +169,50 @@ let remove_address_absent_is_noop () =
   check int "readers" 1 (List.length (Routing_table.readers table));
   check int "writers" 1 (List.length (Routing_table.writers table))
 
+(* The optional [db] field of an [rt] value is captured as the table's
+   database (the server's home database for a default-database fetch). *)
+let parse_database_field () =
+  let base = [ server [ "r1:7687" ] "ROUTE"; server [ "r1:7687" ] "READ" ] in
+  (match Routing_table.parse (rt_value ~db:"homedb" base) with
+  | Some table ->
+      check (option string) "database from rt" (Some "homedb") (Routing_table.database table)
+  | None -> fail "expected a table");
+  (match Routing_table.parse (rt_value base) with
+  | Some table -> check (option string) "no db field" None (Routing_table.database table)
+  | None -> fail "expected a table");
+  (* A non-string [db] is ignored. *)
+  match Routing_table.parse (Map [ ("ttl", Int 1L); ("servers", List []); ("db", Int 3L) ]) with
+  | Some table -> check (option string) "non-string db" None (Routing_table.database table)
+  | None -> fail "expected a table"
+
+(* remove_address and remove_writer keep the table's database. *)
+let removals_keep_database () =
+  let table =
+    match
+      Routing_table.parse
+        (rt_value ~db:"homedb"
+           [
+             server [ "r1:7687" ] "ROUTE"; server [ "r2:7687" ] "READ"; server [ "r1:7687" ] "WRITE";
+           ])
+    with
+    | Some table -> table
+    | None -> fail "expected a table"
+  in
+  let table = Routing_table.remove_address (Addressing.of_host_port "r1" 7687) table in
+  check (option string) "database after remove_address" (Some "homedb")
+    (Routing_table.database table);
+  let table = Routing_table.remove_writer (Addressing.of_host_port "r1" 7687) table in
+  check (option string) "database after remove_writer" (Some "homedb")
+    (Routing_table.database table)
+
 let tests =
   [
     ("[RoutingTable] parse_valid", [ test_case "roles and addresses" `Quick parse_valid ]);
     ("[RoutingTable] parse_skips_bad", [ test_case "unknown roles ignored" `Quick parse_skips_bad ]);
     ("[RoutingTable] parse_malformed", [ test_case "malformed values" `Quick parse_malformed ]);
+    ("[RoutingTable] parse_database_field", [ test_case "db captured" `Quick parse_database_field ]);
+    ( "[RoutingTable] removals_keep_database",
+      [ test_case "db preserved by removals" `Quick removals_keep_database ] );
     ( "[RoutingTable] least_loaded_picks_min",
       [ test_case "minimum load" `Quick least_loaded_picks_min ] );
     ( "[RoutingTable] least_loaded_ties_first",

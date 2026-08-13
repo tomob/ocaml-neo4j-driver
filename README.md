@@ -54,7 +54,7 @@ project, running this program and what is going on under the hood.
 - TestKit conformance: 119 of 126 tests passing (7 skipped — vector on the
   community server and multi-db; 4 skipped with `NEO4J_EDITION=aura`).
 
-Not yet implemented: the home-db cache, notification filtering, telemetry and
+Not yet implemented: notification filtering, telemetry and
 the high-level `execute_query`/`verify_connectivity` API. See
 [PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
 

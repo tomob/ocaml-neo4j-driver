@@ -25,8 +25,11 @@ type pool_config = {
   connection_write_timeout : float;
   keep_alive : bool;
   telemetry_disabled : bool;
+  home_db_cache_ttl : float;
 }
-(** Connection pool settings. *)
+(** Connection pool settings. [home_db_cache_ttl] is how long a routed driver remembers a resolved
+    home database (default [infinity]); after it elapses the next default-database session
+    re-fetches it over ROUTE. *)
 
 val default_access_mode : access_mode
 (** Default access mode ([Write]). *)
@@ -61,6 +64,7 @@ val make_pool_config :
   ?connection_write_timeout:float ->
   ?keep_alive:bool ->
   ?telemetry_disabled:bool ->
+  ?home_db_cache_ttl:float ->
   unit ->
   (pool_config, Errors.t) result
 (** Build a [pool_config] from the given overrides (defaults from {!default_pool_config}),

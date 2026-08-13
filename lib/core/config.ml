@@ -29,6 +29,7 @@ type pool_config = {
   connection_write_timeout : float;
   keep_alive : bool;
   telemetry_disabled : bool;
+  home_db_cache_ttl : float;
 }
 
 let default_access_mode = Write
@@ -55,6 +56,7 @@ let default_pool_config =
     connection_write_timeout = 30.0;
     keep_alive = true;
     telemetry_disabled = false;
+    home_db_cache_ttl = infinity;
   }
 
 let make_workspace_config
@@ -100,7 +102,8 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
     ?(connection_timeout = default_pool_config.connection_timeout)
     ?(connection_write_timeout = default_pool_config.connection_write_timeout)
     ?(keep_alive = default_pool_config.keep_alive)
-    ?(telemetry_disabled = default_pool_config.telemetry_disabled) () =
+    ?(telemetry_disabled = default_pool_config.telemetry_disabled)
+    ?(home_db_cache_ttl = default_pool_config.home_db_cache_ttl) () =
   let invalid =
     List.filter_map
       (fun (name, valid) -> if valid then None else Some name)
@@ -110,6 +113,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
         ("connection_acquisition_timeout", connection_acquisition_timeout >= 0.0);
         ("connection_timeout", connection_timeout >= 0.0);
         ("connection_write_timeout", connection_write_timeout >= 0.0);
+        ("home_db_cache_ttl", home_db_cache_ttl >= 0.0);
       ]
   in
   match invalid with
@@ -124,5 +128,6 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
           connection_write_timeout;
           keep_alive;
           telemetry_disabled;
+          home_db_cache_ttl;
         }
   | names -> Error (Errors.Configuration_error ("Invalid pool config: " ^ String.concat ", " names))

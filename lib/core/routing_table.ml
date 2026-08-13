@@ -11,12 +11,14 @@ type t = {
   routers : Addressing.t list;
   readers : Addressing.t list;
   writers : Addressing.t list;
+  database : string option;
 }
 
 let ttl_seconds t = t.ttl_seconds
 let routers t = t.routers
 let readers t = t.readers
 let writers t = t.writers
+let database t = t.database
 
 (* Routing table addresses are "host:port" strings. *)
 let parse_address s = match Addressing.parse s with Ok address -> Some address | Error _ -> None
@@ -35,14 +37,27 @@ let parse_server = function
       | _ -> None)
   | _ -> None
 
-(* Parse an [rt] value: { ttl: Int; servers: [{ addresses: [String]; role: String }] }. *)
+(* Parse an [rt] value: { ttl: Int; servers: [{ addresses: [String]; role: String }]; db: String }.
+   The optional [db] field is the routing table's database (the server's home database when it was
+   fetched for the default database). *)
 let parse value =
   match value with
   | Packstream.Map fields -> (
       match (List.assoc_opt "ttl" fields, List.assoc_opt "servers" fields) with
       | Some (Packstream.Int ttl), Some (Packstream.List servers) ->
           let rec go routers readers writers = function
-            | [] -> Some { ttl_seconds = Int64.to_int ttl; routers; readers; writers }
+            | [] ->
+                Some
+                  {
+                    ttl_seconds = Int64.to_int ttl;
+                    routers;
+                    readers;
+                    writers;
+                    database =
+                      (match List.assoc_opt "db" fields with
+                      | Some (Packstream.String db) -> Some db
+                      | _ -> None);
+                  }
             | server :: rest -> (
                 match parse_server server with
                 | Some ("ROUTE", addresses) -> go (routers @ addresses) readers writers rest

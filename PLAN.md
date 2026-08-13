@@ -228,11 +228,20 @@ its [+s]/[+ssc] variants) drivers now route:
   routing table returned in an auto-commit RUN response (server-side routing) is consumed by the
   session (`?on_rt`, wired to `Cluster.update_table`, which replaces the cached table) — gated on
   `Conn.ssr_enabled`. Unit tests cover the HELLO wire variants (4.0 vs 4.1+, Some vs None), the
-  hint parsing, the `rt` capture and the cluster table update (mock). Home-db cache remains
-  deferred.
+  hint parsing, the `rt` capture and the cluster table update (mock).
+- **Home-db cache — Done** (keyed by `impersonated_user`, TTL via the new
+  `Config.pool_config.home_db_cache_ttl`, default `infinity` like Python): the routing table now
+  carries its `database` (`Routing_table.database`, parsed from the `rt` [db] field — the server's
+  home database). A default-database (`database = None`) routed session resolves its effective
+  database to the home database: a ROUTE is sent with the session's `imp_user` (`Conn.route
+  ?imp_user`, Bolt 4.4+), the returned [db] is cached per impersonated user and the table is
+  aliased under the home database, so later default-database sessions reuse both without a ROUTE.
+  `Cluster.acquire` now returns the effective database and `Session`'s `connect` reports it; RUN
+  and BEGIN send it as `db` (TestKit homedb wire behaviour) and SSR `update_table` (`?imp_user`)
+  seeds the cache too. Unit tests cover the resolution/caching, TTL expiry, per-user keys, the
+  `imp_user` ROUTE extra and the session RUN db (mock).
 
 **Deferred (follow-ups):**
-- **Home-db cache** (TTL, keyed by `impersonated_user`/token).
 - **TestKit routing backend**: `GetRoutingTable`/`ForcedRoutingTableUpdate` + `Backend:RTFetch`/
   `Backend:RTForceUpdate` (for `tests.stub.suites`).
 

@@ -35,14 +35,18 @@ let default_config =
 
 (* A session: its lazy connection, bookmarks, current transaction and the
    pending auto-commit result stream. [connect] acquires the session's
-   connection (from a pool, or by connecting directly); [release] returns it
-   on [close] (back to the pool, or by closing it). *)
+   connection (from a pool, or by connecting directly) and reports the
+   effective database actually used (the resolved home database for a
+   default-database routed session); [release] returns it on [close] (back to
+   the pool, or by closing it). *)
 type t = {
   config : config;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
-  connect : mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result;
+  connect :
+    mode:Config.access_mode -> database:string option -> (Conn.t * string option, Errors.t) result;
   release : Conn.t -> unit;
   on_rt : string option -> Packstream.value -> unit;
+  database : string option ref;
   conn : Conn.t option ref;
   bookmarks : string list ref;
   current_tx : Tx.t option ref;
@@ -56,6 +60,7 @@ let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> (
     connect;
     release;
     on_rt;
+    database = ref config.database;
     conn = ref None;
     bookmarks = ref config.bookmarks;
     current_tx = ref None;
@@ -66,9 +71,13 @@ let conn (t : t) =
   match !(t.conn) with
   | Some conn -> Ok conn
   | None -> (
-      match t.connect ~mode:t.config.access_mode ~database:t.config.database with
+      match t.connect ~mode:t.config.access_mode ~database:!(t.database) with
       | Error _ as error -> error
-      | Ok conn ->
+      | Ok (conn, effective) ->
+          (* The connection may resolve the session's database (a routed
+             default-database session learns its home database here); the
+             effective database is used for RUN/BEGIN from now on. *)
+          t.database := effective;
           t.conn := Some conn;
           Ok conn)
 
@@ -89,14 +98,15 @@ let run ?timeout ?metadata t ~query ~parameters =
   (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
   let hydration = Conn.hydration conn in
   let* run_metadata =
-    Conn.run conn ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks) ?db:t.config.database
-      ?timeout ?metadata
+    Conn.run conn ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks) ?db:!(t.database) ?timeout
+      ?metadata
   in
   (* Server-side routing: when the server advertised [ssr.enabled] and answered
      RUN with an [rt] routing table, hand it to the on_rt callback (the routing
-     cluster of a routed driver updates its table). *)
+     cluster of a routed driver updates its table). The callback gets the
+     session's effective database, so SSR tables land under the resolved key. *)
   (if Conn.ssr_enabled conn then
-     match run_metadata.rt with Some rt -> t.on_rt t.config.database rt | None -> ());
+     match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
   let stream =
     Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary -> mark_bookmark t summary)
   in
@@ -114,7 +124,7 @@ let begin_transaction_mode ?metadata ?timeout t ~mode =
         Option.map (List.map (fun (k, v) -> (k, Hydration.dehydrate hydration v))) metadata
       in
       let extra =
-        Conn.build_extra ~mode ?db:t.config.database ?imp_user:t.config.impersonated_user ?timeout
+        Conn.build_extra ~mode ?db:!(t.database) ?imp_user:t.config.impersonated_user ?timeout
           ?metadata ~bookmarks:!(t.bookmarks) ()
       in
       match Tx.begin_transaction conn ~extra with

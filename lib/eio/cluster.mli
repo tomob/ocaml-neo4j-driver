@@ -20,12 +20,22 @@ val create :
     router (the initial address until the first fetch) and cached per database with the
     server-provided TTL. *)
 
-val acquire : t -> mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result
+val acquire :
+  t ->
+  mode:Config.access_mode ->
+  database:string option ->
+  imp_user:string option ->
+  (Conn.t * string option, Errors.t) result
 (** Get a connection for [mode] and [database]: the routing table (refreshed when stale) selects the
     least-loaded address (fewest in-use connections) among the matching role (readers for [Read],
-    writers for [Write]) and a per-address pool serves the connection. When the selected server is
-    unreachable ([Service_unavailable]) it is deactivated and the next address is tried, bounded by
-    the pool's [connection_acquisition_timeout]. *)
+    writers for [Write]) and a per-address pool serves the connection. [imp_user] (the session's
+    impersonated user, [None] for the driver's own user) is sent with the ROUTE request (Bolt 4.4+)
+    and keys the home-db cache. The effective database is also returned: for a fixed [database] it
+    is that database; for the default database ([None]) it is the server's home database — resolved
+    from the ROUTE response's [db] field and cached per [imp_user] ([Some home_db] thereafter), or
+    taken from the cache when fresh. When the selected server is unreachable ([Service_unavailable])
+    it is deactivated and the next address is tried, bounded by the pool's
+    [connection_acquisition_timeout]. *)
 
 val deactivate : t -> Addressing.t -> unit
 (** Remove [addr] from every routing table and close its pool: future acquires skip it until a
@@ -34,10 +44,11 @@ val deactivate : t -> Addressing.t -> unit
 val on_write_failure : t -> database:string option -> Addressing.t -> unit
 (** Remove [addr] from the [writers] of [database] (a NotALeader / read-only failure). *)
 
-val update_table : t -> database:string option -> Packstream.value -> unit
+val update_table : t -> database:string option -> imp_user:string option -> Packstream.value -> unit
 (** Apply an [rt] routing table received from the server (server-side routing) for [database]: parse
     it and, when valid, replace the cached table (fresh timestamp), refresh [routers] and clear a
-    cached fetch error. Malformed values are ignored. *)
+    cached fetch error. The table's [db] field (the server's home database) is cached for [imp_user]
+    so default-database sessions can reuse it without a ROUTE. Malformed values are ignored. *)
 
 val release : t -> Conn.t -> unit
 (** Return a connection to its pool (found via the connection's address; a connection whose pool is

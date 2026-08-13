@@ -19,7 +19,8 @@ let defaults () =
   check (float 1e-9) "connection timeout" 30.0 pool.connection_timeout;
   check (float 1e-9) "connection write timeout" 30.0 pool.connection_write_timeout;
   check bool "keep alive" true pool.keep_alive;
-  check bool "telemetry enabled" false pool.telemetry_disabled
+  check bool "telemetry enabled" false pool.telemetry_disabled;
+  check bool "home db cache ttl default is infinity" true (pool.home_db_cache_ttl = infinity)
 
 let access_mode () =
   check bool "default access mode is write" true (Config.default_access_mode = Config.Write)
@@ -37,6 +38,12 @@ let validation () =
   (match Config.make_pool_config ~connection_acquisition_timeout:(-1.0) () with
   | Error _ -> ()
   | Ok _ -> fail "negative acquisition timeout should be rejected");
+  (match Config.make_pool_config ~home_db_cache_ttl:(-1.0) () with
+  | Error _ -> ()
+  | Ok _ -> fail "negative home-db cache TTL should be rejected");
+  (match Config.make_pool_config ~home_db_cache_ttl:0.0 () with
+  | Ok pool -> check bool "zero TTL accepted" true (pool.home_db_cache_ttl = 0.0)
+  | Error error -> fail (Errors.to_string error));
   (match Config.make_workspace_config ~fetch_size:50 () with
   | Ok workspace -> check int "custom fetch size" 50 workspace.fetch_size
   | Error error -> fail (Errors.to_string error));

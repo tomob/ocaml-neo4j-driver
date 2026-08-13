@@ -99,7 +99,8 @@ You should see [n = 1].
   older servers, by calling the [dbms.routing.getRoutingTable] procedure, and
   addresses are selected per access mode; failed servers are deactivated
   (dropped from the routing tables until a refresh re-lists them). Server-side
-  routing and the home-db cache are deferred.
+  routing is enabled, and default-database sessions resolve and cache the
+  server's home database (sent in RUN/BEGIN).
 
 {1 Next steps}
 

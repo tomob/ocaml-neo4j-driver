@@ -44,18 +44,22 @@ type t
 val create :
   config ->
   clock:Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
-  connect:(mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result) ->
+  connect:
+    (mode:Config.access_mode -> database:string option -> (Conn.t * string option, Errors.t) result) ->
   ?release:(Conn.t -> unit) ->
   ?on_rt:(string option -> Packstream.value -> unit) ->
   unit ->
   t
 (** Create a session. [connect] establishes the session's connection on first use with the session's
     [access_mode] and [database] (a routed driver selects the address from its routing table; a
-    direct driver ignores them); [release] returns it on [close] (default [Conn.close]; a pool
-    provides [Pool.release]). [on_rt] receives the [rt] routing tables the server returns in
-    auto-commit RUN responses when server-side routing is enabled (the routing cluster installs it
-    to update its tables); it defaults to a no-op. [clock] bounds the transaction retry budget and
-    backoff. *)
+    direct driver ignores them) and returns the [Conn.t] together with the effective database
+    actually used — the resolved home database for a default-database routed session, otherwise the
+    requested database. The session uses that effective database for RUN/BEGIN from then on.
+    [release] returns the connection on [close] (default [Conn.close]; a pool provides
+    [Pool.release]). [on_rt] receives the [rt] routing tables the server returns in auto-commit RUN
+    responses when server-side routing is enabled, keyed by the session's effective database (the
+    routing cluster installs it to update its tables); it defaults to a no-op. [clock] bounds the
+    transaction retry budget and backoff. *)
 
 val conn : t -> (Conn.t, Errors.t) result
 (** The session's connection, connecting on first use. *)

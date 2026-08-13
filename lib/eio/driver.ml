@@ -79,8 +79,9 @@ let session ?config t =
   let config = match config with Some config -> config | None -> Session.default_config in
   let connect ~mode ~database =
     match t.connection with
-    | Cluster cluster -> Cluster.acquire cluster ~mode ~database
-    | Pool pool -> Pool.acquire pool
+    | Cluster cluster -> Cluster.acquire cluster ~mode ~database ~imp_user:config.impersonated_user
+    | Pool pool -> (
+        match Pool.acquire pool with Ok conn -> Ok (conn, database) | Error error -> Error error)
   in
   let release conn =
     match t.connection with
@@ -89,7 +90,9 @@ let session ?config t =
   in
   let on_rt =
     match t.connection with
-    | Cluster cluster -> fun database rt -> Cluster.update_table cluster ~database rt
+    | Cluster cluster ->
+        fun database rt ->
+          Cluster.update_table cluster ~database ~imp_user:config.impersonated_user rt
     | Pool _ -> fun _ _ -> ()
   in
   Session.create config ~clock:t.clock ~connect ~release ~on_rt ()
@@ -98,7 +101,10 @@ let session ?config t =
    it with [release]. *)
 let acquire t =
   match t.connection with
-  | Cluster cluster -> Cluster.acquire cluster ~mode:Config.Write ~database:None
+  | Cluster cluster -> (
+      match Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None with
+      | Ok (conn, _) -> Ok conn
+      | Error error -> Error error)
   | Pool pool -> Pool.acquire pool
 
 let release t conn =
