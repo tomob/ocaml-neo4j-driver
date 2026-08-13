@@ -8,6 +8,7 @@
    - notification filtering: Bolt 5.2
    - the ROUTE message: Bolt 4.3
    - server-side routing (ssr.enabled hint): Bolt 4.3
+   - the routing context in HELLO (server-side routing): Bolt 4.1
    - the TELEMETRY message: Bolt 5.4 *)
 
 type t = {
@@ -17,6 +18,7 @@ type t = {
   supports_notification_filtering : bool;
   supports_route_message : bool;
   supports_ssr : bool;
+  supports_connection_context : bool;
   supports_telemetry : bool;
 }
 
@@ -29,5 +31,6 @@ let of_version major minor =
     supports_notification_filtering = at_least 5 2;
     supports_route_message = at_least 4 3;
     supports_ssr = at_least 4 3;
+    supports_connection_context = at_least 4 1;
     supports_telemetry = at_least 5 4;
   }

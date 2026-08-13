@@ -8,7 +8,16 @@ let auth ?(principal = "neo4j") ?(credentials = "password") () =
   Conn.{ scheme = "basic"; principal; credentials }
 
 let config host port scheme =
-  Conn.{ host; port; scheme; connection_timeout = 5.0; user_agent = "test-agent"; auth = auth () }
+  Conn.
+    {
+      host;
+      port;
+      scheme;
+      connection_timeout = 5.0;
+      user_agent = "test-agent";
+      auth = auth ();
+      routing_context = None;
+    }
 
 let unpack_message bytes =
   match Packstream.unpack bytes with
@@ -645,6 +654,113 @@ let last_database_recorded () =
           | Error error -> fail (Errors.to_string error));
           Conn.close conn)
 
+(* The [routing] field of the HELLO message, if any. *)
+let hello_routing fields =
+  match List.assoc_opt "routing" fields with Some (Packstream.Map ctx) -> Some ctx | _ -> None
+
+(* A routed driver sends [routing] in HELLO (with the routing context) from
+   Bolt 4.1, gated on supports_connection_context; a direct driver
+   (routing_context = None) never sends it. *)
+let hello_sends_routing_context () =
+  let check_gate version expected =
+    let received = ref [] in
+    Test_mock.with_mock
+      (Test_mock.Session (version, received, [ Test_mock.Success ]))
+      (fun net clock sw port ->
+        let config =
+          {
+            (config "127.0.0.1" port Addressing.Bolt) with
+            routing_context = Some [ ("policy", "eu") ];
+          }
+        in
+        match Conn.connect net clock sw config with
+        | Error error -> fail (Errors.to_string error)
+        | Ok conn ->
+            let _, fields = unpack_message (List.hd !received) in
+            (match hello_routing fields with
+            | Some ctx -> check string "routing policy" "eu" (map_value ctx "policy")
+            | None -> check bool "routing field absent" true (not expected));
+            Conn.close conn)
+  in
+  check_gate (4, 1) true;
+  check_gate (4, 4) true;
+  check_gate (4, 0) false;
+  check_gate (3, 0) false;
+  (* A direct driver (routing_context = None) never sends the field. *)
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session ((4, 4), received, [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          let _, fields = unpack_message (List.hd !received) in
+          check bool "no routing field for None" true (Option.is_none (hello_routing fields));
+          Conn.close conn)
+
+(* The server's [ssr.enabled] hint in HELLO turns on server-side routing. The
+   mock answers with a [server] entry too (like a real server), so the hints
+   parsing is exercised even when the agent is present. *)
+let ssr_enabled_hint () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 0),
+         ref [],
+         [
+           Test_mock.Success_meta
+             [
+               ("server", Packstream.String "Neo4j/5.0.0");
+               ("hints", Packstream.Map [ ("ssr.enabled", Packstream.Bool true) ]);
+             ];
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          check bool "ssr enabled from hint" true (Conn.ssr_enabled conn);
+          Conn.close conn);
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 0), ref [], [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          check bool "ssr disabled without hint" false (Conn.ssr_enabled conn);
+          Conn.close conn)
+
+(* The [rt] routing table of a RUN response is captured in the run metadata. *)
+let run_captures_rt () =
+  let rt = Packstream.Map [ ("ttl", Packstream.Int 300L); ("servers", Packstream.List []) ] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 0),
+         ref [],
+         [
+           Test_mock.Success;
+           Test_mock.Success_meta
+             [ ("fields", Packstream.List [ Packstream.String "n" ]); ("rt", rt) ];
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match
+             Conn.run conn ~hydration:(Conn.hydration conn) ~query:"RETURN 1" ~parameters:[]
+           with
+          | Error error -> fail (Errors.to_string error)
+          | Ok metadata -> (
+              match metadata.rt with
+              | Some value -> (
+                  match Routing_table.parse value with
+                  | Some table -> check int "rt ttl" 300 (Routing_table.ttl_seconds table)
+                  | None -> fail "expected a parseable rt")
+              | None -> fail "expected the rt metadata"));
+          Conn.close conn)
+
 let tests =
   [
     ("[Conn] route_via_mock", [ test_case "ROUTE message + routing table" `Quick route_via_mock ]);
@@ -666,6 +782,10 @@ let tests =
       [ test_case "HELLO carries inline auth for 5.0" `Quick hello_inline_auth ] );
     ("[Conn] hello_logon", [ test_case "HELLO + LOGON for 5.1+" `Quick hello_logon ]);
     ("[Conn] hello_failure", [ test_case "auth failure maps to Neo4j error" `Quick hello_failure ]);
+    ( "[Conn] hello_sends_routing_context",
+      [ test_case "routing field gated on Bolt 4.1+" `Quick hello_sends_routing_context ] );
+    ("[Conn] ssr_enabled_hint", [ test_case "ssr.enabled hint parsed" `Quick ssr_enabled_hint ]);
+    ("[Conn] run_captures_rt", [ test_case "rt metadata captured" `Quick run_captures_rt ]);
     ("[Conn] logoff_logon", [ test_case "LOGOFF/LOGON round trip" `Quick logoff_logon ]);
     ("[Conn] logon_unsupported", [ test_case "LOGON unsupported for 5.0" `Quick logon_unsupported ]);
     ("[Conn] connect_ready", [ test_case "state Ready after connect" `Quick connect_ready ]);

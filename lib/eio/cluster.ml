@@ -7,9 +7,10 @@
    or DatabaseUnavailable) or a routing-table fetch is deactivated: dropped
    from every routing table and its pool closed, so subsequent acquires skip it
    until a refresh re-lists it. A NotALeader / read-only failure removes the
-   address from the database's writers only. The richer routing behaviours —
-   server-side routing and the home-db cache — are deferred to follow-ups (see
-   PLAN.md phase A7). *)
+   address from the database's writers only. Routing tables are also refreshed
+   server-side: when the server sends an [rt] routing table in a RUN response
+   (server-side routing), [update_table] replaces the cached table. The
+   home-db cache is deferred to a follow-up (see PLAN.md phase A7). *)
 
 open Neodriver_core
 
@@ -189,6 +190,20 @@ let cached_error cluster ~database =
   match Hashtbl.find_opt cluster.errors database with
   | Some (error, failed_at) when elapsed_s cluster failed_at <= negative_ttl -> Some error
   | _ -> None
+
+(* Apply an [rt] routing table received from the server (SSR) for [database]:
+   parse it and, when valid, replace the cached table (fresh timestamp),
+   refresh [routers] and clear a cached fetch error. Malformed values are
+   ignored. The table is keyed by the session's [database]; its [db] field, if
+   any, is ignored (home-db mapping is a separate deferred item). *)
+let update_table cluster ~database rt =
+  match Routing_table.parse rt with
+  | Some table ->
+      with_lock cluster (fun () ->
+          Hashtbl.replace cluster.tables database (table, now cluster);
+          cluster.routers <- Routing_table.routers table;
+          Hashtbl.remove cluster.errors database)
+  | None -> ()
 
 (* Resolve the routing table for [database]. The lock is held only for the fast
    cache lookup and the single-flight coordination — the actual ROUTE fetch runs

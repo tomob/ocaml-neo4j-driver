@@ -16,10 +16,13 @@ type config = {
   connection_timeout : float;
   user_agent : string;
   auth : auth;
+  routing_context : (string * string) list option;
 }
 (** Target connection settings. The scheme selects TLS: [Bolt] plain, [Bolt_secure] TLS with
-    certificate validation, [Bolt_self_signed] TLS without validation. Routing schemes ([Neo4j*])
-    are rejected until routing is implemented. *)
+    certificate validation, [Bolt_self_signed] TLS without validation. [routing_context] is sent as
+    the [routing] field of HELLO (server-side routing) for routed ([neo4j*]) drivers: [None] for
+    direct [bolt*] drivers, [Some ctx] for routed ones (an empty list sends [routing: {}]). The
+    field is only sent on Bolt >= 4.1. *)
 
 type t
 (** An established, authenticated Bolt connection: the transport, the negotiated protocol version
@@ -96,10 +99,12 @@ type run_metadata = {
   qid : int option;
   bookmark : string option;
   t_first : int option;
+  rt : Packstream.value option;
 }
 (** Metadata of a RUN response: the result's field names, the query id (for multiple results), the
-    [bookmark] reported for an auto-commit transaction (if any) and the [t_first] timing (result
-    available-after, milliseconds). *)
+    [bookmark] reported for an auto-commit transaction (if any), the [t_first] timing (result
+    available-after, milliseconds) and the [rt] routing-table value reported when server-side
+    routing is enabled (if any). *)
 
 val run :
   ?mode:Config.access_mode ->
@@ -237,6 +242,10 @@ val drain_stream : stream -> unit
 
 val server_agent : t -> string option
 (** The server agent string reported in the HELLO response, if any. *)
+
+val ssr_enabled : t -> bool
+(** Whether the server advertised the [ssr.enabled] hint in its HELLO response, i.e. whether it
+    sends [rt] routing tables in RUN responses (server-side routing). *)
 
 val capabilities : t -> Capabilities.t
 (** The protocol capabilities of the connection's version. *)

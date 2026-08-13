@@ -51,7 +51,9 @@ over the ROUTE message (Bolt 4.3+) or, on older servers, by calling the
 mode on the least-loaded server (fewest in-use connections). Failed servers are
 deactivated (dropped from the routing tables and their pools closed) until a
 refresh re-lists them; a `NotALeader`/read-only failure removes the address
-from the writers only. Server-side routing and the home-db cache are deferred.
+from the writers only. Server-side routing is enabled for routed drivers (the
+routing context in HELLO, the `ssr.enabled` hint and the `rt` tables from RUN
+responses); the home-db cache is deferred.
 
 ## Sessions
 
@@ -300,8 +302,9 @@ no effect for now.
 
 ## Not yet implemented
 
-- Server-side routing (SSR) and the home-db cache (`neo4j://` routing itself is
-  implemented in minimal form).
+- The home-db cache (`neo4j://` routing itself is implemented in minimal form,
+  including server-side routing: the routing context in HELLO, the `ssr.enabled`
+  hint and the `rt` tables from RUN responses).
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
 - Notification filtering and telemetry.

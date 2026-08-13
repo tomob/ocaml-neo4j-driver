@@ -71,7 +71,7 @@ ocaml-neo4j-driver/            # this repo
 - HELLO with `user_agent`/`bolt_agent`/`routing`; inline auth (≤5.0) and **`LOGON/LOGOFF`** (≥5.1). **Done** (commit "step A3-1"): `bolt.ml` (message layer — `send`/`recv`/`respond` with SUCCESS/FAILURE/IGNORED interpretation, plus `hello`/`logon`/`logoff`), `conn.ml` (`auth`/`user_agent` in the config; `connect` authenticates — inline auth for ≤5.0, HELLO+LOGON for ≥5.1; `bolt_agent` header for 5.3+; `logon`/`logoff` gated on `supports_re_auth`). Unit-tested via a mock Bolt session server; integration-tested against a live Neo4j (auth OK + wrong-password rejection).
 - **State machine** (`state.ml`): `CONNECTED/READY/STREAMING/TX_READY|TX_STREAMING/FAILED/AUTHENTICATION`, `IGNORED` handling, **automatic RESET after FAILURE**. **Done** (commit "step A3-2"): `state.ml` (pure server-state machine — `server_transition` with `?re_auth` (Bolt ≥5.1 vs ≤5.0) and `?has_more` for streaming, `failed`/`ready`); `conn.ml` tracks the server state, routes every request through `Conn.request` (auto-RESET when `Failed`, on any non-SUCCESS response the state becomes `Failed`, so `IGNORED` is handled too), adds `Conn.reset` and `server_state`; `Conn.version` replaces the exposed record fields (`t` is now abstract). Unit-tested (transition tables; state across logoff/logon; FAILURE→Failed→auto-RESET with the wire order HELLO, LOGON, LOGON, RESET, LOGOFF; IGNORED→Failed; reset round-trip).
 - **RUN/PULL/DISCARD**: streaming PULL with `fetch_size` and `has_more`, `DISCARD` of the remainder, `qid` (multiple results). **Done** (commit "step A3-3"): `bolt.ml` gains `run_tag`/`pull_tag`/`discard_tag`/`record_tag`, `recv_fields`, and `run`/`pull`/`discard` (PULL/DISCARD collect the RECORD messages up to the summary — a RECORD carries its values as one List field); `conn.ml` adds `Conn.run` (dehydrated parameters, `mode`/`db` extras, returns `fields`/`qid`), `Conn.pull` (hydrated records + `has_more`, streaming with a fetch size and repeated PULLs) and `Conn.discard`; the shared `Conn.request` now tracks `has_more` so the state stays `Streaming` between PULLs. Unit-tested via the mock server (single record, streamed batches, qid on the wire, DISCARD, FAILURE→auto-RESET) and integration-tested against a live Neo4j (`RETURN 1`, `UNWIND [1..5]` streamed with `n=2`, DISCARD of a large result).
-- Per-version feature gates: `supports_multiple_results`, `supports_multiple_databases`, `supports_re_auth`, `supports_notification_filtering`, `supports_ssr`, `supports_telemetry` → a `capabilities` variant. **Done** (commit "step A3-4"): `capabilities.ml` (pure — `Capabilities.of_version` with the Python-driver thresholds: multiple results/databases 4.0+, re-auth 5.1+, notification filtering 5.2+, ROUTE (ssr) 4.3+, TELEMETRY 5.4+); `conn.ml` uses it instead of the ad-hoc `supports_re_auth` and exposes `Conn.capabilities`. Unit-tested (`test_capabilities`).
+- Per-version feature gates: `supports_multiple_results`, `supports_multiple_databases`, `supports_re_auth`, `supports_notification_filtering`, `supports_ssr`, `supports_connection_context` (routing context in HELLO: Bolt 4.1+), `supports_telemetry` → a `capabilities` variant. **Done** (commit "step A3-4"): `capabilities.ml` (pure — `Capabilities.of_version` with the Python-driver thresholds: multiple results/databases 4.0+, re-auth 5.1+, notification filtering 5.2+, ROUTE (ssr) 4.3+, TELEMETRY 5.4+); `conn.ml` uses it instead of the ad-hoc `supports_re_auth` and exposes `Conn.capabilities`. Unit-tested (`test_capabilities`).
 - **Re-auth on a connection** (LOGON/LOGOFF when the token changes) — integration point for the pool. **Done** (commit "step A3-5"): `Conn` tracks `current_auth`; `Conn.re_auth` (LOGOFF+LOGON when the token differs, returns whether it changed; no-op for the same token) and `Conn.mark_unauthenticated` (clears the current token). Unit-tested via the mock (same-token no-op, changed-token LOGOFF+LOGON on the wire, re-auth after `mark_unauthenticated`). **Phase A3 complete.**
 
 ### Phase A5 — Sessions and transactions + retry
@@ -218,13 +218,20 @@ its [+s]/[+ssc] variants) drivers now route:
   bookmarks); Bolt 4.0–4.2 runs `CALL dbms.routing.getRoutingTable($context)` (default database) or
   `CALL dbms.routing.getRoutingTable($context, $database)` on the `system` database. The single
   returned record is zipped with its RUN `fields` into the same `{ttl; servers}` shape as the
-  ROUTE `rt`, so `Routing_table.parse` works unchanged. `imp_user` (Bolt < 4.3) and a `database`
-  on Bolt 3 are `ConfigurationError`. Unit tests cover the procedure wire messages (RUN/PULL
-  instead of ROUTE, mock) and a cluster acquire through a Bolt 4.2 router.
+   ROUTE `rt`, so `Routing_table.parse` works unchanged. `imp_user` (Bolt < 4.3) and a `database`
+   on Bolt 3 are `ConfigurationError`. Unit tests cover the procedure wire messages (RUN/PULL
+   instead of ROUTE, mock) and a cluster acquire through a Bolt 4.2 router.
+- **Server-side routing (SSR) — Done**: routed drivers send the routing context in HELLO (the
+  `routing` field, Bolt 4.1+, gated by the new `Capabilities.supports_connection_context`; `None`
+  for direct `bolt*` drivers, `Some ctx` — including `Some []` → `routing: {}` — for `neo4j*`);
+  the server's `ssr.enabled` hint is parsed from the HELLO response (`Conn.ssr_enabled`); an [rt]
+  routing table returned in an auto-commit RUN response (server-side routing) is consumed by the
+  session (`?on_rt`, wired to `Cluster.update_table`, which replaces the cached table) — gated on
+  `Conn.ssr_enabled`. Unit tests cover the HELLO wire variants (4.0 vs 4.1+, Some vs None), the
+  hint parsing, the `rt` capture and the cluster table update (mock). Home-db cache remains
+  deferred.
 
 **Deferred (follow-ups):**
-- **Server-side routing (SSR)**: the `ssr.enabled` hint and using the [rt] metadata returned in
-  RUN responses.
 - **Home-db cache** (TTL, keyed by `impersonated_user`/token).
 - **TestKit routing backend**: `GetRoutingTable`/`ForcedRoutingTableUpdate` + `Backend:RTFetch`/
   `Backend:RTForceUpdate` (for `tests.stub.suites`).

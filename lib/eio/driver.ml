@@ -32,6 +32,7 @@ let make_cluster ~(parsed : Addressing.uri) ~pool_config ~connection_timeout ~us
           connection_timeout;
           user_agent;
           auth;
+          routing_context = Some parsed.routing_context;
         }
     in
     Conn.connect net clock sw config
@@ -53,6 +54,7 @@ let make_pool ?resolver ~(parsed : Addressing.uri) ~pool_config ~connection_time
         connection_timeout;
         user_agent;
         auth;
+        routing_context = None;
       }
   in
   let connect () = Conn.connect ?resolver net clock sw conn_config in
@@ -85,7 +87,12 @@ let session ?config t =
     | Cluster cluster -> Cluster.release cluster conn
     | Pool pool -> Pool.release pool conn
   in
-  Session.create config ~clock:t.clock ~connect ~release ()
+  let on_rt =
+    match t.connection with
+    | Cluster cluster -> fun database rt -> Cluster.update_table cluster ~database rt
+    | Pool _ -> fun _ _ -> ()
+  in
+  Session.create config ~clock:t.clock ~connect ~release ~on_rt ()
 
 (* A connection for driver-level operations (e.g. verify connectivity); return
    it with [release]. *)

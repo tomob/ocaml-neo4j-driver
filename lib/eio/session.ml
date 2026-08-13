@@ -42,18 +42,20 @@ type t = {
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   connect : mode:Config.access_mode -> database:string option -> (Conn.t, Errors.t) result;
   release : Conn.t -> unit;
+  on_rt : string option -> Packstream.value -> unit;
   conn : Conn.t option ref;
   bookmarks : string list ref;
   current_tx : Tx.t option ref;
   auto_result : Conn.stream option ref;
 }
 
-let create config ~clock ~connect ?(release = Conn.close) () =
+let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> ()) () =
   {
     config;
     clock;
     connect;
     release;
+    on_rt;
     conn = ref None;
     bookmarks = ref config.bookmarks;
     current_tx = ref None;
@@ -90,6 +92,11 @@ let run ?timeout ?metadata t ~query ~parameters =
     Conn.run conn ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks) ?db:t.config.database
       ?timeout ?metadata
   in
+  (* Server-side routing: when the server advertised [ssr.enabled] and answered
+     RUN with an [rt] routing table, hand it to the on_rt callback (the routing
+     cluster of a routed driver updates its table). *)
+  (if Conn.ssr_enabled conn then
+     match run_metadata.rt with Some rt -> t.on_rt t.config.database rt | None -> ());
   let stream =
     Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary -> mark_bookmark t summary)
   in

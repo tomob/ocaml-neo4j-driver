@@ -45,4 +45,5 @@ let conn_config ?scheme ?password (env : t) =
           principal = env.user;
           credentials = Option.value ~default:env.password password;
         };
+      routing_context = None;
     }

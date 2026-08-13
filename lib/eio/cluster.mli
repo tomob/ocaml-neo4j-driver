@@ -3,6 +3,7 @@
     until a refresh re-lists them). See cluster.ml for the implementation. *)
 
 open Neodriver_core
+open Neodriver_packstream
 
 type t
 (** A routing cluster for one [neo4j://] driver. *)
@@ -32,6 +33,11 @@ val deactivate : t -> Addressing.t -> unit
 
 val on_write_failure : t -> database:string option -> Addressing.t -> unit
 (** Remove [addr] from the [writers] of [database] (a NotALeader / read-only failure). *)
+
+val update_table : t -> database:string option -> Packstream.value -> unit
+(** Apply an [rt] routing table received from the server (server-side routing) for [database]: parse
+    it and, when valid, replace the cached table (fresh timestamp), refresh [routers] and clear a
+    cached fetch error. Malformed values are ignored. *)
 
 val release : t -> Conn.t -> unit
 (** Return a connection to its pool (found via the connection's address; a connection whose pool is

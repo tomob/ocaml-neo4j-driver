@@ -19,6 +19,7 @@ type config = {
   connection_timeout : float;
   user_agent : string;
   auth : auth;
+  routing_context : (string * string) list option;
 }
 
 type t = {
@@ -31,6 +32,7 @@ type t = {
   current_auth : auth option ref;
   on_error : (t -> Errors.t -> unit) ref;
   last_database : string option ref;
+  ssr_enabled : bool ref;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.1.0"
@@ -74,6 +76,12 @@ let auth_map (auth : auth) =
 
 let hello_headers (config : config) major minor =
   let base = [ ("user_agent", Packstream.String config.user_agent) ] in
+  let routing =
+    match config.routing_context with
+    | Some context when (Capabilities.of_version major minor).supports_connection_context ->
+        [ ("routing", Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) context)) ]
+    | Some _ | None -> []
+  in
   let bolt_agent =
     if bolt_agent_version major minor then [ ("bolt_agent", bolt_agent config.user_agent) ] else []
   in
@@ -86,7 +94,7 @@ let hello_headers (config : config) major minor =
         ("credentials", Packstream.String config.auth.credentials);
       ]
   in
-  Packstream.Map (base @ bolt_agent @ auth)
+  Packstream.Map (base @ routing @ bolt_agent @ auth)
 
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
@@ -144,11 +152,19 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
    single address. *)
 (* let connect_transport net sw ~timeout ~tls address = Transport.connect net sw ~timeout ~tls address *)
 
-(* Record the server agent reported in the HELLO response, if any. *)
-let set_server_agent conn = function
+(* Record the HELLO response metadata: the server agent, and the [ssr.enabled]
+   hint that turns on server-side routing (the server then sends [rt] routing
+   tables in RUN responses). *)
+let set_hello_metadata conn = function
   | Packstream.Map fields -> (
-      match List.assoc_opt "server" fields with
+      (match List.assoc_opt "server" fields with
       | Some (Packstream.String agent) -> conn.server_agent := Some agent
+      | _ -> ());
+      match List.assoc_opt "hints" fields with
+      | Some (Packstream.Map hints) -> (
+          match List.assoc_opt "ssr.enabled" hints with
+          | Some (Packstream.Bool true) -> conn.ssr_enabled := true
+          | _ -> ())
       | _ -> ())
   | _ -> ()
 
@@ -161,7 +177,7 @@ let authenticate conn config =
     request conn ~message:State.Hello ~re_auth (fun () ->
         Bolt.hello conn.transport ~headers:(hello_headers config major minor))
   in
-  set_server_agent conn hello_metadata;
+  set_hello_metadata conn hello_metadata;
   let* () =
     if re_auth then
       request conn ~message:State.Logon ~re_auth (fun () ->
@@ -206,6 +222,7 @@ let connect ?resolver net clock sw config =
       current_auth = ref None;
       on_error = ref (fun _ _ -> ());
       last_database = ref None;
+      ssr_enabled = ref false;
     }
   in
   let* () = authenticate conn config in
@@ -235,6 +252,7 @@ type run_metadata = {
   qid : int option;
   bookmark : string option;
   t_first : int option;
+  rt : Packstream.value option;
 }
 
 let map_fields key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
@@ -256,7 +274,8 @@ let run_metadata_of metadata =
   let qid = map_fields "qid" metadata |> int_opt in
   let bookmark = map_fields "bookmark" metadata |> string_opt in
   let t_first = map_fields "t_first" metadata |> int_opt in
-  { fields; qid; bookmark; t_first }
+  let rt = map_fields "rt" metadata in
+  { fields; qid; bookmark; t_first; rt }
 
 (* The extra map shared by BEGIN and auto-commit RUN: mode, db, impersonation,
    bookmarks, tx_metadata and tx_timeout (milliseconds). *)
@@ -557,6 +576,7 @@ let route ?db ?imp_user t ~routing_context ~bookmarks =
   else route_procedure ?db ?imp_user t ~routing_context ~bookmarks
 
 let server_agent t = !(t.server_agent)
+let ssr_enabled t = !(t.ssr_enabled)
 let capabilities t = capabilities_of t
 let current_auth t = !(t.current_auth)
 

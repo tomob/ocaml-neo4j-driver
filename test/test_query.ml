@@ -13,6 +13,7 @@ let config host port =
       connection_timeout = 5.0;
       user_agent = "test-agent";
       auth = { scheme = "basic"; principal = "neo4j"; credentials = "password" };
+      routing_context = None;
     }
 
 let connect net clock sw port =

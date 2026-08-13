@@ -9,6 +9,7 @@ type t = {
   supports_notification_filtering : bool;
   supports_route_message : bool;
   supports_ssr : bool;
+  supports_connection_context : bool;
   supports_telemetry : bool;
 }
 (** Protocol features available for a given Bolt version. *)

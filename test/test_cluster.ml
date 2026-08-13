@@ -18,6 +18,7 @@ let config host port =
       connection_timeout = 5.0;
       user_agent = "test-agent";
       auth = auth ();
+      routing_context = None;
     }
 
 let server addresses role =
@@ -470,6 +471,110 @@ let routing_via_procedure_bolt42 () =
       Cluster.release cluster c1;
       Cluster.close cluster)
 
+(* An [rt] routing table received from the server (SSR) replaces the cached
+   table: the next acquire routes to the new address. *)
+let update_table_replaces_table () =
+  let received = List.init 3 (fun _ -> ref []) in
+  Test_mock.with_servers 3
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: readers through B *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt [ a ] [ b ] [ b ]) ] ] );
+        ];
+        (* reader B: one pool connection *)
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
+        (* reader C: one pool connection *)
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
+          clock
+      in
+      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None in
+      let c1 = match acquire () with Ok conn -> conn | Error e -> fail (Errors.to_string e) in
+      check int "first read goes to B" (List.nth ports 1) (Addressing.port (Conn.address c1));
+      let a = "127.0.0.1:" ^ string_of_int (List.nth ports 0) in
+      let c = "127.0.0.1:" ^ string_of_int (List.nth ports 2) in
+      Cluster.update_table cluster ~database:None (rt [ a ] [ c ] [ c ]);
+      let c2 = match acquire () with Ok conn -> conn | Error e -> fail (Errors.to_string e) in
+      check int "read after SSR table update goes to C" (List.nth ports 2)
+        (Addressing.port (Conn.address c2));
+      Cluster.release cluster c1;
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
+(* End-to-end server-side routing: a session's RUN response carries an [rt]
+   table (the server advertised ssr.enabled); the on_rt callback feeds it to
+   the cluster, which then routes to the new address. *)
+let session_rt_updates_routing_table () =
+  let received = List.init 3 (fun _ -> ref []) in
+  Test_mock.with_servers 3
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      let c = addr (List.nth ports 2) in
+      [
+        (* router A: readers through B *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt [ a ] [ b ] [ b ]) ] ] );
+        ];
+        (* reader B: HELLO advertises ssr.enabled; the RUN's [rt] re-routes
+           the readers to C *)
+        [
+          ( (5, 0),
+            List.nth received 1,
+            [
+              Test_mock.Success_meta
+                [ ("hints", Packstream.Map [ ("ssr.enabled", Packstream.Bool true) ]) ];
+              Test_mock.Success_meta
+                [
+                  ("fields", Packstream.List [ Packstream.String "n" ]); ("rt", rt [ a ] [ c ] [ c ]);
+                ];
+            ] );
+        ];
+        (* reader C: one pool connection *)
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
+          clock
+      in
+      let session_config = { Session.default_config with access_mode = Config.Read } in
+      let session =
+        Session.create session_config ~clock
+          ~connect:(fun ~mode ~database -> Cluster.acquire cluster ~mode ~database)
+          ~on_rt:(fun database rt -> Cluster.update_table cluster ~database rt)
+          ()
+      in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok _ -> ()
+      | Error e -> fail (Errors.to_string e));
+      Session.close session;
+      let c2 =
+        match Cluster.acquire cluster ~mode:Config.Read ~database:None with
+        | Ok conn -> conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "read after SSR re-routing goes to C" (List.nth ports 2)
+        (Addressing.port (Conn.address c2));
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
 let tests =
   [
     ( "[Cluster] acquire falls back to the next router",
@@ -490,4 +595,8 @@ let tests =
       [ test_case "no re-fetch after failure" `Quick failed_fetch_negative_cache ] );
     ( "[Cluster] routing via the procedure fallback",
       [ test_case "Bolt 4.2 router" `Quick routing_via_procedure_bolt42 ] );
+    ( "[Cluster] SSR update replaces the table",
+      [ test_case "update_table re-routes" `Quick update_table_replaces_table ] );
+    ( "[Cluster] SSR rt from a session run updates the table",
+      [ test_case "on_rt end-to-end" `Quick session_rt_updates_routing_table ] );
   ]

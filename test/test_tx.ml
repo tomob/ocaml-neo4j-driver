@@ -8,7 +8,16 @@ let auth ?(principal = "neo4j") ?(credentials = "password") () =
   Conn.{ scheme = "basic"; principal; credentials }
 
 let config host port scheme =
-  Conn.{ host; port; scheme; connection_timeout = 5.0; user_agent = "test-agent"; auth = auth () }
+  Conn.
+    {
+      host;
+      port;
+      scheme;
+      connection_timeout = 5.0;
+      user_agent = "test-agent";
+      auth = auth ();
+      routing_context = None;
+    }
 
 let unpack_message bytes =
   match Packstream.unpack bytes with
