@@ -14,6 +14,7 @@ type t
 
 val connect :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
+  ?domain_name_resolver:(string -> (string list, Errors.t) result) ->
   uri:string ->
   auth:Conn.auth ->
   ?user_agent:string ->

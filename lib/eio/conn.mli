@@ -37,6 +37,7 @@ val basic_auth : ?principal:string -> ?credentials:string -> unit -> auth
 
 val connect :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
+  ?domain_name_resolver:(string -> (string list, Errors.t) result) ->
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   Eio.Switch.t ->
@@ -45,7 +46,9 @@ val connect :
 (** Establish a connection (over TLS when the scheme requires it), negotiate the Bolt protocol
     version and authenticate. [resolver] replaces the address lookup: the address built from
     [config] is passed to it and each returned address is tried in turn (first success wins, errors
-    are aggregated). Without [resolver], the single configured address is used. An IPv6 literal in
+    are aggregated). Without [resolver], the single configured address is used.
+    [domain_name_resolver] resolves any hostnames among the (resolved) addresses to literal IPs (the
+    TestKit harness's custom domain-name resolution); literal IPs are used as-is. An IPv6 literal in
     [config.host] is treated as such (the address is built with brackets around the host). For Bolt
     >= 5.1 the authentication is sent via LOGON after HELLO; for older versions it is inline in
     HELLO. [clock] bounds the whole attempt and subsequent reads/writes by

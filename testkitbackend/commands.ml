@@ -158,6 +158,40 @@ let resolver ctx address =
   | Some addresses -> parse addresses
   | None -> Error (Errors.Service_unavailable "no resolver resolution received")
 
+(* Ask the harness to resolve a domain name (custom domain-name resolver) and
+   return the literal addresses to try. The follow-up
+   DomainNameResolutionCompleted request is consumed and processed here. *)
+let domain_name_resolver ctx name =
+  let id = new_id () in
+  ctx.send "DomainNameResolutionRequired" (`Assoc [ ("id", `Int id); ("name", `String name) ]);
+  let resolution =
+    match ctx.read () with
+    | None -> None
+    | Some json -> (
+        match Yojson.Safe.from_string json with
+        | `Assoc fields -> (
+            match List.assoc_opt "data" fields with
+            | Some (`Assoc data) -> (
+                match (List.assoc_opt "requestId" data, List.assoc_opt "addresses" data) with
+                | Some (`Int request_id), Some (`List addresses) when request_id = id ->
+                    Some
+                      (List.map
+                         (function `String s -> s | _ -> raise (Backend_error "bad address"))
+                         addresses)
+                | Some (`Intlit request_id), Some (`List addresses)
+                  when match int_of_string_opt request_id with Some n -> n = id | None -> false ->
+                    Some
+                      (List.map
+                         (function `String s -> s | _ -> raise (Backend_error "bad address"))
+                         addresses)
+                | _ -> None)
+            | _ -> None)
+        | _ -> None)
+  in
+  match resolution with
+  | Some addresses -> Ok addresses
+  | None -> Error (Errors.Service_unavailable "no domain-name resolution received")
+
 (* A connection for driver-level operations (acquired from the pool on first
    use, returned to it on DriverClose). *)
 let ensure_conn (driver : driver) =
@@ -196,6 +230,11 @@ let new_driver ctx fields =
   let resolver_registered =
     match List.assoc_opt "resolverRegistered" fields with Some (`Bool b) -> b | _ -> false
   in
+  let domain_name_resolver_registered =
+    match List.assoc_opt "domainNameResolverRegistered" fields with
+    | Some (`Bool b) -> b
+    | _ -> false
+  in
   let connection_timeout =
     match List.assoc_opt "connectionTimeoutMs" fields with
     | Some (`Int ms) -> float_of_int ms /. 1000.0
@@ -211,12 +250,15 @@ let new_driver ctx fields =
     | _ -> 30.0
   in
   let custom = if resolver_registered then Some (resolver ctx) else None in
+  let custom_domain_name =
+    if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
+  in
   let conn_auth =
     Conn.{ scheme = auth.scheme; principal = auth.principal; credentials = auth.credentials }
   in
   match
-    Driver.connect ?resolver:custom ~uri:uri_string ~auth:conn_auth ~user_agent ~connection_timeout
-      ctx.net ctx.clock ctx.sw
+    Driver.connect ?resolver:custom ?domain_name_resolver:custom_domain_name ~uri:uri_string
+      ~auth:conn_auth ~user_agent ~connection_timeout ctx.net ctx.clock ctx.sw
   with
   | Error error -> raise (Driver_error error)
   | Ok driver ->

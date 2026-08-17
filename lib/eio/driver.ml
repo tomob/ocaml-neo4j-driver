@@ -19,8 +19,8 @@ type t = { clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t; connection : cluste
 
 (* The routing cluster for a [neo4j://] URI: its address is the initial router
    and routing tables are fetched from it on demand. *)
-let make_cluster ~(parsed : Addressing.uri) ~pool_config ~connection_timeout ~user_agent ~auth net
-    clock sw =
+let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~pool_config
+    ~connection_timeout ~user_agent ~auth net clock sw =
   let initial = Addressing.of_host_port parsed.host parsed.port in
   (* The routing context carries the cluster's own address (like the Python
      driver, which prepends "address" at pool creation): the server uses it for
@@ -39,14 +39,17 @@ let make_cluster ~(parsed : Addressing.uri) ~pool_config ~connection_timeout ~us
           routing_context = Some routing_context;
         }
     in
-    Conn.connect net clock sw config
+    (* The address resolver is applied by the cluster's fetch (fetch_routers),
+       which turns each seed into concrete addresses; the connection only
+       resolves hostnames among those via the domain-name resolver. *)
+    Conn.connect ?domain_name_resolver net clock sw config
   in
-  let cluster = Cluster.create ~pool_config ~connect ~routing_context ~initial clock in
+  let cluster = Cluster.create ?resolver ~pool_config ~connect ~routing_context ~initial clock in
   Ok (Cluster cluster)
 
 (* The connection pool for a direct [bolt://] URI. *)
-let make_pool ?resolver ~(parsed : Addressing.uri) ~pool_config ~connection_timeout ~user_agent
-    ~auth net clock sw =
+let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~pool_config
+    ~connection_timeout ~user_agent ~auth net clock sw =
   let conn_config =
     Conn.
       {
@@ -59,11 +62,11 @@ let make_pool ?resolver ~(parsed : Addressing.uri) ~pool_config ~connection_time
         routing_context = None;
       }
   in
-  let connect () = Conn.connect ?resolver net clock sw conn_config in
+  let connect () = Conn.connect ?resolver ?domain_name_resolver net clock sw conn_config in
   let pool = Pool.create ~pool_config ~connect clock in
   Ok (Pool pool)
 
-let connect ?resolver ~uri ~auth ?user_agent ?connection_timeout
+let connect ?resolver ?domain_name_resolver ~uri ~auth ?user_agent ?connection_timeout
     ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let connection_timeout = Option.value ~default:default_connection_timeout connection_timeout in
@@ -71,9 +74,11 @@ let connect ?resolver ~uri ~auth ?user_agent ?connection_timeout
   let* connection =
     match parsed.scheme with
     | Addressing.Neo4j | Addressing.Neo4j_secure | Addressing.Neo4j_self_signed ->
-        make_cluster ~parsed ~pool_config ~connection_timeout ~user_agent ~auth net clock sw
+        make_cluster ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
+          ~user_agent ~auth net clock sw
     | _ ->
-        make_pool ?resolver ~parsed ~pool_config ~connection_timeout ~user_agent ~auth net clock sw
+        make_pool ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
+          ~user_agent ~auth net clock sw
   in
   Ok { clock; connection }
 

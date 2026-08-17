@@ -9,6 +9,7 @@ type t
 (** A routing cluster for one [neo4j://] driver. *)
 
 val create :
+  ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
   pool_config:Config.pool_config ->
   connect:(Addressing.t -> (Conn.t, Errors.t) result) ->
   routing_context:(string * string) list ->

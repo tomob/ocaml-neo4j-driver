@@ -22,6 +22,7 @@ let ( let* ) = Result.bind
 type t = {
   pool_config : Config.pool_config;
   connect : Addressing.t -> (Conn.t, Errors.t) result;
+  resolver : (Addressing.t -> (Addressing.t list, Errors.t) result) option;
   routing_context : (string * string) list;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   mutable routers : Addressing.t list;
@@ -42,10 +43,11 @@ type t = {
    don't all retry immediately after a router failure. *)
 let negative_ttl = 5.0
 
-let create ~pool_config ~connect ~routing_context ~initial clock =
+let create ?resolver ~pool_config ~connect ~routing_context ~initial clock =
   {
     pool_config;
     connect;
+    resolver;
     routing_context;
     clock;
     routers = [ initial ];
@@ -79,14 +81,31 @@ let with_routing_lock t f =
    cached tables) first, then the initial seed routers as a fallback — a known
    router that went down or serves unusable tables is skipped and the address
    that seeded the driver still gets a chance (Python keeps the initial routers
-   for the same reason). *)
+   for the same reason). A custom resolver is applied to each candidate so
+   rediscovery re-resolves the seed address (e.g. to a different router). *)
 let fetch_routers cluster =
+  let resolve addr =
+    match cluster.resolver with
+    | Some resolve -> ( match resolve addr with Ok l -> l | Error _ -> [ addr ])
+    | None -> [ addr ]
+  in
   let known = cluster.routers in
   let known_keys = List.map Addressing.to_string known in
-  known
-  @ List.filter
-      (fun a -> not (List.mem (Addressing.to_string a) known_keys))
-      cluster.initial_routers
+  let candidates =
+    known
+    @ List.filter
+        (fun a -> not (List.mem (Addressing.to_string a) known_keys))
+        cluster.initial_routers
+  in
+  (* Dedupe the resolved list: the same seed may resolve through both the known
+     and the initial list, and a resolver must be called once per fetch. *)
+  let rec dedupe seen = function
+    | [] -> []
+    | addr :: rest ->
+        let key = Addressing.to_string addr in
+        if List.mem key seen then dedupe seen rest else addr :: dedupe (key :: seen) rest
+  in
+  dedupe [] (List.flatten (List.map resolve candidates))
 
 (* Full address deactivation (under the lock): drop [addr] from every routing
    table and close its pool, so future acquires skip it until a refresh
@@ -188,12 +207,15 @@ let routing_conn cluster addr =
    with a non-fatal error or returns a table without routers or readers is
    deactivated and the next router is tried; an error that is fatal during
    discovery ([Errors.is_fatal_during_discovery], e.g. DatabaseNotFound or
-   security errors) aborts the fetch immediately. [last_error] carries the most
-   recent failure so the caller gets a meaningful error when every router fails.
-   [bookmarks] are sent with the ROUTE request (usually the caller's own
-   bookmarks, or [] for a plain resolution). ROUTEs are serialized on
-   [routing_lock] so concurrent fetches never share a connection. *)
-let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error = function
+   security errors) aborts the fetch immediately. A connection-level ROUTE
+   failure drops the reused connection and retries the same router once with a
+   fresh one (the address may have moved, e.g. a domain name that now resolves
+   to a different server). [last_error] carries the most recent failure so the
+   caller gets a meaningful error when every router fails. [bookmarks] are sent
+   with the ROUTE request (usually the caller's own bookmarks, or [] for a plain
+   resolution). ROUTEs are serialized on [routing_lock] so concurrent fetches
+   never share a connection. *)
+let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error retried = function
   | [] -> (
       match last_error with
       | Some error -> Error error
@@ -204,7 +226,7 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error = f
           if Errors.is_fatal_during_discovery error then Error error
           else begin
             deactivate cluster addr;
-            fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) rest
+            fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) false rest
           end
       | Ok conn -> (
           let result =
@@ -224,17 +246,31 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error = f
           | Ok _ ->
               deactivate cluster addr;
               fetch_table_locked cluster ~database ~imp_user ~bookmarks
-                (Some (Errors.Service_unavailable "invalid routing table")) rest
-          | Error error ->
+                (Some (Errors.Service_unavailable "invalid routing table")) false rest
+          | Error error -> (
               if Errors.is_fatal_during_discovery error then Error error
-              else begin
-                deactivate cluster addr;
-                fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) rest
-              end))
+              else
+                (* A connection-level error on the reused connection: drop it
+                   and try [addr] once more with a fresh connection (its
+                   resolution may have changed); a server FAILURE response is
+                   non-fatal and moves on to the next router. *)
+                match error with
+                | Errors.Neo4j _ ->
+                    deactivate cluster addr;
+                    fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) false
+                      rest
+                | _ when not retried ->
+                    deactivate cluster addr;
+                    fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) true
+                      (addr :: rest)
+                | _ ->
+                    deactivate cluster addr;
+                    fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) false
+                      rest)))
 
 let fetch_table cluster ~database ~imp_user ~bookmarks last_error routers =
   with_routing_lock cluster (fun () ->
-      fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error routers)
+      fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error false routers)
 
 (* The fresh cached table for [database], if any (caller holds the lock). A
    table is fresh only when its TTL has not elapsed AND it still lists routers

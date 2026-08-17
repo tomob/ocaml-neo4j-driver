@@ -188,10 +188,34 @@ let authenticate conn config =
   conn.current_auth := Some config.auth;
   Ok ()
 
-let connect ?resolver net clock sw config =
+let connect ?resolver ?domain_name_resolver net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in
   let initial = Addressing.of_host_port config.host config.port in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in
+  (* Resolve any hostnames among [addresses] through the custom domain-name
+     resolver (the TestKit harness resolves the driver's fake host names this
+     way); literal IPs are kept as-is. *)
+  let* addresses =
+    match domain_name_resolver with
+    | None -> Ok addresses
+    | Some resolve ->
+        let rec go = function
+          | [] -> Ok []
+          | address :: rest ->
+              let host = Addressing.host address in
+              let literal =
+                Result.is_ok (Ipaddr.V4.of_string host) || Result.is_ok (Ipaddr.V6.of_string host)
+              in
+              if literal then Result.map (List.cons address) (go rest)
+              else
+                let* hosts = resolve host in
+                let resolved =
+                  List.map (fun h -> Addressing.of_host_port h (Addressing.port address)) hosts
+                in
+                Result.map (fun tail -> resolved @ tail) (go rest)
+        in
+        go addresses
+  in
   let connect_single address =
     let* transport =
       Transport.connect net sw ~timeout:(timeout_of_config clock config) ~tls address
