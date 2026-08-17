@@ -98,8 +98,8 @@ let run ?timeout ?metadata t ~query ~parameters =
   (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
   let hydration = Conn.hydration conn in
   let* run_metadata =
-    Conn.run conn ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks) ?db:!(t.database) ?timeout
-      ?metadata
+    Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks)
+      ?db:!(t.database) ?timeout ?metadata
   in
   (* Server-side routing: when the server advertised [ssr.enabled] and answered
      RUN with an [rt] routing table, hand it to the on_rt callback (the routing
@@ -166,6 +166,19 @@ let execute t ~mode ?metadata ?timeout work =
     | Ok tx -> Ok tx
     | Error error -> Error (Driver error)
   in
+  (* Drop the session's connection (release it back to the pool) so the next
+     attempt acquires a fresh one: a failed transaction may have left the
+     connection in a broken state. Only a connection-level failure (not a
+     retryable Neo4j error — the server answered it and a RESET recovers the
+     connection) triggers this. *)
+  let disconnect () =
+    match !(t.conn) with
+    | None -> ()
+    | Some conn ->
+        t.conn := None;
+        t.release conn
+  in
+  let disconnect_on_connection_error = function Errors.Neo4j _ -> false | _ -> true in
   let rec attempt () =
     let* tx = begin_tx () in
     match work tx with
@@ -179,6 +192,7 @@ let execute t ~mode ?metadata ?timeout work =
             ignore (Tx.rollback tx);
             t.current_tx := None;
             if Errors.is_retryable error && within_budget () then (
+              if disconnect_on_connection_error error then disconnect ();
               retry ();
               attempt ())
             else Error (Driver error))
@@ -190,6 +204,7 @@ let execute t ~mode ?metadata ?timeout work =
         ignore (Tx.rollback tx);
         t.current_tx := None;
         if Errors.is_retryable error && within_budget () then (
+          if disconnect_on_connection_error error then disconnect ();
           retry ();
           attempt ())
         else Error (Driver error)

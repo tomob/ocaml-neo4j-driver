@@ -150,8 +150,10 @@ let set_home_db cluster imp_user database =
    next router is tried; an error that is fatal during discovery
    ([Errors.is_fatal_during_discovery], e.g. DatabaseNotFound or security
    errors) aborts the fetch immediately. [last_error] carries the most recent
-   failure so the caller gets a meaningful error when every router fails. *)
-let rec fetch_table cluster ~database ~imp_user last_error = function
+   failure so the caller gets a meaningful error when every router fails.
+   [bookmarks] are sent with the ROUTE request (usually the caller's own
+   bookmarks, or [] for a plain resolution). *)
+let rec fetch_table cluster ~database ~imp_user ~bookmarks last_error = function
   | [] -> (
       match last_error with
       | Some error -> Error error
@@ -162,13 +164,13 @@ let rec fetch_table cluster ~database ~imp_user last_error = function
           if Errors.is_fatal_during_discovery error then Error error
           else begin
             deactivate cluster addr;
-            fetch_table cluster ~database ~imp_user (Some error) rest
+            fetch_table cluster ~database ~imp_user ~bookmarks (Some error) rest
           end
       | Ok conn -> (
           let result =
             match
               Conn.route ?db:database ?imp_user conn ~routing_context:cluster.routing_context
-                ~bookmarks:[]
+                ~bookmarks
             with
             | Error error -> Error error
             | Ok rt -> (
@@ -182,13 +184,13 @@ let rec fetch_table cluster ~database ~imp_user last_error = function
               Ok table
           | Ok _ ->
               deactivate cluster addr;
-              fetch_table cluster ~database ~imp_user
+              fetch_table cluster ~database ~imp_user ~bookmarks
                 (Some (Errors.Service_unavailable "invalid routing table")) rest
           | Error error ->
               if Errors.is_fatal_during_discovery error then Error error
               else begin
                 deactivate cluster addr;
-                fetch_table cluster ~database ~imp_user (Some error) rest
+                fetch_table cluster ~database ~imp_user ~bookmarks (Some error) rest
               end))
 
 (* The fresh cached table for [database], if any (caller holds the lock). A
@@ -269,7 +271,7 @@ let rec resolve_table cluster ~database ~mode ~imp_user =
             with_lock cluster (fun () ->
                 Hashtbl.remove cluster.in_flight database;
                 Eio.Condition.broadcast cluster.cond))
-          (fun () -> fetch_table cluster ~database ~imp_user None cluster.routers)
+          (fun () -> fetch_table cluster ~database ~imp_user ~bookmarks:[] None cluster.routers)
       in
       with_lock cluster (fun () ->
           match result with
@@ -350,6 +352,35 @@ let release cluster conn =
   match Hashtbl.find_opt cluster.pools (Addressing.to_string (Conn.address conn)) with
   | Some pool -> Pool.release pool conn
   | None -> Conn.close conn
+
+(* The cached routing table for [database], if any (no fetch; read under the
+   lock). Test-support API for the TestKit backend's GetRoutingTable. *)
+let routing_table_of cluster ~database =
+  with_lock cluster (fun () ->
+      match Hashtbl.find_opt cluster.tables database with
+      | Some (table, _) -> Some table
+      | None -> None)
+
+(* Force a fresh fetch of the routing table for [database], bypassing the
+   freshness and negative-cache checks, and store it (refreshing [routers] and
+   clearing a cached fetch error). Bounded by the acquisition timeout. A failed
+   fetch leaves the cluster unchanged apart from a deactivated router.
+   Test-support API for the TestKit backend's ForcedRoutingTableUpdate. *)
+let force_routing_table_update cluster ~database ~bookmarks =
+  try
+    Eio.Time.Timeout.run_exn
+      (Eio.Time.Timeout.seconds cluster.clock cluster.pool_config.connection_acquisition_timeout)
+      (fun () ->
+        match fetch_table cluster ~database ~imp_user:None ~bookmarks None cluster.routers with
+        | Ok table ->
+            with_lock cluster (fun () ->
+                Hashtbl.replace cluster.tables database (table, now cluster);
+                cluster.routers <- Routing_table.routers table;
+                Hashtbl.remove cluster.errors database);
+            Ok ()
+        | Error _ as error -> error)
+  with Eio.Time.Timeout ->
+    Error (Errors.Connection_acquisition_timeout "Timed out updating the routing table")
 
 let close cluster =
   with_lock cluster (fun () -> Hashtbl.iter (fun _ pool -> Pool.close pool) cluster.pools)

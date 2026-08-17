@@ -33,4 +33,9 @@ let features : string list =
     "Feature:API:Type.UnsupportedType";
     "Feature:API:Type.Vector";
     "Feature:API:Type.UUID";
+    (* Test-support commands for the stub routing suite. *)
+    "Backend:RTFetch";
+    (* GetRoutingTable *)
+    "Backend:RTForceUpdate";
+    (* ForcedRoutingTableUpdate *)
   ]

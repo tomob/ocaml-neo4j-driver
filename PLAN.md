@@ -240,10 +240,32 @@ its [+s]/[+ssc] variants) drivers now route:
   and BEGIN send it as `db` (TestKit homedb wire behaviour) and SSR `update_table` (`?imp_user`)
   seeds the cache too. Unit tests cover the resolution/caching, TTL expiry, per-user keys, the
   `imp_user` ROUTE extra and the session RUN db (mock).
+- **TestKit routing backend — Done** (the last deferred A7 item): the backend now reports
+  `Backend:RTFetch` / `Backend:RTForceUpdate` and serves `GetRoutingTable` /
+  `ForcedRoutingTableUpdate`. `Cluster.fetch_table` threads `~bookmarks` to the ROUTE request, and
+  two new test-support APIs back the commands: `Cluster.routing_table_of` (the cached table under
+  the lock, no fetch) and `Cluster.force_routing_table_update` (a fresh fetch via the routers
+  bypassing the freshness/negative-cache checks, stored as a normal `Ok` resolution, bounded by the
+  acquisition timeout); `Driver.get_routing_table` / `Driver.force_routing_table_update` delegate
+  to the cluster ([None] / an error for direct `bolt://` drivers). The `RoutingTable` response
+  matches the Python backend 1:1 (requested database with `ttl:0` and empty roles when nothing is
+  cached; the table's `database`, TTL and role addresses otherwise). The stub routing suite
+  (`scripts/testkit_routing.sh`, no Neo4j needed) runs `RoutingV4x4`/`RoutingV5x0`. Unit tests
+  cover the cached-table read, a forced update (ROUTE bookmarks on the wire, the stored table, the
+  refreshed readers) and a failed forced update storing nothing. **A7 is now 100% done.**
+
+  Running the stub suite (the first time it is exercised) surfaced and fixed four real driver
+  conformance gaps: the routing context now carries the cluster's own `address` key (as the Python
+  driver adds at pool creation; the stub scripts match on it), an auto-commit RUN sends the
+  session's `mode` and omits an empty `bookmarks` key, `Conn.last_database` is recorded by BEGIN
+  (so a NotALeader inside a transaction removes the writer from the right database) and the pool
+  RESETs a connection on release regardless of its state (failed connections are recovered, not
+  closed). Remaining stub-suite failures are pre-existing driver gaps outside this item (fast-fail
+  vs retry on interrupted connections, resolver-based rediscovery, system-bookmark routing,
+  multi-db/leader-switch scenarios); `scripts/testkit_routing.sh` is the harness for iterating on
+  them.
 
 **Deferred (follow-ups):**
-- **TestKit routing backend**: `GetRoutingTable`/`ForcedRoutingTableUpdate` + `Backend:RTFetch`/
-  `Backend:RTForceUpdate` (for `tests.stub.suites`).
 
 ### Phase A8 — Bookmarks and auth management
 

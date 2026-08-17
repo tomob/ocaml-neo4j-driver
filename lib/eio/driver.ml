@@ -22,6 +22,10 @@ type t = { clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t; connection : cluste
 let make_cluster ~(parsed : Addressing.uri) ~pool_config ~connection_timeout ~user_agent ~auth net
     clock sw =
   let initial = Addressing.of_host_port parsed.host parsed.port in
+  (* The routing context carries the cluster's own address (like the Python
+     driver, which prepends "address" at pool creation): the server uses it for
+     routing policies and it is echoed back on ROUTE. *)
+  let routing_context = ("address", Addressing.to_string initial) :: parsed.routing_context in
   let connect addr =
     let config =
       Conn.
@@ -32,14 +36,12 @@ let make_cluster ~(parsed : Addressing.uri) ~pool_config ~connection_timeout ~us
           connection_timeout;
           user_agent;
           auth;
-          routing_context = Some parsed.routing_context;
+          routing_context = Some routing_context;
         }
     in
     Conn.connect net clock sw config
   in
-  let cluster =
-    Cluster.create ~pool_config ~connect ~routing_context:parsed.routing_context ~initial clock
-  in
+  let cluster = Cluster.create ~pool_config ~connect ~routing_context ~initial clock in
   Ok (Cluster cluster)
 
 (* The connection pool for a direct [bolt://] URI. *)
@@ -114,3 +116,14 @@ let release t conn =
 
 let close t =
   match t.connection with Cluster cluster -> Cluster.close cluster | Pool pool -> Pool.close pool
+
+(* Test-support API for the TestKit backend. *)
+let get_routing_table t ~database =
+  match t.connection with
+  | Cluster cluster -> Cluster.routing_table_of cluster ~database
+  | Pool _ -> None
+
+let force_routing_table_update t ~database ~bookmarks =
+  match t.connection with
+  | Cluster cluster -> Cluster.force_routing_table_update cluster ~database ~bookmarks
+  | Pool _ -> Error (Errors.Service_unavailable "routing requires a neo4j:// URI")

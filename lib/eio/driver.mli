@@ -53,3 +53,12 @@ val close : t -> unit
 (** Close the driver's pool/cluster: idle connections are closed and further [acquire]/[session]
     operations fail. Connections still in use by open sessions are closed (not returned to the pool)
     when those sessions close. *)
+
+val get_routing_table : t -> database:string option -> Routing_table.t option
+(** The driver's cached routing table for [database] ([None] for a direct [bolt://] driver or before
+    the first fetch). Test-support API for the TestKit backend. *)
+
+val force_routing_table_update :
+  t -> database:string option -> bookmarks:string list -> (unit, Errors.t) result
+(** Force a routing-table refresh for [database] (test-support API for the TestKit backend; a direct
+    [bolt://] driver has no routing table and gets an error). *)

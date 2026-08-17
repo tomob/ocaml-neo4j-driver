@@ -114,18 +114,18 @@ let acquire t =
 
 (* Return [conn] to the pool. A second release of the same connection (already
    idle) is a no-op: it is not queued again and no permit is released, so the
-   permit count cannot exceed [max_connection_pool_size]. *)
+   permit count cannot exceed [max_connection_pool_size]. Like the Python
+   driver, a RESET is sent on release regardless of the connection's state (the
+   server answers it even after a FAILURE), so failed connections are recovered
+   rather than closed; only a connection whose RESET fails (unreachable server)
+   is closed. *)
 let release t conn =
   if t.closed then begin
     Conn.close conn;
     Eio.Semaphore.release t.permits
   end
   else begin
-    let reusable =
-      match Conn.server_state conn with
-      | state when State.failed state -> false
-      | _ -> ( match Conn.reset conn with Ok () -> true | Error _ -> false)
-    in
+    let reusable = match Conn.reset conn with Ok () -> true | Error _ -> false in
     let outcome =
       with_lock t.mutex (fun () ->
           if t.closed then `Close

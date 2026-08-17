@@ -619,6 +619,17 @@ let route_extra received =
       extra
   | _ -> fail "expected a ROUTE message"
 
+(* The bookmarks of the ROUTE message (its second field). *)
+let route_bookmarks received =
+  match Packstream.unpack (List.hd !received) with
+  | Ok
+      (Packstream.Structure (0x66, [ Packstream.Map _; Packstream.List bookmarks; Packstream.Map _ ]))
+    ->
+      List.map
+        (function Packstream.String b -> b | _ -> fail "expected a string bookmark")
+        bookmarks
+  | _ -> fail "expected a ROUTE message"
+
 (* A default-database acquire resolves the home database from the ROUTE
    response's [db] field and caches it: the second acquire reuses it (and the
    aliased home-database table) without a new ROUTE. *)
@@ -849,10 +860,94 @@ let update_table_captures_home_db () =
       | Error e -> fail (Errors.to_string e));
       Cluster.close cluster)
 
+(* The cached table is visible through routing_table_of only after a fetch; a
+   forced update stores the table (with the ROUTE bookmarks on the wire), and a
+   following acquire uses its readers. *)
+let routing_table_of_returns_cached () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt ~db:"adb" [ a ] [ b ] [ b ]) ] ]
+          );
+        ];
+        (* reader B: one pool connection *)
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
+          clock
+      in
+      check bool "no table before the first fetch" true
+        (Cluster.routing_table_of cluster ~database:None = None);
+      (match
+         Cluster.force_routing_table_update cluster ~database:(Some "adb") ~bookmarks:[ "bm" ]
+       with
+      | Ok () -> ()
+      | Error e -> fail (Errors.to_string e));
+      check bool "forced update stored the table" true
+        (match Cluster.routing_table_of cluster ~database:(Some "adb") with
+        | Some table -> Routing_table.database table = Some "adb"
+        | None -> false);
+      check bool "the requested bookmarks went out on the ROUTE" true
+        (route_bookmarks (List.nth received 0) = [ "bm" ]);
+      let c1 =
+        match Cluster.acquire cluster ~mode:Config.Read ~database:(Some "adb") ~imp_user:None with
+        | Ok (conn, _) -> conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "acquire uses the forced table's readers" (List.nth ports 1)
+        (Addressing.port (Conn.address c1));
+      check int "no new ROUTE for a fresh forced table" 1
+        (count_tag 0x66 (tags (List.nth received 0)));
+      Cluster.release cluster c1;
+      Cluster.close cluster)
+
+(* A failed forced update returns the error and stores nothing. *)
+let force_routing_table_update_failure () =
+  let received = ref [] in
+  Test_mock.with_servers 1
+    (fun _ports ->
+      [
+        [
+          ( (5, 0),
+            received,
+            [
+              Test_mock.Success; Test_mock.Failure ("Neo.ClientError.Request.Invalid", "route down");
+            ] );
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
+          clock
+      in
+      (match Cluster.force_routing_table_update cluster ~database:(Some "adb") ~bookmarks:[] with
+      | Ok () -> fail "expected the forced update to fail"
+      | Error _ -> ());
+      check bool "failed forced update stores no table" true
+        (Cluster.routing_table_of cluster ~database:(Some "adb") = None);
+      Cluster.close cluster)
+
 let tests =
   [
     ( "[Cluster] acquire falls back to the next router",
       [ test_case "router ROUTE failure" `Quick acquire_falls_back_to_next_router ] );
+    ( "[Cluster] routing table is readable before and after a fetch",
+      [ test_case "routing_table_of + forced update" `Quick routing_table_of_returns_cached ] );
+    ( "[Cluster] forced update failure stores nothing",
+      [ test_case "error surfaced, table untouched" `Quick force_routing_table_update_failure ] );
     ( "[Cluster] deactivate on DatabaseUnavailable",
       [ test_case "address dropped on db-down" `Quick deactivate_on_database_unavailable ] );
     ( "[Cluster] remove writer on NotALeader",

@@ -50,6 +50,17 @@ val update_table : t -> database:string option -> imp_user:string option -> Pack
     cached fetch error. The table's [db] field (the server's home database) is cached for [imp_user]
     so default-database sessions can reuse it without a ROUTE. Malformed values are ignored. *)
 
+val routing_table_of : t -> database:string option -> Routing_table.t option
+(** The cached routing table for [database], if any (no fetch; read under the lock). Test-support
+    API for the TestKit backend ([GetRoutingTable]). *)
+
+val force_routing_table_update :
+  t -> database:string option -> bookmarks:string list -> (unit, Errors.t) result
+(** Fetch a fresh routing table for [database] via the routers, bypassing the freshness and
+    negative-cache checks, and store it (refreshing [routers] and clearing a cached fetch error).
+    Bounded by the pool's [connection_acquisition_timeout]. Test-support API for the TestKit backend
+    ([ForcedRoutingTableUpdate]). *)
+
 val release : t -> Conn.t -> unit
 (** Return a connection to its pool (found via the connection's address; a connection whose pool is
     unknown is closed instead). *)

@@ -611,6 +611,57 @@ let result_single_optional fields =
   in
   ("RecordOptional", `Assoc [ ("record", record); ("warnings", `List []) ])
 
+(* --- Routing table (test-support) --- *)
+
+(* The driver's cached routing table for a database, or the empty shape for a
+   direct [bolt://] driver / before the first fetch (like the Python backend). *)
+let get_routing_table fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  let database = opt_string "database" fields in
+  let table = Driver.get_routing_table driver.driver ~database in
+  let db_json = function Some d -> `String d | None -> `Null in
+  let addresses =
+   fun addresses -> `List (List.map (fun a -> `String (Addressing.to_string a)) addresses)
+  in
+  match table with
+  | None ->
+      ( "RoutingTable",
+        `Assoc
+          [
+            ("database", db_json database);
+            ("ttl", `Int 0);
+            ("routers", `List []);
+            ("readers", `List []);
+            ("writers", `List []);
+          ] )
+  | Some table ->
+      ( "RoutingTable",
+        `Assoc
+          [
+            ("database", db_json (Routing_table.database table));
+            ("ttl", `Int (Routing_table.ttl_seconds table));
+            ("routers", addresses (Routing_table.routers table));
+            ("readers", addresses (Routing_table.readers table));
+            ("writers", addresses (Routing_table.writers table));
+          ] )
+
+(* Force a fresh fetch of the routing table for a database (bookmarks optional)
+   and report the driver; a failed fetch is a driver error. *)
+let forced_routing_table_update fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  let database = opt_string "database" fields in
+  let bookmarks =
+    match List.assoc_opt "bookmarks" fields with
+    | Some (`List bookmarks) ->
+        List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) bookmarks
+    | _ -> []
+  in
+  match Driver.force_routing_table_update driver.driver ~database ~bookmarks with
+  | Ok () -> ("Driver", `Assoc [ ("id", `Int id) ])
+  | Error error -> raise (Driver_error error)
+
 let handle ctx name data =
   let fields =
     match data with `Assoc fields -> fields | _ -> raise (Backend_error "data is not an object")
@@ -639,6 +690,8 @@ let handle ctx name data =
   | "TransactionRollback" -> Some (transaction_rollback ctx fields)
   | "TransactionClose" -> Some (transaction_close ctx fields)
   | "SessionLastBookmarks" -> Some (session_last_bookmarks fields)
+  | "GetRoutingTable" -> Some (get_routing_table fields)
+  | "ForcedRoutingTableUpdate" -> Some (forced_routing_table_update fields)
   | "ResolverResolutionCompleted" -> resolver_resolution_completed fields
   | _ -> raise (Backend_error ("No request handler for " ^ name))
 

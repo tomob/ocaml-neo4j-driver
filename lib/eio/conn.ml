@@ -288,10 +288,14 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
           | Config.Write -> None);
         Option.map (fun db -> ("db", Packstream.String db)) db;
         Option.map (fun user -> ("imp_user", Packstream.String user)) imp_user;
-        Option.map
-          (fun bookmarks ->
-            ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)))
-          bookmarks;
+        (* Like the Python driver, an empty bookmark list is omitted from the
+           extra map (the server defaults to no bookmarks). *)
+        Option.bind bookmarks (fun bookmarks ->
+            match bookmarks with
+            | [] -> None
+            | _ ->
+                Some
+                  ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)));
         Option.map
           (fun seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))))
           timeout;
@@ -301,7 +305,10 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
   Packstream.Map items
 
 let run ?mode ?db ?bookmarks ?timeout ?metadata t ~hydration ~query ~parameters =
-  t.last_database := db;
+  (* Like the Python driver, the connection's last database is only updated
+     outside a transaction: inside one the BEGIN's database stays authoritative
+     (a tx RUN does not carry [db]). *)
+  if !(t.state) <> State.Tx_ready_or_tx_streaming then t.last_database := db;
   let parameters =
     Packstream.Map
       (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)) parameters)
@@ -431,6 +438,16 @@ let rec drain_stream s =
   if has_more s then match pull_stream s with Ok _ -> drain_stream s | Error _ -> ()
 
 let begin_ t ~extra =
+  (* A transaction pins the connection to a database (its BEGIN extra's [db]).
+     Like the Python driver, BEGIN records it as the connection's last
+     database, so a failure inside the transaction (e.g. NotALeader) is keyed
+     to the right database. *)
+  (match extra with
+  | Packstream.Map fields -> (
+      match List.assoc_opt "db" fields with
+      | Some (Packstream.String db) -> t.last_database := Some db
+      | _ -> ())
+  | _ -> ());
   let re_auth = re_auth_of t.major t.minor in
   let* _ = request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra) in
   Ok ()
