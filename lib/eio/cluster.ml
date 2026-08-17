@@ -22,6 +22,7 @@ let ( let* ) = Result.bind
 type t = {
   pool_config : Config.pool_config;
   connect : Addressing.t -> (Conn.t, Errors.t) result;
+  connect_routing : Addressing.t -> (Conn.t, Errors.t) result;
   resolver : (Addressing.t -> (Addressing.t list, Errors.t) result) option;
   routing_context : (string * string) list;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
@@ -43,10 +44,11 @@ type t = {
    don't all retry immediately after a router failure. *)
 let negative_ttl = 5.0
 
-let create ?resolver ~pool_config ~connect ~routing_context ~initial clock =
+let create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial clock =
   {
     pool_config;
     connect;
+    connect_routing;
     resolver;
     routing_context;
     clock;
@@ -109,7 +111,8 @@ let fetch_routers cluster =
 
 (* Full address deactivation (under the lock): drop [addr] from every routing
    table and close its pool, so future acquires skip it until a refresh
-   re-lists it. *)
+   re-lists it (the next fetch may then retry the address, e.g. a server that
+   came back). *)
 let deactivate cluster addr =
   with_lock cluster (fun () ->
       let key = Addressing.to_string addr in
@@ -131,7 +134,8 @@ let deactivate cluster addr =
       | None -> ())
 
 (* Drop [addr] from the [writers] of [database] (a NotALeader / read-only
-   failure), leaving the pool and the other roles untouched. *)
+   failure), leaving the pool and the other roles untouched: the next ROUTE
+   fetch may re-list it and the driver retries it. *)
 let on_write_failure cluster ~database addr =
   with_lock cluster (fun () ->
       match Hashtbl.find_opt cluster.tables database with
@@ -195,12 +199,31 @@ let routing_conn cluster addr =
   match Hashtbl.find_opt cluster.routing key with
   | Some conn -> Ok conn
   | None -> (
-      match cluster.connect addr with
+      match cluster.connect_routing addr with
       | Error error -> Error error
       | Ok conn ->
           Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
           Hashtbl.add cluster.routing key conn;
           Ok conn)
+
+(* Whether [addr] appears among the readers or writers of [table] (i.e. the
+   server doubles as a data node). *)
+let addr_is_data_server _cluster addr table =
+  let key = Addressing.to_string addr in
+  List.mem key (List.map Addressing.to_string (Routing_table.readers table))
+  || List.mem key (List.map Addressing.to_string (Routing_table.writers table))
+
+(* A router that also serves data makes its routing connection available to the
+   data pool too: the server (a stub serves one connection at a time) expects
+   the ROUTE and a later data query on the same connection. The connection stays
+   registered for further ROUTEs, so it is shared between the routing fetch and
+   the data pool (only one of them uses it at a time). *)
+let hand_routing_to_pool cluster addr =
+  with_lock cluster (fun () ->
+      let key = Addressing.to_string addr in
+      match Hashtbl.find_opt cluster.routing key with
+      | Some conn -> Pool.put_conn (pool_for cluster addr) conn
+      | None -> ())
 
 (* Fetch a fresh routing table for [database], trying each router in turn on a
    reused routing connection: a router that fails to connect, answers ROUTE
@@ -242,9 +265,15 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error ret
           in
           match result with
           | Ok table when Routing_table.routers table <> [] && Routing_table.readers table <> [] ->
+              (* A router that also serves data (it is listed among the table's
+                 readers or writers) hands its routing connection to the data
+                 pool: the server expects the ROUTE and the data query on the
+                 same connection. *)
+              if addr_is_data_server cluster addr table then hand_routing_to_pool cluster addr;
               Ok table
           | Ok _ ->
-              deactivate cluster addr;
+              (* An unusable table (no routers or readers) is not the router's
+                 fault: keep the connection and try the next router. *)
               fetch_table_locked cluster ~database ~imp_user ~bookmarks
                 (Some (Errors.Service_unavailable "invalid routing table")) false rest
           | Error error -> (
@@ -299,24 +328,26 @@ let cached_error cluster ~database =
 let store_table cluster ~database table =
   Hashtbl.replace cluster.tables database (table, now cluster);
   cluster.routers <- Routing_table.routers table;
-  Hashtbl.remove cluster.errors database
-
+  Hashtbl.remove cluster.errors database;
+  table
 (* Apply an [rt] routing table received from the server (SSR) for [database]:
    parse it and, when valid, replace the cached table (fresh timestamp),
    refresh [routers] and clear a cached fetch error. The table's [db] field is
    the server's home database: it is cached for [imp_user] and the table is
    stored under the home database too, so default-database sessions resolve to
    it without a ROUTE. Malformed values are ignored. *)
+
 let update_table cluster ~database ~imp_user rt =
   match Routing_table.parse rt with
   | Some table ->
-      with_lock cluster (fun () ->
-          (match Routing_table.database table with
-          | Some home_db ->
-              set_home_db cluster imp_user home_db;
-              Hashtbl.replace cluster.tables (Some home_db) (table, now cluster)
-          | None -> ());
-          store_table cluster ~database table)
+      ignore
+        (with_lock cluster (fun () ->
+             (match Routing_table.database table with
+             | Some home_db ->
+                 set_home_db cluster imp_user home_db;
+                 Hashtbl.replace cluster.tables (Some home_db) (table, now cluster)
+             | None -> ());
+             store_table cluster ~database table))
   | None -> ()
 
 (* Resolve the routing table for [database]. The lock is held only for the fast
@@ -360,34 +391,50 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
       in
       with_lock cluster (fun () ->
           match result with
-          | Ok table -> store_table cluster ~database table
-          | Error error -> Hashtbl.replace cluster.errors database (error, now cluster));
-      result
+          | Ok table -> Ok (store_table cluster ~database table)
+          | Error error ->
+              Hashtbl.replace cluster.errors database (error, now cluster);
+              result)
 
 (* Select the next address of the role matching [mode] from a routing table
    (already resolved) and its pool: round-robin per (database, mode), like the
    Python driver, so consecutive sessions spread across the cluster instead of
    piling up on the first address. *)
-let select_from_table cluster ~database ~mode table =
+(* The addresses of the role matching [mode] in [table], paired with their
+   pools and rotated round-robin per (database, mode) so consecutive sessions
+   spread across the cluster instead of piling up on the first address. *)
+let role_addresses cluster ~database ~mode table =
   with_lock cluster (fun () ->
       let addresses =
         match mode with
         | Config.Read -> Routing_table.readers table
         | Config.Write -> Routing_table.writers table
       in
-      match addresses with
-      | [] -> Error (Errors.Service_unavailable "routing table has no suitable address")
-      | [ addr ] -> Ok (addr, pool_for cluster addr)
-      | _ ->
-          let key =
-            (match mode with Config.Read -> "r" | Config.Write -> "w")
-            ^ ":"
-            ^ match database with Some db -> db | None -> ""
-          in
-          let index = Option.value ~default:0 (Hashtbl.find_opt cluster.rr key) in
-          Hashtbl.replace cluster.rr key (index + 1);
-          let addr = List.nth addresses (index mod List.length addresses) in
-          Ok (addr, pool_for cluster addr))
+      let rotated =
+        match addresses with
+        | [] | [ _ ] -> addresses
+        | _ ->
+            let key =
+              (match mode with Config.Read -> "r" | Config.Write -> "w")
+              ^ ":"
+              ^ match database with Some db -> db | None -> ""
+            in
+            let index = Option.value ~default:0 (Hashtbl.find_opt cluster.rr key) in
+            Hashtbl.replace cluster.rr key (index + 1);
+            let rec drop i = function
+              | [] -> []
+              | l when i = 0 -> l
+              | _ :: rest -> drop (i - 1) rest
+            in
+            let rec take i acc = function
+              | [] -> List.rev acc
+              | _ when i = 0 -> List.rev acc
+              | x :: rest -> take (i - 1) (x :: acc) rest
+            in
+            drop (index mod List.length addresses) addresses
+            @ take (index mod List.length addresses) [] addresses
+      in
+      List.map (fun addr -> (addr, pool_for cluster addr)) rotated)
 
 (* Resolve the effective database for [database] and the routing table to use:
    a fixed database is used as-is (the effective database equals it); the
@@ -423,19 +470,50 @@ let acquire cluster ~mode ~database ~imp_user ~bookmarks =
     Eio.Time.Timeout.run_exn
       (Eio.Time.Timeout.seconds cluster.clock cluster.pool_config.connection_acquisition_timeout)
       (fun () ->
-        let rec attempt () =
+        (* An acquire may drop and refetch a table whose role is empty (the
+           router may have been updated), but only a bounded number of times,
+           so an acquire whose role stays empty fails fast instead of spinning
+           until the acquisition timeout; the caller (a managed transaction or
+           an auto-commit query) then retries. *)
+        let max_refetches = 1 in
+        let rec attempt refetches =
           let* table, effective = resolve_for cluster ~database ~mode ~imp_user ~bookmarks in
-          let* addr, pool = select_from_table cluster ~database:effective ~mode table in
-          match Pool.acquire pool with
-          | Ok conn -> Ok (conn, effective)
-          | Error (Errors.Service_unavailable _) ->
-              (* The server is unreachable: deactivate the address and try
-                         the next one (bounded by the acquisition timeout). *)
-              deactivate cluster addr;
-              attempt ()
-          | Error error -> Error error
+          let candidates = role_addresses cluster ~database:effective ~mode table in
+          match candidates with
+          | [] ->
+              (* The table has no address for the mode: drop it and refetch —
+                 the router may now serve a fresh table with the missing role —
+                 but only a bounded number of times, so an acquire whose role
+                 stays empty fails fast instead of spinning until the
+                 acquisition timeout. *)
+              if refetches < max_refetches then begin
+                with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
+                attempt (refetches + 1)
+              end
+              else Error (Errors.Service_unavailable "routing table has no suitable address")
+          | _ ->
+              (* Try each address of the role in turn: an unreachable server is
+                 deactivated and, when every address of the table fails, the
+                 table is dropped and refetched (a fresh fetch may list a new
+                 server), still bounded by [max_refetches]. *)
+              let rec try_candidates = function
+                | [] ->
+                    if refetches < max_refetches then begin
+                      with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
+                      attempt (refetches + 1)
+                    end
+                    else Error (Errors.Service_unavailable "routing table has no suitable address")
+                | (addr, pool) :: rest -> (
+                    match Pool.acquire pool with
+                    | Ok conn -> Ok (conn, effective)
+                    | Error (Errors.Service_unavailable _) ->
+                        deactivate cluster addr;
+                        try_candidates rest
+                    | Error error -> Error error)
+              in
+              try_candidates candidates
         in
-        attempt ())
+        attempt 0)
   with Eio.Time.Timeout ->
     Error (Errors.Connection_acquisition_timeout "Timed out acquiring a connection")
 
@@ -466,7 +544,7 @@ let force_routing_table_update cluster ~database ~bookmarks =
           fetch_table cluster ~database ~imp_user:None ~bookmarks None (fetch_routers cluster)
         with
         | Ok table ->
-            with_lock cluster (fun () -> store_table cluster ~database table);
+            ignore (with_lock cluster (fun () -> store_table cluster ~database table));
             Ok ()
         | Error _ as error -> error)
   with Eio.Time.Timeout ->

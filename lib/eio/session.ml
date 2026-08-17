@@ -110,6 +110,18 @@ let mark_bookmark t = function
       | _ -> ())
   | _ -> ()
 
+let now t = Eio.Time.Mono.now t.clock
+let elapsed_s t t0 = Mtime.Span.to_float_ns (Mtime.span (now t) t0) /. 1_000_000_000.
+
+(* The jittered backoff delays of the Python driver's retry_delay_generator. *)
+let retry_delay_generator config =
+  let delay = ref config.initial_retry_delay in
+  fun () ->
+    let jitter = config.retry_delay_jitter_factor *. !delay in
+    let value = !delay -. jitter +. (2. *. jitter *. Random.float 1.0) in
+    delay := !delay *. config.retry_delay_multiplier;
+    value
+
 let run ?timeout ?metadata t ~query ~parameters =
   let* conn = conn t in
   (* A new auto-commit query cannot start while the previous result is still
@@ -149,10 +161,20 @@ let begin_transaction_mode ?metadata ?timeout t ~mode =
           ?metadata ~bookmarks:!(t.bookmarks) ()
       in
       match Tx.begin_transaction conn ~extra with
-      | Error _ as error -> error
       | Ok tx ->
           t.current_tx := Some tx;
-          Ok tx)
+          Ok tx
+      | Error _ as error ->
+          (* A failed BEGIN (e.g. a connection-level error on a connection whose
+             server has gone away) leaves the connection unusable: drop it so
+             the next operation reconnects instead of reusing it. *)
+          (match error with
+          | Ok _ -> ()
+          | Error (Errors.Neo4j _) -> ()
+          | Error _ ->
+              t.conn := None;
+              t.release conn);
+          error)
 
 let begin_transaction ?metadata ?timeout t =
   begin_transaction_mode ?metadata ?timeout t ~mode:t.config.access_mode
@@ -164,18 +186,6 @@ let last_bookmarks t = !(t.bookmarks)
 let mark_tx_ended t ~bookmark =
   (match bookmark with Some b -> t.bookmarks := [ b ] | None -> ());
   t.current_tx := None
-
-let now t = Eio.Time.Mono.now t.clock
-let elapsed_s t t0 = Mtime.Span.to_float_ns (Mtime.span (now t) t0) /. 1_000_000_000.
-
-(* The jittered backoff delays of the Python driver's retry_delay_generator. *)
-let retry_delay_generator config =
-  let delay = ref config.initial_retry_delay in
-  fun () ->
-    let jitter = config.retry_delay_jitter_factor *. !delay in
-    let value = !delay -. jitter +. (2. *. jitter *. Random.float 1.0) in
-    delay := !delay *. config.retry_delay_multiplier;
-    value
 
 let execute t ~mode ?metadata ?timeout work =
   let t0 = now t in
@@ -202,16 +212,30 @@ let execute t ~mode ?metadata ?timeout work =
         t.release conn
   in
   let rec attempt () =
-    let* tx = begin_tx () in
-    match work tx with
-    | Ok () -> (
-        match Tx.commit tx with
-        | Ok bookmark ->
-            (match bookmark with Some b -> t.bookmarks := [ b ] | None -> ());
+    match begin_tx () with
+    | Ok tx -> (
+        match work tx with
+        | Ok () -> (
+            match Tx.commit tx with
+            | Ok bookmark ->
+                (match bookmark with Some b -> t.bookmarks := [ b ] | None -> ());
+                t.current_tx := None;
+                reconnect ();
+                Ok ()
+            | Error error ->
+                ignore (Tx.rollback tx);
+                t.current_tx := None;
+                reconnect ();
+                if Errors.is_retryable error && within_budget () then (
+                  retry ();
+                  attempt ())
+                else Error (Driver error))
+        | Error Client ->
+            ignore (Tx.rollback tx);
             t.current_tx := None;
             reconnect ();
-            Ok ()
-        | Error error ->
+            Error Client
+        | Error (Driver error) ->
             ignore (Tx.rollback tx);
             t.current_tx := None;
             reconnect ();
@@ -219,19 +243,13 @@ let execute t ~mode ?metadata ?timeout work =
               retry ();
               attempt ())
             else Error (Driver error))
-    | Error Client ->
-        ignore (Tx.rollback tx);
-        t.current_tx := None;
+    | Error (Driver error) when Errors.is_retryable error && within_budget () ->
+        (* Acquiring the connection failed (e.g. no address available for the
+           mode): retry without running the unit of work. *)
         reconnect ();
-        Error Client
-    | Error (Driver error) ->
-        ignore (Tx.rollback tx);
-        t.current_tx := None;
-        reconnect ();
-        if Errors.is_retryable error && within_budget () then (
-          retry ();
-          attempt ())
-        else Error (Driver error)
+        retry ();
+        attempt ()
+    | Error _ as error -> error
   in
   attempt ()
 

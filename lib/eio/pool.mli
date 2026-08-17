@@ -22,6 +22,8 @@ val in_use_count : t -> int
     balance across addresses). *)
 
 val acquire : t -> (Conn.t, Errors.t) result
+
+val put_conn : t -> Conn.t -> unit
 (** Get a connection, reusing an idle one (lifetime- and liveness-checked) or creating a new one.
     @return
       [Error (Errors.Connection_acquisition_timeout _)] if no connection becomes available within

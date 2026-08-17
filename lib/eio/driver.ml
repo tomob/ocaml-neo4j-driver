@@ -26,6 +26,26 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~poo
      driver, which prepends "address" at pool creation): the server uses it for
      routing policies and it is echoed back on ROUTE. *)
   let routing_context = ("address", Addressing.to_string initial) :: parsed.routing_context in
+  (* The address resolver is applied by the cluster's fetch (fetch_routers),
+     which turns each seed into concrete addresses; the routing connection only
+     resolves hostnames among those via the domain-name resolver. Data-pool
+     connections (readers/writers) do resolve addresses, since a routing table
+     may list addresses a custom resolver maps to real servers. *)
+  let connect_routing addr =
+    let config =
+      Conn.
+        {
+          host = Addressing.host addr;
+          port = Addressing.port addr;
+          scheme = parsed.scheme;
+          connection_timeout;
+          user_agent;
+          auth;
+          routing_context = Some routing_context;
+        }
+    in
+    Conn.connect ?domain_name_resolver net clock sw config
+  in
   let connect addr =
     let config =
       Conn.
@@ -39,12 +59,11 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~poo
           routing_context = Some routing_context;
         }
     in
-    (* The address resolver is applied by the cluster's fetch (fetch_routers),
-       which turns each seed into concrete addresses; the connection only
-       resolves hostnames among those via the domain-name resolver. *)
-    Conn.connect ?domain_name_resolver net clock sw config
+    Conn.connect ?resolver ?domain_name_resolver net clock sw config
   in
-  let cluster = Cluster.create ?resolver ~pool_config ~connect ~routing_context ~initial clock in
+  let cluster =
+    Cluster.create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial clock
+  in
   Ok (Cluster cluster)
 
 (* The connection pool for a direct [bolt://] URI. *)

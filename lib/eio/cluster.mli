@@ -12,6 +12,7 @@ val create :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
   pool_config:Config.pool_config ->
   connect:(Addressing.t -> (Conn.t, Errors.t) result) ->
+  connect_routing:(Addressing.t -> (Conn.t, Errors.t) result) ->
   routing_context:(string * string) list ->
   initial:Addressing.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->

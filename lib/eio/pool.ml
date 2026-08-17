@@ -112,6 +112,15 @@ let acquire t =
                 Eio.Semaphore.release t.permits;
                 error))
 
+(* Hand an already-established connection to the pool as an idle connection,
+   without acquiring a permit (the connection never held one). Used to recycle
+   a routing connection whose server also serves data (the routing fetch and a
+   subsequent data query then share one connection, as the server expects).
+   When the pool is closed the connection is dropped. *)
+let put_conn t conn =
+  with_lock t.mutex (fun () ->
+      if t.closed then Conn.close conn else Queue.push (conn, now t) t.idle)
+
 (* Return [conn] to the pool. A second release of the same connection (already
    idle) is a no-op: it is not queued again and no permit is released, so the
    permit count cannot exceed [max_connection_pool_size]. Like the Python
