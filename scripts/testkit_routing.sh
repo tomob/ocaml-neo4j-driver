@@ -33,6 +33,9 @@ die() {
   exit 1
 }
 
+# shellcheck source=lib/testkit_backend.sh
+source "${REPO_ROOT}/scripts/lib/testkit_backend.sh"
+
 [ -x "$PY" ] || die "no venv python at $PY (install the testkit dependencies first)"
 [ -d "$NEO4J_TESTKIT_DIR/nutkit" ] || die "NEO4J_TESTKIT_DIR does not look like a testkit checkout"
 
@@ -45,22 +48,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== Building the testkit backend (dune) ==="
-dune build testkitbackend/testkitbackend.exe
-[ -x "$BACKEND_BINARY" ] || die "backend executable not found at $BACKEND_BINARY"
-
-echo "=== Starting the testkit backend locally (port ${TESTKIT_BACKEND_PORT}) ==="
-TESTKIT_BACKEND_PORT="${TESTKIT_BACKEND_PORT}" "${BACKEND_BINARY}" &
-backend_pid=$!
-
-for _ in $(seq 1 100); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/${TESTKIT_BACKEND_PORT}") 2>/dev/null; then
-    exec 3>&- 3<&-
-    break
-  fi
-  sleep 0.1
-done
-kill -0 "${backend_pid}" 2>/dev/null || die "backend exited before the suite ran"
+testkit_backend_start
 
 echo "=== Running the TestKit stub routing suite ==="
 cd "${NEO4J_TESTKIT_DIR}"

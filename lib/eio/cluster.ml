@@ -215,6 +215,13 @@ let cached_error cluster ~database =
   | Some (error, failed_at) when elapsed_s cluster failed_at <= negative_ttl -> Some error
   | _ -> None
 
+(* Store [table] as the fresh cached routing table for [database], refreshing
+   [routers] and clearing a cached fetch error (caller holds the lock). *)
+let store_table cluster ~database table =
+  Hashtbl.replace cluster.tables database (table, now cluster);
+  cluster.routers <- Routing_table.routers table;
+  Hashtbl.remove cluster.errors database
+
 (* Apply an [rt] routing table received from the server (SSR) for [database]:
    parse it and, when valid, replace the cached table (fresh timestamp),
    refresh [routers] and clear a cached fetch error. The table's [db] field is
@@ -230,9 +237,7 @@ let update_table cluster ~database ~imp_user rt =
               set_home_db cluster imp_user home_db;
               Hashtbl.replace cluster.tables (Some home_db) (table, now cluster)
           | None -> ());
-          Hashtbl.replace cluster.tables database (table, now cluster);
-          cluster.routers <- Routing_table.routers table;
-          Hashtbl.remove cluster.errors database)
+          store_table cluster ~database table)
   | None -> ()
 
 (* Resolve the routing table for [database]. The lock is held only for the fast
@@ -275,10 +280,7 @@ let rec resolve_table cluster ~database ~mode ~imp_user =
       in
       with_lock cluster (fun () ->
           match result with
-          | Ok table ->
-              Hashtbl.replace cluster.tables database (table, now cluster);
-              cluster.routers <- Routing_table.routers table;
-              Hashtbl.remove cluster.errors database
+          | Ok table -> store_table cluster ~database table
           | Error error -> Hashtbl.replace cluster.errors database (error, now cluster));
       result
 
@@ -373,10 +375,7 @@ let force_routing_table_update cluster ~database ~bookmarks =
       (fun () ->
         match fetch_table cluster ~database ~imp_user:None ~bookmarks None cluster.routers with
         | Ok table ->
-            with_lock cluster (fun () ->
-                Hashtbl.replace cluster.tables database (table, now cluster);
-                cluster.routers <- Routing_table.routers table;
-                Hashtbl.remove cluster.errors database);
+            with_lock cluster (fun () -> store_table cluster ~database table);
             Ok ()
         | Error _ as error -> error)
   with Eio.Time.Timeout ->
