@@ -33,7 +33,6 @@ type t = {
   in_flight : (string option, bool) Hashtbl.t;
   pools : (string, Pool.t) Hashtbl.t;
   routing : (string, Conn.t) Hashtbl.t;
-  rr : (string, int) Hashtbl.t;
   home_dbs : (string option, string * Mtime.t) Hashtbl.t;
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
@@ -59,7 +58,6 @@ let create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~in
     in_flight = Hashtbl.create 4;
     pools = Hashtbl.create 4;
     routing = Hashtbl.create 4;
-    rr = Hashtbl.create 4;
     home_dbs = Hashtbl.create 4;
     lock = Eio.Mutex.create ();
     cond = Eio.Condition.create ();
@@ -396,45 +394,31 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
               Hashtbl.replace cluster.errors database (error, now cluster);
               result)
 
-(* Select the next address of the role matching [mode] from a routing table
-   (already resolved) and its pool: round-robin per (database, mode), like the
-   Python driver, so consecutive sessions spread across the cluster instead of
-   piling up on the first address. *)
-(* The addresses of the role matching [mode] in [table], paired with their
-   pools and rotated round-robin per (database, mode) so consecutive sessions
-   spread across the cluster instead of piling up on the first address. *)
-let role_addresses cluster ~database ~mode table =
+(* Load of an address: in-use connections of its pool, or 0 if no pool exists
+   yet (pools are created lazily for the chosen address only). *)
+let load_of cluster addr =
+  match Hashtbl.find_opt cluster.pools (Addressing.to_string addr) with
+  | Some pool -> Pool.in_use_count pool
+  | None -> 0
+
+(* Select the least-loaded address of the role matching [mode] from a routing
+   table (already resolved) and its pool: fewest in-use connections first, ties
+   broken by list order, like the Python driver's [_select_address]. [exclude]
+   lists addresses already tried for this resolve (a deactivated server), so
+   the next least-loaded one is picked without a refetch. *)
+let select_from_table ?(exclude = []) cluster ~mode table =
   with_lock cluster (fun () ->
       let addresses =
         match mode with
         | Config.Read -> Routing_table.readers table
         | Config.Write -> Routing_table.writers table
       in
-      let rotated =
-        match addresses with
-        | [] | [ _ ] -> addresses
-        | _ ->
-            let key =
-              (match mode with Config.Read -> "r" | Config.Write -> "w")
-              ^ ":"
-              ^ match database with Some db -> db | None -> ""
-            in
-            let index = Option.value ~default:0 (Hashtbl.find_opt cluster.rr key) in
-            Hashtbl.replace cluster.rr key (index + 1);
-            let rec drop i = function
-              | [] -> []
-              | l when i = 0 -> l
-              | _ :: rest -> drop (i - 1) rest
-            in
-            let rec take i acc = function
-              | [] -> List.rev acc
-              | _ when i = 0 -> List.rev acc
-              | x :: rest -> take (i - 1) (x :: acc) rest
-            in
-            drop (index mod List.length addresses) addresses
-            @ take (index mod List.length addresses) [] addresses
+      let addresses =
+        List.filter (fun a -> not (List.mem (Addressing.to_string a) exclude)) addresses
       in
-      List.map (fun addr -> (addr, pool_for cluster addr)) rotated)
+      match Routing_table.least_loaded ~load:(load_of cluster) addresses with
+      | Some addr -> Ok (addr, pool_for cluster addr)
+      | None -> Error (Errors.Service_unavailable "routing table has no suitable address"))
 
 (* Resolve the effective database for [database] and the routing table to use:
    a fixed database is used as-is (the effective database equals it); the
@@ -478,40 +462,28 @@ let acquire cluster ~mode ~database ~imp_user ~bookmarks =
         let max_refetches = 1 in
         let rec attempt refetches =
           let* table, effective = resolve_for cluster ~database ~mode ~imp_user ~bookmarks in
-          let candidates = role_addresses cluster ~database:effective ~mode table in
-          match candidates with
-          | [] ->
-              (* The table has no address for the mode: drop it and refetch —
-                 the router may now serve a fresh table with the missing role —
-                 but only a bounded number of times, so an acquire whose role
-                 stays empty fails fast instead of spinning until the
-                 acquisition timeout. *)
-              if refetches < max_refetches then begin
-                with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
-                attempt (refetches + 1)
-              end
-              else Error (Errors.Service_unavailable "routing table has no suitable address")
-          | _ ->
-              (* Try each address of the role in turn: an unreachable server is
-                 deactivated and, when every address of the table fails, the
-                 table is dropped and refetched (a fresh fetch may list a new
-                 server), still bounded by [max_refetches]. *)
-              let rec try_candidates = function
-                | [] ->
-                    if refetches < max_refetches then begin
-                      with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
-                      attempt (refetches + 1)
-                    end
-                    else Error (Errors.Service_unavailable "routing table has no suitable address")
-                | (addr, pool) :: rest -> (
-                    match Pool.acquire pool with
-                    | Ok conn -> Ok (conn, effective)
-                    | Error (Errors.Service_unavailable _) ->
-                        deactivate cluster addr;
-                        try_candidates rest
-                    | Error error -> Error error)
-              in
-              try_candidates candidates
+          (* Try the least-loaded address of the role; an unreachable server is
+             deactivated and the next least-loaded one of the same table is
+             tried (no refetch — a fresh fetch would re-list the failed
+             server). When every address fails, the table is dropped and
+             refetched, bounded by [max_refetches]. *)
+          let rec try_select tried =
+            match select_from_table ~exclude:tried cluster ~mode table with
+            | Ok (addr, pool) -> (
+                match Pool.acquire pool with
+                | Ok conn -> Ok (conn, effective)
+                | Error (Errors.Service_unavailable _) ->
+                    deactivate cluster addr;
+                    try_select (Addressing.to_string addr :: tried)
+                | Error error -> Error error)
+            | Error _ ->
+                if refetches < max_refetches then begin
+                  with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
+                  attempt (refetches + 1)
+                end
+                else Error (Errors.Service_unavailable "routing table has no suitable address")
+          in
+          try_select []
         in
         attempt 0)
   with Eio.Time.Timeout ->
