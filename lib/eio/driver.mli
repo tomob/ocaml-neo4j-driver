@@ -43,9 +43,9 @@ val session : ?config:Session.config -> t -> Session.t
     [config] defaults to [Session.default_config]: write access, no database or impersonation, the
     Python retry defaults. *)
 
-val acquire : t -> (Conn.t, Errors.t) result
+val acquire : ?mode:Config.access_mode -> t -> (Conn.t, Errors.t) result
 (** A connection for driver-level operations (e.g. verify connectivity); return it with [release].
-    For a routed driver this uses write access and the default database. *)
+    For a routed driver this uses the default database and [mode] (default write access). *)
 
 val release : t -> Conn.t -> unit
 (** Return a connection acquired with [acquire] to the pool (or cluster). *)

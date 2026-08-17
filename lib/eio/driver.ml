@@ -106,13 +106,12 @@ let session ?config t =
   Session.create config ~clock:t.clock ~connect ~release ~on_rt ()
 
 (* A connection for driver-level operations (e.g. verify connectivity); return
-   it with [release]. *)
-let acquire t =
+   it with [release]. [mode] selects the connection role for routed drivers
+   (default [Write]; [Read] for read-only checks). *)
+let acquire ?(mode = Config.Write) t =
   match t.connection with
   | Cluster cluster -> (
-      match
-        Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None ~bookmarks:[]
-      with
+      match Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[] with
       | Ok (conn, _) -> Ok conn
       | Error error -> Error error)
   | Pool pool -> Pool.acquire pool

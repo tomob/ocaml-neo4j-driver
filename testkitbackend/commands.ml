@@ -367,9 +367,15 @@ let get_server_info fields =
 let check_multi_db_support fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  let conn = conn_of driver in
-  let major, _minor = Conn.version conn in
-  ("MultiDBSupport", `Assoc [ ("id", `Int id); ("available", `Bool (major >= 4)) ])
+  (* A lightweight connectivity check: acquire a connection for the default
+     database (a routed driver fetches a routing table and connects to a
+     reader); multi-db support is a Bolt 4+ protocol capability. *)
+  match Driver.acquire ~mode:Config.Read driver.driver with
+  | Ok conn ->
+      let major, _minor = Conn.version conn in
+      Driver.release driver.driver conn;
+      ("MultiDBSupport", `Assoc [ ("id", `Int id); ("available", `Bool (major >= 4)) ])
+  | Error error -> raise (Driver_error error)
 
 let decode_params fields =
   match List.assoc_opt "params" fields with
