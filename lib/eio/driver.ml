@@ -79,9 +79,10 @@ let connect ?resolver ~uri ~auth ?user_agent ?connection_timeout
 
 let session ?config t =
   let config = match config with Some config -> config | None -> Session.default_config in
-  let connect ~mode ~database =
+  let connect ~mode ~database ~bookmarks =
     match t.connection with
-    | Cluster cluster -> Cluster.acquire cluster ~mode ~database ~imp_user:config.impersonated_user
+    | Cluster cluster ->
+        Cluster.acquire cluster ~mode ~database ~imp_user:config.impersonated_user ~bookmarks
     | Pool pool -> (
         match Pool.acquire pool with Ok conn -> Ok (conn, database) | Error error -> Error error)
   in
@@ -104,7 +105,9 @@ let session ?config t =
 let acquire t =
   match t.connection with
   | Cluster cluster -> (
-      match Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None with
+      match
+        Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None ~bookmarks:[]
+      with
       | Ok (conn, _) -> Ok conn
       | Error error -> Error error)
   | Pool pool -> Pool.acquire pool

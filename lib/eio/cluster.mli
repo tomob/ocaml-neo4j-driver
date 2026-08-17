@@ -25,17 +25,19 @@ val acquire :
   mode:Config.access_mode ->
   database:string option ->
   imp_user:string option ->
+  bookmarks:string list ->
   (Conn.t * string option, Errors.t) result
 (** Get a connection for [mode] and [database]: the routing table (refreshed when stale) selects the
     least-loaded address (fewest in-use connections) among the matching role (readers for [Read],
     writers for [Write]) and a per-address pool serves the connection. [imp_user] (the session's
     impersonated user, [None] for the driver's own user) is sent with the ROUTE request (Bolt 4.4+)
-    and keys the home-db cache. The effective database is also returned: for a fixed [database] it
-    is that database; for the default database ([None]) it is the server's home database — resolved
-    from the ROUTE response's [db] field and cached per [imp_user] ([Some home_db] thereafter), or
-    taken from the cache when fresh. When the selected server is unreachable ([Service_unavailable])
-    it is deactivated and the next address is tried, bounded by the pool's
-    [connection_acquisition_timeout]. *)
+    and keys the home-db cache; [bookmarks] are sent with the ROUTE request too (the session's
+    bookmarks, or [] for a plain resolution). The effective database is also returned: for a fixed
+    [database] it is that database; for the default database ([None]) it is the server's home
+    database — resolved from the ROUTE response's [db] field and cached per [imp_user]
+    ([Some home_db] thereafter), or taken from the cache when fresh. When the selected server is
+    unreachable ([Service_unavailable]) it is deactivated and the next address is tried, bounded by
+    the pool's [connection_acquisition_timeout]. *)
 
 val deactivate : t -> Addressing.t -> unit
 (** Remove [addr] from every routing table and close its pool: future acquires skip it until a

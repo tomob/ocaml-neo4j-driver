@@ -245,7 +245,7 @@ let update_table cluster ~database ~imp_user rt =
    outside it — and at most one fetch per database is in progress at a time:
    concurrent acquires wait on the condition, then re-check the caches. A recent
    failure is served from the negative cache instead of being re-fetched. *)
-let rec resolve_table cluster ~database ~mode ~imp_user =
+let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
   let decision =
     with_lock cluster (fun () ->
         match fresh_table cluster ~database ~mode with
@@ -266,7 +266,7 @@ let rec resolve_table cluster ~database ~mode ~imp_user =
   match decision with
   | `Ok table -> Ok table
   | `Error error -> Error error
-  | `Wait -> resolve_table cluster ~database ~mode ~imp_user
+  | `Wait -> resolve_table cluster ~database ~mode ~imp_user ~bookmarks
   | `Fetch ->
       (* Fetch outside the lock. Cancellation (e.g. the caller's acquisition
          timeout) still clears the in-flight marker and wakes the waiters. *)
@@ -276,7 +276,7 @@ let rec resolve_table cluster ~database ~mode ~imp_user =
             with_lock cluster (fun () ->
                 Hashtbl.remove cluster.in_flight database;
                 Eio.Condition.broadcast cluster.cond))
-          (fun () -> fetch_table cluster ~database ~imp_user ~bookmarks:[] None cluster.routers)
+          (fun () -> fetch_table cluster ~database ~imp_user ~bookmarks None cluster.routers)
       in
       with_lock cluster (fun () ->
           match result with
@@ -305,18 +305,18 @@ let select_from_table cluster ~mode table =
    default database is resolved to the server's home database — from the cache
    when fresh (no ROUTE), otherwise from the ROUTE response's [db] field, which
    is then cached for [imp_user]. *)
-let resolve_for cluster ~database ~mode ~imp_user =
+let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
   match database with
   | Some _ ->
-      let* table = resolve_table cluster ~database ~mode ~imp_user in
+      let* table = resolve_table cluster ~database ~mode ~imp_user ~bookmarks in
       Ok (table, database)
   | None -> (
       match with_lock cluster (fun () -> home_db_of cluster imp_user) with
       | Some home_db ->
-          let* table = resolve_table cluster ~database:(Some home_db) ~mode ~imp_user in
+          let* table = resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks in
           Ok (table, Some home_db)
       | None ->
-          let* table = resolve_table cluster ~database:None ~mode ~imp_user in
+          let* table = resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks in
           (match Routing_table.database table with
           | Some home_db ->
               with_lock cluster (fun () ->
@@ -329,13 +329,13 @@ let resolve_for cluster ~database ~mode ~imp_user =
           | None -> ());
           Ok (table, Routing_table.database table))
 
-let acquire cluster ~mode ~database ~imp_user =
+let acquire cluster ~mode ~database ~imp_user ~bookmarks =
   try
     Eio.Time.Timeout.run_exn
       (Eio.Time.Timeout.seconds cluster.clock cluster.pool_config.connection_acquisition_timeout)
       (fun () ->
         let rec attempt () =
-          let* table, effective = resolve_for cluster ~database ~mode ~imp_user in
+          let* table, effective = resolve_for cluster ~database ~mode ~imp_user ~bookmarks in
           let* addr, pool = select_from_table cluster ~mode table in
           match Pool.acquire pool with
           | Ok conn -> Ok (conn, effective)

@@ -251,7 +251,7 @@ let session_close_once () =
       let pool = pool net clock sw port () in
       let session =
         Session.create Session.default_config ~clock
-          ~connect:(fun ~mode:_ ~database:_ ->
+          ~connect:(fun ~mode:_ ~database:_ ~bookmarks:_ ->
             match Pool.acquire pool with Ok conn -> Ok (conn, None) | Error error -> Error error)
           ~release:(fun conn -> Pool.release pool conn)
           ()

@@ -86,7 +86,9 @@ let concurrent_acquires_single_fetch () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let c1 = ref None and c2 = ref None in
       Eio.Fiber.both
         (fun () ->
@@ -125,7 +127,9 @@ let failed_fetch_negative_cache () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       (match acquire () with Ok _ -> fail "expected the first acquire to fail" | Error _ -> ());
       (match acquire () with Ok _ -> fail "expected the second acquire to fail" | Error _ -> ());
       check int "no re-fetch on the negative cache" 1 (count_tag 0x66 (tags received));
@@ -166,7 +170,9 @@ let per_role_least_loaded () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire mode = Cluster.acquire cluster ~mode ~database:None ~imp_user:None in
+      let acquire mode =
+        Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
         match acquire Config.Read with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -226,7 +232,9 @@ let least_loaded_reader_selection () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -290,7 +298,9 @@ let acquire_falls_back_to_next_router () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -342,7 +352,9 @@ let deactivate_on_database_unavailable () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -400,7 +412,9 @@ let remove_writer_on_not_a_leader () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -450,7 +464,9 @@ let acquire_retries_after_dead_reader () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
       in
@@ -490,7 +506,9 @@ let routing_via_procedure_bolt42 () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
       in
@@ -530,7 +548,9 @@ let update_table_replaces_table () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
       in
@@ -592,7 +612,8 @@ let session_rt_updates_routing_table () =
       let session_config = { Session.default_config with access_mode = Config.Read } in
       let session =
         Session.create session_config ~clock
-          ~connect:(fun ~mode ~database -> Cluster.acquire cluster ~mode ~database ~imp_user:None)
+          ~connect:(fun ~mode ~database ~bookmarks ->
+            Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks)
           ~on_rt:(fun database rt -> Cluster.update_table cluster ~database ~imp_user:None rt)
           ()
       in
@@ -601,7 +622,9 @@ let session_rt_updates_routing_table () =
       | Error e -> fail (Errors.to_string e));
       Session.close session;
       let c2 =
-        match Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None with
+        match
+          Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+        with
         | Ok (conn, _) -> conn
         | Error e -> fail (Errors.to_string e)
       in
@@ -662,7 +685,9 @@ let home_db_resolves_and_caches () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let c1 =
         match acquire () with
         | Ok (conn, effective) ->
@@ -721,7 +746,9 @@ let home_db_ttl_expires () =
         | Error error -> fail (Errors.to_string error)
       in
       let cluster = Cluster.create ~pool_config ~connect ~routing_context:[] ~initial clock in
-      let acquire () = Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
       let c1 =
         match acquire () with
         | Ok (conn, effective) ->
@@ -778,14 +805,20 @@ let home_db_per_imp_user () =
           clock
       in
       let c1 =
-        match Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "a") with
+        match
+          Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "a")
+            ~bookmarks:[]
+        with
         | Ok (conn, effective) ->
             check (option string) "user a's home database" (Some "homedb-a") effective;
             conn
         | Error e -> fail (Errors.to_string e)
       in
       let c2 =
-        match Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "b") with
+        match
+          Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "b")
+            ~bookmarks:[]
+        with
         | Ok (conn, effective) ->
             check (option string) "user b's home database" (Some "homedb-b") effective;
             conn
@@ -823,7 +856,9 @@ let route_carries_imp_user () =
         Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
           clock
       in
-      (match Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") with
+      (match
+         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") ~bookmarks:[]
+       with
       | Ok (conn, _) ->
           let extra = route_extra (List.nth received 0) in
           check string "imp_user in the ROUTE extra" "u"
@@ -833,6 +868,53 @@ let route_carries_imp_user () =
           check bool "no db in the ROUTE extra" true (List.assoc_opt "db" extra = None);
           Cluster.release cluster conn
       | Error e -> fail (Errors.to_string e));
+      Cluster.close cluster)
+
+(* A routed session's bookmarks go into the ROUTE request when its routing
+   table is first fetched (the server uses them for routing), so a session
+   created with bookmarks sends them on the first acquire. *)
+let route_carries_session_bookmarks () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt [ a ] [ b ] [ b ]) ] ] );
+        ];
+        [
+          ( (5, 0),
+            List.nth received 1,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("fields", Packstream.List [ Packstream.String "n" ]) ];
+            ] );
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect ~routing_context:[] ~initial
+          clock
+      in
+      let session_config = { Session.default_config with bookmarks = [ "bm1"; "bm2" ] } in
+      let session =
+        Session.create session_config ~clock
+          ~connect:(fun ~mode ~database ~bookmarks ->
+            Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks)
+          ()
+      in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok _ -> ()
+      | Error e -> fail (Errors.to_string e));
+      Session.close session;
+      check bool "session bookmarks on the ROUTE" true
+        (route_bookmarks (List.nth received 0) = [ "bm1"; "bm2" ]);
       Cluster.close cluster)
 
 (* An SSR [rt] table (update_table) caches the home database and its table: the
@@ -852,7 +934,9 @@ let update_table_captures_home_db () =
       in
       Cluster.update_table cluster ~database:None ~imp_user:(Some "u")
         (rt ~db:"homedb" [ addr ] [ addr ] [ addr ]);
-      (match Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") with
+      (match
+         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") ~bookmarks:[]
+       with
       | Ok (conn, effective) ->
           check (option string) "effective database from SSR table" (Some "homedb") effective;
           check int "no ROUTE after the SSR table update" 0 (count_tag 0x66 (tags received));
@@ -901,7 +985,10 @@ let routing_table_of_returns_cached () =
       check bool "the requested bookmarks went out on the ROUTE" true
         (route_bookmarks (List.nth received 0) = [ "bm" ]);
       let c1 =
-        match Cluster.acquire cluster ~mode:Config.Read ~database:(Some "adb") ~imp_user:None with
+        match
+          Cluster.acquire cluster ~mode:Config.Read ~database:(Some "adb") ~imp_user:None
+            ~bookmarks:[]
+        with
         | Ok (conn, _) -> conn
         | Error e -> fail (Errors.to_string e)
       in
@@ -976,6 +1063,8 @@ let tests =
       [ test_case "separate home dbs" `Quick home_db_per_imp_user ] );
     ( "[Cluster] ROUTE carries the impersonated user",
       [ test_case "imp_user in the ROUTE extra" `Quick route_carries_imp_user ] );
+    ( "[Cluster] ROUTE carries the session's bookmarks",
+      [ test_case "bookmarks in the ROUTE request" `Quick route_carries_session_bookmarks ] );
     ( "[Cluster] SSR update captures the home db",
       [ test_case "update_table seeds the cache" `Quick update_table_captures_home_db ] );
   ]

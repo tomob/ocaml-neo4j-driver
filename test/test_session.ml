@@ -30,7 +30,7 @@ let message_tags received = List.map (fun bytes -> fst (unpack_message bytes)) (
 
 (* A session whose connection connects to the mock server at [port]. *)
 let session net clock sw port =
-  let connect ~mode:_ ~database:_ =
+  let connect ~mode:_ ~database:_ ~bookmarks:_ =
     match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
     | Ok conn -> Ok (conn, None)
     | Error error -> Error error
@@ -228,7 +228,7 @@ let run_fetch_streams () =
            Test_mock.Records ([ [ Packstream.Int (Int64.of_int 5) ] ], false);
          ] ))
     (fun net clock sw port ->
-      let connect ~mode:_ ~database:_ =
+      let connect ~mode:_ ~database:_ ~bookmarks:_ =
         match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
         | Ok conn -> Ok (conn, None)
         | Error error -> Error error
@@ -285,7 +285,7 @@ let run_uses_effective_database () =
     (Test_mock.Session
        ((5, 4), received, [ Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false) ]))
     (fun net clock sw port ->
-      let connect ~mode:_ ~database:_ =
+      let connect ~mode:_ ~database:_ ~bookmarks:_ =
         match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
         | Ok conn -> Ok (conn, Some "homedb")
         | Error error -> Error error

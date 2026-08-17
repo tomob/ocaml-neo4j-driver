@@ -43,7 +43,10 @@ type t = {
   config : config;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   connect :
-    mode:Config.access_mode -> database:string option -> (Conn.t * string option, Errors.t) result;
+    mode:Config.access_mode ->
+    database:string option ->
+    bookmarks:string list ->
+    (Conn.t * string option, Errors.t) result;
   release : Conn.t -> unit;
   on_rt : string option -> Packstream.value -> unit;
   database : string option ref;
@@ -71,7 +74,9 @@ let conn (t : t) =
   match !(t.conn) with
   | Some conn -> Ok conn
   | None -> (
-      match t.connect ~mode:t.config.access_mode ~database:!(t.database) with
+      match
+        t.connect ~mode:t.config.access_mode ~database:!(t.database) ~bookmarks:!(t.bookmarks)
+      with
       | Error _ as error -> error
       | Ok (conn, effective) ->
           (* The connection may resolve the session's database (a routed
