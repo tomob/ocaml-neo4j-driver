@@ -73,7 +73,13 @@ let run () =
           in
           let rec serve () =
             let flow, _ = Eio.Net.accept ~sw listening in
-            Eio.Fiber.fork ~sw (fun () -> handle_connection net clock sw flow);
+            (* An I/O error on one connection (e.g. a peer that resets the socket
+               mid-read) must not abort the whole switch and take the backend
+               down: log it and keep serving the other connections. *)
+            Eio.Fiber.fork ~sw (fun () ->
+                try handle_connection net clock sw flow
+                with exn ->
+                  prerr_endline ("testkit backend: connection error: " ^ Printexc.to_string exn));
             serve ()
           in
           serve ()))
