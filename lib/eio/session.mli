@@ -5,8 +5,9 @@
     pulled on demand; the bookmark from the final PULL summary is recorded automatically once the
     result is consumed); [begin_transaction] opens an explicit transaction; [execute] runs a managed
     transaction (unit of work) with the retry loop described in the PLAN (budget, jittered backoff,
-    decision via [Errors.is_retryable]). Between retry attempts the connection is recovered with a
-    RESET rather than reconnected.
+    decision via [Errors.is_retryable]). Between retry attempts the transaction's connection is
+    returned to the pool and a fresh one acquired (a failed writer/reader is deactivated, so the
+    next ROUTE skips it).
 
     Modeled on the Python driver's AsyncSession (_async/work/session.py). *)
 

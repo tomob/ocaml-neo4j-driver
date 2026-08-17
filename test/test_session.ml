@@ -83,25 +83,38 @@ let execute_ok () =
         [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
         (message_tags received))
 
-(* A retryable failure retries the unit of work on a fresh transaction; the
-   failed connection is recovered with a RESET before the retry. *)
+(* A retryable failure retries the unit of work on a fresh transaction. Each
+   attempt uses its own connection (acquired for the transaction's access
+   mode): after the failed RUN the failed connection is reset and returned, and
+   the retry reconnects. *)
 let execute_retries () =
   let received = ref [] in
-  Test_mock.with_mock
-    (Test_mock.Session
-       ( (5, 4),
-         received,
-         [
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Failure ("Neo.TransientError.General.DatabaseUnavailable", "transient");
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Records ([], false);
-           Test_mock.Success_meta [ ("bookmark", Packstream.String "b2") ];
-         ] ))
+  Test_mock.with_mock_multi
+    [
+      (* First attempt: HELLO, LOGON, BEGIN, RUN -> transient failure, then
+         the rollback's RESET. *)
+      ( (5, 4),
+        received,
+        [
+          Test_mock.Success;
+          Test_mock.Success;
+          Test_mock.Success;
+          Test_mock.Failure ("Neo.TransientError.General.DatabaseUnavailable", "transient");
+          Test_mock.Success;
+        ] );
+      (* Second attempt on a fresh connection: HELLO, LOGON, BEGIN, RUN, PULL,
+         COMMIT. *)
+      ( (5, 4),
+        received,
+        [
+          Test_mock.Success;
+          Test_mock.Success;
+          Test_mock.Success;
+          Test_mock.Success;
+          Test_mock.Records ([], false);
+          Test_mock.Success_meta [ ("bookmark", Packstream.String "b2") ];
+        ] );
+    ]
     (fun net clock sw port ->
       let session = session net clock sw port in
       let attempts = ref 0 in
@@ -112,7 +125,7 @@ let execute_retries () =
       check int "two attempts" 2 !attempts;
       check (list string) "bookmarks" [ "b2" ] (Session.last_bookmarks session);
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x11; 0x10; 0x3F; 0x12 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
         (message_tags received))
 
 (* A non-retryable failure is not retried and surfaces the driver error. *)

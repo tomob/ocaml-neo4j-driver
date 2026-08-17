@@ -50,7 +50,7 @@ type t = {
   release : Conn.t -> unit;
   on_rt : string option -> Packstream.value -> unit;
   database : string option ref;
-  conn : Conn.t option ref;
+  conn : (Conn.t * Config.access_mode) option ref;
   bookmarks : string list ref;
   current_tx : Tx.t option ref;
   auto_result : Conn.stream option ref;
@@ -70,21 +70,37 @@ let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> (
     auto_result = ref None;
   }
 
-let conn (t : t) =
+(* The session's connection for [mode], connecting on first use. A cached
+   connection acquired for a different access mode (e.g. a read managed
+   transaction on a write-mode session) is returned to the pool and re-acquired
+   for [mode]. *)
+let rec conn_for_mode (t : t) ~mode =
   match !(t.conn) with
-  | Some conn -> Ok conn
+  | Some (conn, cached_mode) when cached_mode = mode -> Ok conn
+  | Some (conn, _) ->
+      (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
+      t.auto_result := None;
+      t.conn := None;
+      t.release conn;
+      conn_for_mode t ~mode
   | None -> (
-      match
-        t.connect ~mode:t.config.access_mode ~database:!(t.database) ~bookmarks:!(t.bookmarks)
-      with
+      match t.connect ~mode ~database:!(t.database) ~bookmarks:!(t.bookmarks) with
       | Error _ as error -> error
       | Ok (conn, effective) ->
           (* The connection may resolve the session's database (a routed
              default-database session learns its home database here); the
              effective database is used for RUN/BEGIN from now on. *)
           t.database := effective;
-          t.conn := Some conn;
+          t.conn := Some (conn, mode);
           Ok conn)
+
+(* The session's current connection (session access mode). Returns the cached
+   connection whatever mode it was acquired for: a transaction in flight owns
+   it, and callers must not yank it away by asking for a different mode. *)
+let conn t =
+  match !(t.conn) with
+  | Some (conn, _) -> Ok conn
+  | None -> conn_for_mode t ~mode:t.config.access_mode
 
 (* Update the session's bookmarks from an auto-commit PULL summary. *)
 let mark_bookmark t = function
@@ -123,7 +139,7 @@ let begin_transaction_mode ?metadata ?timeout t ~mode =
   | Some tx when not (Tx.closed tx) ->
       Error (Errors.Transaction_error "Explicit transaction already open")
   | _ -> (
-      let* conn = conn t in
+      let* conn = conn_for_mode t ~mode in
       let hydration = Conn.hydration conn in
       let metadata =
         Option.map (List.map (fun (k, v) -> (k, Hydration.dehydrate hydration v))) metadata
@@ -171,19 +187,20 @@ let execute t ~mode ?metadata ?timeout work =
     | Ok tx -> Ok tx
     | Error error -> Error (Driver error)
   in
-  (* Drop the session's connection (release it back to the pool) so the next
-     attempt acquires a fresh one: a failed transaction may have left the
-     connection in a broken state. Only a connection-level failure (not a
-     retryable Neo4j error — the server answered it and a RESET recovers the
-     connection) triggers this. *)
-  let disconnect () =
+  (* Managed transactions use a connection acquired for the transaction's
+     access mode and return it to the pool after every attempt: a retry
+     therefore acquires a fresh connection, re-resolving the routing table (a
+     failed writer/reader was deactivated, so the next ROUTE skips it). Any
+     pending auto-commit stream is drained first. *)
+  let reconnect () =
+    (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
+    t.auto_result := None;
     match !(t.conn) with
     | None -> ()
-    | Some conn ->
+    | Some (conn, _) ->
         t.conn := None;
         t.release conn
   in
-  let disconnect_on_connection_error = function Errors.Neo4j _ -> false | _ -> true in
   let rec attempt () =
     let* tx = begin_tx () in
     match work tx with
@@ -192,24 +209,26 @@ let execute t ~mode ?metadata ?timeout work =
         | Ok bookmark ->
             (match bookmark with Some b -> t.bookmarks := [ b ] | None -> ());
             t.current_tx := None;
+            reconnect ();
             Ok ()
         | Error error ->
             ignore (Tx.rollback tx);
             t.current_tx := None;
+            reconnect ();
             if Errors.is_retryable error && within_budget () then (
-              if disconnect_on_connection_error error then disconnect ();
               retry ();
               attempt ())
             else Error (Driver error))
     | Error Client ->
         ignore (Tx.rollback tx);
         t.current_tx := None;
+        reconnect ();
         Error Client
     | Error (Driver error) ->
         ignore (Tx.rollback tx);
         t.current_tx := None;
+        reconnect ();
         if Errors.is_retryable error && within_budget () then (
-          if disconnect_on_connection_error error then disconnect ();
           retry ();
           attempt ())
         else Error (Driver error)
@@ -219,6 +238,8 @@ let execute t ~mode ?metadata ?timeout work =
 let close (t : t) =
   !(t.current_tx) |> Option.iter (fun tx -> ignore (Tx.close tx));
   t.current_tx := None;
-  let conn = !(t.conn) in
-  t.conn := None;
-  Option.iter t.release conn
+  match !(t.conn) with
+  | Some (conn, _) ->
+      t.conn := None;
+      t.release conn
+  | None -> ()
