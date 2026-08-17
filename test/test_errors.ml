@@ -24,6 +24,8 @@ let retryable () =
     Errors.of_neo4j_code ~code:"Neo.ClientError.Security.AuthorizationExpired" ~message:""
   in
   check bool "authorization expired is retryable" true (Errors.is_retryable authz_expired);
+  let not_a_leader = Errors.of_neo4j_code ~code:"Neo.ClientError.Cluster.NotALeader" ~message:"" in
+  check bool "not a leader is retryable" true (Errors.is_retryable not_a_leader);
   check bool "session expired is retryable" true (Errors.is_retryable (Errors.Session_expired "x"));
   check bool "service unavailable is retryable" true
     (Errors.is_retryable (Errors.Service_unavailable "x"));
