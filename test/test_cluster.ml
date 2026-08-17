@@ -384,14 +384,16 @@ let remove_writer_on_not_a_leader () =
       let c = addr (List.nth ports 1) in
       let d = addr (List.nth ports 2) in
       [
-        (* router A: writers C, then D (the second ROUTE after the refresh) *)
+        (* router A: HELLO then ROUTE with writers C, then ROUTE with writers D
+           (the refresh after the NotALeader) on the same reused connection *)
         [
           ( (5, 0),
             List.nth received 0,
-            [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt [ a ] [ a ] [ c ]) ] ] );
-          ( (5, 0),
-            List.nth received 0,
-            [ Test_mock.Success; Test_mock.Success_meta [ ("rt", rt [ a ] [ a ] [ d ]) ] ] );
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt [ a ] [ a ] [ c ]) ];
+              Test_mock.Success_meta [ ("rt", rt [ a ] [ a ] [ d ]) ];
+            ] );
         ];
         (* writer C: HELLO ok, RUN fails with NotALeader *)
         [
@@ -718,17 +720,13 @@ let home_db_ttl_expires () =
       let a = addr (List.nth ports 0) in
       let b = addr (List.nth ports 1) in
       [
+        (* router A: both ROUTEs on the same reused connection *)
         [
           ( (5, 0),
             List.nth received 0,
             [
               Test_mock.Success;
               Test_mock.Success_meta [ ("rt", rt ~ttl:0L ~db:"homedb" [ a ] [ b ] [ b ]) ];
-            ] );
-          ( (5, 0),
-            List.nth received 0,
-            [
-              Test_mock.Success;
               Test_mock.Success_meta [ ("rt", rt ~ttl:0L ~db:"homedb" [ a ] [ b ] [ b ]) ];
             ] );
         ];
@@ -778,17 +776,13 @@ let home_db_per_imp_user () =
       let a = addr (List.nth ports 0) in
       let b = addr (List.nth ports 1) in
       [
+        (* router A: both ROUTEs on the same reused connection *)
         [
           ( (5, 0),
             List.nth received 0,
             [
               Test_mock.Success;
               Test_mock.Success_meta [ ("rt", rt ~ttl:0L ~db:"homedb-a" [ a ] [ b ] [ b ]) ];
-            ] );
-          ( (5, 0),
-            List.nth received 0,
-            [
-              Test_mock.Success;
               Test_mock.Success_meta [ ("rt", rt ~ttl:0L ~db:"homedb-b" [ a ] [ b ] [ b ]) ];
             ] );
         ];

@@ -25,13 +25,16 @@ type t = {
   routing_context : (string * string) list;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   mutable routers : Addressing.t list;
+  initial_routers : Addressing.t list;
   tables : (string option, Routing_table.t * Mtime.t) Hashtbl.t;
   errors : (string option, Errors.t * Mtime.t) Hashtbl.t;
   in_flight : (string option, bool) Hashtbl.t;
   pools : (string, Pool.t) Hashtbl.t;
+  routing : (string, Conn.t) Hashtbl.t;
   home_dbs : (string option, string * Mtime.t) Hashtbl.t;
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
+  routing_lock : Eio.Mutex.t;
 }
 
 (* How long a failed routing-table fetch is remembered, so concurrent acquires
@@ -45,13 +48,16 @@ let create ~pool_config ~connect ~routing_context ~initial clock =
     routing_context;
     clock;
     routers = [ initial ];
+    initial_routers = [ initial ];
     tables = Hashtbl.create 4;
     errors = Hashtbl.create 4;
     in_flight = Hashtbl.create 4;
     pools = Hashtbl.create 4;
+    routing = Hashtbl.create 4;
     home_dbs = Hashtbl.create 4;
     lock = Eio.Mutex.create ();
     cond = Eio.Condition.create ();
+    routing_lock = Eio.Mutex.create ();
   }
 
 let now t = Eio.Time.Mono.now t.clock
@@ -60,6 +66,25 @@ let elapsed_s t since = Mtime.Span.to_float_ns (Mtime.span (now t) since) /. 1_0
 let with_lock t f =
   Eio.Mutex.lock t.lock;
   Fun.protect ~finally:(fun () -> Eio.Mutex.unlock t.lock) f
+
+(* Serializes routing-table fetches (the ROUTE requests on the shared routing
+   connections must not interleave across concurrent fetches). *)
+let with_routing_lock t f =
+  Eio.Mutex.lock t.routing_lock;
+  Fun.protect ~finally:(fun () -> Eio.Mutex.unlock t.routing_lock) f
+
+(* The routers to try for a routing-table fetch: the known routers (from the
+   cached tables) first, then the initial seed routers as a fallback — a known
+   router that went down or serves unusable tables is skipped and the address
+   that seeded the driver still gets a chance (Python keeps the initial routers
+   for the same reason). *)
+let fetch_routers cluster =
+  let known = cluster.routers in
+  let known_keys = List.map Addressing.to_string known in
+  known
+  @ List.filter
+      (fun a -> not (List.mem (Addressing.to_string a) known_keys))
+      cluster.initial_routers
 
 (* Full address deactivation (under the lock): drop [addr] from every routing
    table and close its pool, so future acquires skip it until a refresh
@@ -73,10 +98,15 @@ let deactivate cluster addr =
             (Routing_table.remove_address addr table, fetched_at))
         cluster.tables;
       cluster.routers <- List.filter (fun a -> Addressing.to_string a <> key) cluster.routers;
-      match Hashtbl.find_opt cluster.pools key with
+      (match Hashtbl.find_opt cluster.pools key with
       | Some pool ->
           Hashtbl.remove cluster.pools key;
           Pool.close pool
+      | None -> ());
+      match Hashtbl.find_opt cluster.routing key with
+      | Some conn ->
+          Hashtbl.remove cluster.routing key;
+          Conn.close conn
       | None -> ())
 
 (* Drop [addr] from the [writers] of [database] (a NotALeader / read-only
@@ -143,28 +173,43 @@ let home_db_of cluster imp_user =
 let set_home_db cluster imp_user database =
   Hashtbl.replace cluster.home_dbs imp_user (database, now cluster)
 
-(* Fetch a fresh routing table for [database], trying each router in turn: a
-   connection is opened directly to the router for the ROUTE request and closed
-   afterwards. A router that fails to connect, answers ROUTE with a non-fatal
-   error or returns a table without routers or readers is deactivated and the
-   next router is tried; an error that is fatal during discovery
-   ([Errors.is_fatal_during_discovery], e.g. DatabaseNotFound or security
-   errors) aborts the fetch immediately. [last_error] carries the most recent
-   failure so the caller gets a meaningful error when every router fails.
+(* The persistent routing connection for [addr]: ROUTE requests reuse it (the
+   server expects several ROUTEs on one connection), created on first use and
+   dropped (closed) when the address is deactivated. Guarded by [routing_lock]. *)
+let routing_conn cluster addr =
+  let key = Addressing.to_string addr in
+  match Hashtbl.find_opt cluster.routing key with
+  | Some conn -> Ok conn
+  | None -> (
+      match cluster.connect addr with
+      | Error error -> Error error
+      | Ok conn ->
+          Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
+          Hashtbl.add cluster.routing key conn;
+          Ok conn)
+
+(* Fetch a fresh routing table for [database], trying each router in turn on a
+   reused routing connection: a router that fails to connect, answers ROUTE
+   with a non-fatal error or returns a table without routers or readers is
+   deactivated and the next router is tried; an error that is fatal during
+   discovery ([Errors.is_fatal_during_discovery], e.g. DatabaseNotFound or
+   security errors) aborts the fetch immediately. [last_error] carries the most
+   recent failure so the caller gets a meaningful error when every router fails.
    [bookmarks] are sent with the ROUTE request (usually the caller's own
-   bookmarks, or [] for a plain resolution). *)
-let rec fetch_table cluster ~database ~imp_user ~bookmarks last_error = function
+   bookmarks, or [] for a plain resolution). ROUTEs are serialized on
+   [routing_lock] so concurrent fetches never share a connection. *)
+let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error = function
   | [] -> (
       match last_error with
       | Some error -> Error error
       | None -> Error (Errors.Service_unavailable "no router available for routing"))
   | addr :: rest -> (
-      match cluster.connect addr with
+      match routing_conn cluster addr with
       | Error error ->
           if Errors.is_fatal_during_discovery error then Error error
           else begin
             deactivate cluster addr;
-            fetch_table cluster ~database ~imp_user ~bookmarks (Some error) rest
+            fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) rest
           end
       | Ok conn -> (
           let result =
@@ -178,20 +223,23 @@ let rec fetch_table cluster ~database ~imp_user ~bookmarks last_error = function
                 | Some table -> Ok table
                 | None -> Error (Errors.Service_unavailable "unparseable routing table"))
           in
-          Conn.close conn;
           match result with
           | Ok table when Routing_table.routers table <> [] && Routing_table.readers table <> [] ->
               Ok table
           | Ok _ ->
               deactivate cluster addr;
-              fetch_table cluster ~database ~imp_user ~bookmarks
+              fetch_table_locked cluster ~database ~imp_user ~bookmarks
                 (Some (Errors.Service_unavailable "invalid routing table")) rest
           | Error error ->
               if Errors.is_fatal_during_discovery error then Error error
               else begin
                 deactivate cluster addr;
-                fetch_table cluster ~database ~imp_user ~bookmarks (Some error) rest
+                fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) rest
               end))
+
+let fetch_table cluster ~database ~imp_user ~bookmarks last_error routers =
+  with_routing_lock cluster (fun () ->
+      fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error routers)
 
 (* The fresh cached table for [database], if any (caller holds the lock). A
    table is fresh only when its TTL has not elapsed AND it still lists routers
@@ -270,13 +318,14 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
   | `Fetch ->
       (* Fetch outside the lock. Cancellation (e.g. the caller's acquisition
          timeout) still clears the in-flight marker and wakes the waiters. *)
+      let routers = fetch_routers cluster in
       let result =
         Fun.protect
           ~finally:(fun () ->
             with_lock cluster (fun () ->
                 Hashtbl.remove cluster.in_flight database;
                 Eio.Condition.broadcast cluster.cond))
-          (fun () -> fetch_table cluster ~database ~imp_user ~bookmarks None cluster.routers)
+          (fun () -> fetch_table cluster ~database ~imp_user ~bookmarks None routers)
       in
       with_lock cluster (fun () ->
           match result with
@@ -373,7 +422,9 @@ let force_routing_table_update cluster ~database ~bookmarks =
     Eio.Time.Timeout.run_exn
       (Eio.Time.Timeout.seconds cluster.clock cluster.pool_config.connection_acquisition_timeout)
       (fun () ->
-        match fetch_table cluster ~database ~imp_user:None ~bookmarks None cluster.routers with
+        match
+          fetch_table cluster ~database ~imp_user:None ~bookmarks None (fetch_routers cluster)
+        with
         | Ok table ->
             with_lock cluster (fun () -> store_table cluster ~database table);
             Ok ()
@@ -382,4 +433,6 @@ let force_routing_table_update cluster ~database ~bookmarks =
     Error (Errors.Connection_acquisition_timeout "Timed out updating the routing table")
 
 let close cluster =
-  with_lock cluster (fun () -> Hashtbl.iter (fun _ pool -> Pool.close pool) cluster.pools)
+  with_lock cluster (fun () ->
+      Hashtbl.iter (fun _ pool -> Pool.close pool) cluster.pools;
+      Hashtbl.iter (fun _ conn -> Conn.close conn) cluster.routing)
