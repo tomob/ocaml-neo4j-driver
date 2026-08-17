@@ -31,6 +31,7 @@ type t = {
   in_flight : (string option, bool) Hashtbl.t;
   pools : (string, Pool.t) Hashtbl.t;
   routing : (string, Conn.t) Hashtbl.t;
+  rr : (string, int) Hashtbl.t;
   home_dbs : (string option, string * Mtime.t) Hashtbl.t;
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
@@ -54,6 +55,7 @@ let create ~pool_config ~connect ~routing_context ~initial clock =
     in_flight = Hashtbl.create 4;
     pools = Hashtbl.create 4;
     routing = Hashtbl.create 4;
+    rr = Hashtbl.create 4;
     home_dbs = Hashtbl.create 4;
     lock = Eio.Mutex.create ();
     cond = Eio.Condition.create ();
@@ -149,13 +151,6 @@ let pool_for cluster addr =
       in
       Hashtbl.add cluster.pools key pool;
       pool
-
-(* Load of an address: in-use connections of its pool, or 0 if no pool exists
-   yet (pools are created lazily for the chosen address only). *)
-let load_of cluster addr =
-  match Hashtbl.find_opt cluster.pools (Addressing.to_string addr) with
-  | Some pool -> Pool.in_use_count pool
-  | None -> 0
 
 (* The cached home database of [imp_user] (None = the driver's own user), if
    its age is within [home_db_cache_ttl] (caller holds the lock). An expired
@@ -333,21 +328,30 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
           | Error error -> Hashtbl.replace cluster.errors database (error, now cluster));
       result
 
-(* Select the least-loaded address of the role matching [mode] from a routing
-   table (already resolved) and its pool. *)
-let select_from_table cluster ~mode table =
+(* Select the next address of the role matching [mode] from a routing table
+   (already resolved) and its pool: round-robin per (database, mode), like the
+   Python driver, so consecutive sessions spread across the cluster instead of
+   piling up on the first address. *)
+let select_from_table cluster ~database ~mode table =
   with_lock cluster (fun () ->
       let addresses =
         match mode with
         | Config.Read -> Routing_table.readers table
         | Config.Write -> Routing_table.writers table
       in
-      (* The least-loaded address of the role's slice (fewest in-use
-         connections), so concurrent sessions spread across the cluster
-         instead of piling up on one server. *)
-      match Routing_table.least_loaded ~load:(load_of cluster) addresses with
-      | Some addr -> Ok (addr, pool_for cluster addr)
-      | None -> Error (Errors.Service_unavailable "routing table has no suitable address"))
+      match addresses with
+      | [] -> Error (Errors.Service_unavailable "routing table has no suitable address")
+      | [ addr ] -> Ok (addr, pool_for cluster addr)
+      | _ ->
+          let key =
+            (match mode with Config.Read -> "r" | Config.Write -> "w")
+            ^ ":"
+            ^ match database with Some db -> db | None -> ""
+          in
+          let index = Option.value ~default:0 (Hashtbl.find_opt cluster.rr key) in
+          Hashtbl.replace cluster.rr key (index + 1);
+          let addr = List.nth addresses (index mod List.length addresses) in
+          Ok (addr, pool_for cluster addr))
 
 (* Resolve the effective database for [database] and the routing table to use:
    a fixed database is used as-is (the effective database equals it); the
@@ -385,7 +389,7 @@ let acquire cluster ~mode ~database ~imp_user ~bookmarks =
       (fun () ->
         let rec attempt () =
           let* table, effective = resolve_for cluster ~database ~mode ~imp_user ~bookmarks in
-          let* addr, pool = select_from_table cluster ~mode table in
+          let* addr, pool = select_from_table cluster ~database:effective ~mode table in
           match Pool.acquire pool with
           | Ok conn -> Ok (conn, effective)
           | Error (Errors.Service_unavailable _) ->
