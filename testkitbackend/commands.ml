@@ -638,7 +638,8 @@ let result_consume fields =
   match Neo4jResult.consume r.res with
   | Error error -> raise (Driver_error error)
   | Ok summary ->
-      Hashtbl.remove results id;
+      (* Keep the result registered: a second consume returns the cached
+         summary again (like the Python driver). *)
       ("Summary", summary_json summary)
 
 (* Expect exactly one record in the result stream. *)

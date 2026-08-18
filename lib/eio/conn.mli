@@ -186,9 +186,10 @@ val pull :
     delivered before the failure are kept). A server failure leaves the connection in the [Failed]
     state. *)
 
-val discard : ?n:int -> ?qid:int -> t -> (unit, Errors.t) result
+val discard : ?n:int -> ?qid:int -> t -> ((Packstream.value, Errors.t) result, Errors.t) result
 (** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
-    [qid]. A server failure is surfaced as [Error _]. *)
+    [qid]. Returns the response: [Ok (Ok _)] with the DISCARD summary metadata on SUCCESS, or
+    [Error _] for a server failure (the connection enters the [Failed] state). *)
 
 type stream
 (** A lazily-streamed result on a connection: RUN is sent immediately, records are pulled in batches
@@ -197,12 +198,14 @@ type stream
 
 val stream :
   ?on_complete:(Packstream.value -> unit) ->
+  ?on_error:(Errors.t -> unit) ->
   t ->
   hydration:Hydration.t ->
   run_metadata:run_metadata ->
   stream
 (** A fresh [stream] for the given connection, hydration scope and RUN metadata. [on_complete] fires
-    with the final summary once the stream ends normally. *)
+    with the final summary once the stream ends normally; [on_error] fires with the failure that
+    terminated the stream (e.g. to mark the owning transaction as failed). *)
 
 val connection : stream -> t
 (** The connection the stream is running on. *)
@@ -242,6 +245,21 @@ val pull_stream : ?n:int -> stream -> (Values.t list list, Errors.t) result
 val drain_stream : stream -> unit
 (** Pull a stream to its end, best effort: a transport failure stops the drain (the failure is left
     on the stream; the connection is recovered by the next request's RESET). *)
+
+val discard_stream : stream -> (unit, Errors.t) result
+(** Discard the rest of a stream without pulling its records (consume semantics): the DISCARD
+    response's metadata becomes the stream's final summary. No-op once the stream is finished. *)
+
+val stream_closed : stream -> bool
+(** Whether the stream's transaction was closed (the stream is out of scope). *)
+
+val mark_stream_closed : stream -> unit
+(** Mark a stream as closed: further reads on it must fail, like the Python driver's
+    ResultConsumedError. *)
+
+val mark_stream_error : stream -> Errors.t -> unit
+(** Mark a stream as failed with [error]: further reads surface the failure instead of pulling (e.g.
+    when a sibling request failed and terminated the stream's transaction). *)
 
 val server_agent : t -> string option
 (** The server agent string reported in the HELLO response, if any. *)

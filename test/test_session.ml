@@ -80,7 +80,7 @@ let execute_ok () =
       check int "one attempt" 1 !attempts;
       check (list string) "bookmarks" [ "b1" ] (Session.last_bookmarks session);
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x12 ]
         (message_tags received))
 
 (* A retryable failure retries the unit of work on a fresh transaction. Each
@@ -125,7 +125,7 @@ let execute_retries () =
       check int "two attempts" 2 !attempts;
       check (list string) "bookmarks" [ "b2" ] (Session.last_bookmarks session);
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x12 ]
         (message_tags received))
 
 (* A non-retryable failure is not retried and surfaces the driver error. *)
@@ -202,7 +202,8 @@ let run_captures_bookmark () =
           | Error error -> fail (Errors.to_string error))
       | Error error -> fail (Errors.to_string error));
       check (list string) "bookmarks" [ "auto-b" ] (Session.last_bookmarks session);
-      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received))
+      (* consume() discards the rest of the stream instead of pulling it. *)
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x2F ] (message_tags received))
 
 (* A session cannot hold two explicit transactions at once. *)
 let already_open () =

@@ -47,11 +47,20 @@ let result t =
   | Some record -> Ok (Some record)
   | None -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
+(* A result is out of scope once its transaction closed: further reads must
+   fail immediately (the Python driver's ResultConsumedError). *)
+let check_open t =
+  if Conn.stream_closed t.stream then
+    Error (Errors.Result_consumed_error "result is not fully consumed")
+  else Ok ()
+
 let next t =
+  let* () = check_open t in
   let* () = ensure t in
   result t
 
 let peek t =
+  let* () = check_open t in
   let* () = ensure t in
   match Conn.peek_record t.stream with
   | Some record -> Ok (Some record)
@@ -74,18 +83,31 @@ let data t =
   Ok (List.map (fun record -> List.map2 (fun k v -> (k, v)) ks record) records)
 
 let consume t =
-  let* _ = values t in
-  match Conn.summary t.stream with
-  | Some _ -> Ok (Summary.of_stream t.stream ~query:t.query ~parameters:t.parameters)
-  | None -> Error (Errors.Result_consumed_error "result is not fully consumed")
+  let* () = check_open t in
+  (* Drain the rest of the stream with a DISCARD (like the Python driver's
+     consume), not a PULL-all, and return the final summary. Consuming an
+     already-consumed result returns the cached summary again. *)
+  let stream = t.stream in
+  match Conn.summary stream with
+  | Some _ -> Ok (Summary.of_stream stream ~query:t.query ~parameters:t.parameters)
+  | None -> (
+      match Conn.error stream with
+      | Some error -> Error error
+      | None -> (
+          let* () = Conn.discard_stream stream in
+          match Conn.summary stream with
+          | Some _ -> Ok (Summary.of_stream stream ~query:t.query ~parameters:t.parameters)
+          | None -> Error (Errors.Result_consumed_error "result is not fully consumed")))
 
 let single t =
+  let* () = check_open t in
   let* records = values t in
   match records with
   | [ record ] -> Ok record
   | _ -> Error (Errors.Result_not_single_error "expected exactly one record")
 
 let single_optional t =
+  let* () = check_open t in
   let* records = values t in
   match records with
   | [] -> Ok None

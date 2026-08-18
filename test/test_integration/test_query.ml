@@ -114,7 +114,7 @@ let discard () =
                   | Ok _ -> ()
                   | Error error -> fail (Errors.to_string error));
                   (match Conn.discard conn with
-                  | Ok () -> check bool "state ready" true (State.ready (Conn.server_state conn))
+                  | Ok _ -> check bool "state ready" true (State.ready (Conn.server_state conn))
                   | Error error -> fail (Errors.to_string error));
                   Conn.close conn)))
 

@@ -131,8 +131,16 @@ let run ?timeout ?metadata t ~query ~parameters =
   (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
   let hydration = Conn.hydration conn in
   let* run_metadata =
-    Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ~bookmarks:!(t.bookmarks)
-      ?db:!(t.database) ?timeout ?metadata
+    match
+      Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters
+        ~bookmarks:!(t.bookmarks) ?db:!(t.database) ?timeout ?metadata
+    with
+    | Ok run_metadata -> Ok run_metadata
+    | Error _ as error ->
+        (* Recover the connection after a FAILURE (the Python driver resets it;
+           the stub scripts expect the RESET). *)
+        ignore (Conn.reset conn);
+        error
   in
   (* Server-side routing: when the server advertised [ssr.enabled] and answered
      RUN with an [rt] routing table, hand it to the on_rt callback (the routing
@@ -256,6 +264,12 @@ let execute t ~mode ?metadata ?timeout work =
 let close (t : t) =
   !(t.current_tx) |> Option.iter (fun tx -> ignore (Tx.close tx));
   t.current_tx := None;
+  (* A pending auto-commit result must be discarded (not RESET) before the
+     connection is returned, like the Python driver's session close. *)
+  (match !(t.auto_result) with
+  | Some stream -> ignore (Conn.discard_stream stream)
+  | None -> ());
+  t.auto_result := None;
   match !(t.conn) with
   | Some (conn, _) ->
       t.conn := None;

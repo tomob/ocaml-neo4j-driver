@@ -378,18 +378,17 @@ let pull ?n ?qid t ~hydration =
 
 let discard ?n ?qid t =
   let re_auth = re_auth_of t.major t.minor in
-  let* _records, outcome =
+  let* _, outcome =
     request
       ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Discard ~re_auth
       (fun () -> Bolt.discard t.transport ~extra:(pull_extra ?n ?qid ()))
   in
-  match outcome with
-  | Ok _ -> Ok ()
-  | Error error ->
-      t.state := State.Failed;
-      report t error;
-      Error error
+  if Result.is_error outcome then begin
+    t.state := State.Failed;
+    report t (Result.get_error outcome)
+  end;
+  Ok outcome
 
 (* A lazily-streamed result on a connection: RUN is sent immediately, records
    are pulled in batches on demand into a FIFO queue (consumed records are
@@ -405,10 +404,12 @@ type stream = {
   mutable summary : Packstream.value option;
   mutable error : Errors.t option;
   mutable has_more : bool;
+  mutable closed : bool;
   on_complete : Packstream.value -> unit;
+  on_error : Errors.t -> unit;
 }
 
-let stream ?(on_complete = fun _ -> ()) conn ~hydration ~run_metadata =
+let stream ?(on_complete = fun _ -> ()) ?(on_error = fun _ -> ()) conn ~hydration ~run_metadata =
   {
     conn;
     run_metadata;
@@ -417,7 +418,9 @@ let stream ?(on_complete = fun _ -> ()) conn ~hydration ~run_metadata =
     summary = None;
     error = None;
     has_more = true;
+    closed = false;
     on_complete;
+    on_error;
   }
 
 let connection s = s.conn
@@ -425,6 +428,18 @@ let has_more s = s.has_more
 let error s = s.error
 let summary s = s.summary
 let run_metadata s = s.run_metadata
+
+(* Whether the stream's transaction was closed (the stream is out of scope:
+   further reads must fail, like the Python driver's ResultConsumedError). *)
+let stream_closed s = s.closed
+let mark_stream_closed s = s.closed <- true
+
+(* Mark a stream as failed with [error]: further reads surface the failure
+   instead of pulling (e.g. when a sibling request failed and terminated the
+   stream's transaction). *)
+let mark_stream_error s error =
+  s.has_more <- false;
+  s.error <- Some error
 
 (* The records still buffered (not yet consumed), in order. *)
 let buffered s = Queue.to_seq s.records |> List.of_seq
@@ -445,6 +460,7 @@ let pull_stream ?n s =
     | Error error ->
         s.has_more <- false;
         s.error <- Some error;
+        s.on_error error;
         Ok records
     | Ok summary ->
         let more = Bolt.metadata_has_more summary in
@@ -454,6 +470,27 @@ let pull_stream ?n s =
           s.on_complete summary
         end;
         Ok records
+
+(* Discard the rest of a stream without pulling its records (the Python
+   driver's consume semantics): the DISCARD response's metadata becomes the
+   stream's final summary. No-op once the stream is finished. *)
+let discard_stream s =
+  if not s.has_more then Ok ()
+  else
+    match discard ?qid:s.run_metadata.qid s.conn with
+    | Error _ as error ->
+        s.has_more <- false;
+        error
+    | Ok (Error error) ->
+        s.has_more <- false;
+        s.error <- Some error;
+        s.on_error error;
+        Error error
+    | Ok (Ok summary) ->
+        s.has_more <- false;
+        s.summary <- Some summary;
+        s.on_complete summary;
+        Ok ()
 
 (* Pull a stream to its end, best effort: a transport failure stops the drain
    (the failure is left on the stream; the connection is recovered by the next

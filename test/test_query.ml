@@ -136,7 +136,7 @@ let discard_round_trip () =
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
       (match Conn.discard conn with
-      | Ok () -> check_state conn "Ready"
+      | Ok _ -> check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       Conn.close conn)
 
@@ -185,7 +185,7 @@ let run_failure_reset () =
       | Ok _ -> fail "bad query should fail"
       | Error _ -> check_state conn "Failed");
       (match Conn.discard conn with
-      | Ok () -> check_state conn "Ready"
+      | Ok _ -> check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
       check (list int) "wire order" [ 0x01; 0x6A; 0x10; 0x0F; 0x2F ] tags;

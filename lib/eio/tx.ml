@@ -36,20 +36,34 @@ let begin_transaction conn ~extra =
   | Ok () -> Ok { conn; state = Open; bookmark = ref None; streams = [] }
 
 (* Drain the transaction's still-open results (like the Python driver's
-   _consume_results) so COMMIT/ROLLBACK can follow. Best effort: a server
-   failure is left on the stream. *)
+   _consume_results) so COMMIT/ROLLBACK can follow, and mark them closed: a
+   result whose transaction ended is out of scope, so later reads on it fail
+   immediately. Best effort: a server failure is left on the stream. The
+   remaining records are DISCARDed (not pulled) so an endless stream cannot
+   hang the close. *)
 let drain_pending t =
-  List.iter Conn.drain_stream t.streams;
+  List.iter (fun s -> ignore (Conn.discard_stream s)) t.streams;
+  List.iter Conn.mark_stream_closed t.streams;
   t.streams <- []
 
 let run t ~hydration ~query ~parameters =
   let* () = check_open t in
   match Conn.run t.conn ~hydration ~query ~parameters with
-  | Error _ as error ->
+  | Error error ->
       t.state <- Failed;
-      error
+      (* A failed RUN terminates every result of the transaction: they surface
+         the same failure instead of pulling on the broken connection. *)
+      List.iter (fun s -> Conn.mark_stream_error s error) t.streams;
+      Error error
   | Ok run_metadata ->
-      let stream = Conn.stream t.conn ~hydration ~run_metadata in
+      let stream =
+        Conn.stream t.conn ~hydration ~run_metadata ~on_error:(fun error ->
+            (* A server failure on one of the transaction's results terminates
+               it: mark the transaction failed and every result failed, so
+               later operations on them raise without touching the connection. *)
+            t.state <- Failed;
+            List.iter (fun s -> Conn.mark_stream_error s error) t.streams)
+      in
       t.streams <- stream :: t.streams;
       Ok (Neo4j_result.make ~query ~parameters stream)
 
