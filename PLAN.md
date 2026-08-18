@@ -316,6 +316,49 @@ gating (the `test_subtest_skips.ml` analog).
 
 **Principle**: the TestKit backend translates commands onto the **public library API** → forces API surface stability from the start. TestKit feature gating (the `test_subtest_skips.ml` analog) lets conformance be enabled gradually, phase by phase.
 
+### Phase B11 — All `tests.stub.*` suites green
+
+`scripts/testkit_stub.sh` (added 2026-08, replacing `testkit_routing.sh`) runs the stub suites
+against the locally built backend: with no arguments the whole `tests.stub` suite
+(`python -m tests.stub.suites`, 1607 tests), or pass test modules/classes/tests as arguments
+(`--help` / `--list-suites` enumerate them). No Neo4j server is needed.
+
+Baseline (measured 2026-08-18; two batches, full-suite-in-one-go is impractical because `summary`
+is pathologically slow):
+
+- **Green**: `routing` v4x4+v5x0 (279), `basic_query` (6), `bookmarks` v4/v5 (11), `retry` +
+  `retry_clustering` (14), `session_run_parameters` (15), `driver_execute_query` (15), and (mostly
+  feature-skipped) `transport`, `server_side_routing`, `optimizations`, `idempotent_retries`,
+  `notifications_config`, `configuration_hints`.
+- **Recurring backend/driver gaps**:
+  - backend `NewDriver` rejects non-`basic` auth (`unsupported auth scheme "bearer"`) → `errors`,
+    `authorization`;
+  - result lifecycle (`unknown result` on double `consume()`, `TimeoutError` hangs on
+    `result.consume()` / session close with a pending stream) → `versions`, `session_run`,
+    `tx_run`, `tx_lifetime`;
+  - no GOODBYE on connection close (Bolt ≥ 4.4) + disconnect-detection step mismatches →
+    `disconnects`;
+  - negative `tx_timeout` not rejected → `tx_begin_parameters`;
+  - default-db home resolution double-ROUTE and stale connections keeping stub servers alive
+    ("Address already in use" cascade) → `connectivity_check.test_get_server_info`.
+
+Order of work (least → most effort):
+
+1. **Result lifecycle** in the backend (`ResultConsume`/`Discard`/session/tx close must answer
+   immediately, never hang) → `versions`, `session_run`, `tx_lifetime`, `tx_run`.
+2. **Auth schemes** in `NewDriver` (`basic`/`bearer`/`none` + `authToken`) → `errors`, then
+   `authorization`.
+3. **GOODBYE on close** (Bolt ≥ 4.4) + disconnect-detection semantics → `disconnects`.
+4. **`tx_timeout < 0` validation** → `tx_begin_parameters`.
+5. **`connectivity_check`/get_server_info**: no double ROUTE for `database:None`, close
+   connections so stub servers shut down between tests.
+6. **Measure + fix the big modules**: `summary` (128, run alone), `homedb` (48), `iteration`
+   (56), `datatypes` (31), `driver_parameters` (40), `notifications_config`.
+7. **`authorization`** (71) last (depends on 2; may need auth-manager features).
+
+Final: `scripts/testkit_stub.sh` → `OK (skipped=<feature-skips>)`, 0 failures; `dune runtest`
+(167) stays green.
+
 ---
 
 ## TRACK C — Documentation and developer enablement
