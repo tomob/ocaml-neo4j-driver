@@ -11,6 +11,7 @@ type t = {
   supports_ssr : bool;
   supports_connection_context : bool;
   supports_telemetry : bool;
+  supports_goodbye : bool;
 }
 (** Protocol features available for a given Bolt version. *)
 

@@ -33,6 +33,8 @@ let features : string list =
     "Feature:API:Type.UnsupportedType";
     "Feature:API:Type.Vector";
     "Feature:API:Type.UUID";
+    (* BEGIN is sent eagerly when the transaction starts. *)
+    "Optimization:EagerTransactionBegin";
     (* Test-support commands for the stub routing suite. *)
     "Backend:RTFetch";
     (* GetRoutingTable *)

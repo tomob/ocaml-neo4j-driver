@@ -678,4 +678,11 @@ let re_auth t auth =
     Ok true
 
 let mark_unauthenticated t = t.current_auth := None
-let close t = Transport.close t.transport
+
+let close t =
+  (* Tell the server we are closing (Bolt 4.4+), like the Python driver: the
+     GOODBYE write is best-effort (no response is read) and is skipped on
+     protocol versions that do not support it. *)
+  if (Capabilities.of_version t.major t.minor).supports_goodbye then
+    ignore (Bolt.goodbye t.transport);
+  Transport.close t.transport

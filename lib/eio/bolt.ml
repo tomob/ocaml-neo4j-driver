@@ -18,6 +18,7 @@ let hello_tag = 0x01
 let logon_tag = 0x6A
 let logoff_tag = 0x6B
 let reset_tag = 0x0F
+let goodbye_tag = 0x02
 let run_tag = 0x10
 let begin_tag = 0x11
 let commit_tag = 0x12
@@ -101,6 +102,10 @@ let rollback transport =
   let* () = send transport ~tag:rollback_tag [] in
   respond transport
 
+(* GOODBYE (Bolt 4.4+): the client tells the server it is closing the
+   connection. No response is read (the server closes). *)
+let goodbye transport = send transport ~tag:goodbye_tag []
+
 (* ROUTE (Bolt 4.3+): ask the server for the routing table of a database. The
    fields are [routing_context, bookmarks, extra], where [extra] is the
    database name (Bolt 4.3) or a map of [db]/[imp_user] (Bolt 4.4+). *)
@@ -112,30 +117,34 @@ let route transport ~routing_context ~bookmarks ~extra =
    A RECORD carries its values as a single List field. The records delivered
    before a FAILURE/IGNORED are kept: the outcome is [Ok summary] on SUCCESS and
    [Error _] on a server failure, so a mid-stream error can be surfaced after
-   the buffered records are consumed. *)
+   the buffered records are consumed. A transport failure (the server closed
+   mid-stream) is treated the same way: the records read so far are kept and the
+   error becomes the outcome. *)
 let rec collect_records acc transport =
-  let* tag, fields = recv_fields transport in
-  match tag with
-  | t when t = record_tag ->
-      let record = match fields with [ Packstream.List values ] -> values | _ -> fields in
-      collect_records (record :: acc) transport
-  | t when t = success_tag ->
-      let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
-      Ok (List.rev acc, Ok metadata)
-  | t when t = failure_tag ->
-      let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
-      let code = failure_code metadata in
-      let message = Option.value ~default:"" (field_string "message" metadata) in
-      let gql_status = field_string "gql_status" metadata in
-      Ok (List.rev acc, Error (Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message))
-  | t when t = ignored_tag ->
-      Ok (List.rev acc, Error (Errors.Service_unavailable "Unexpected IGNORED response"))
-  | tag ->
-      Ok
-        ( List.rev acc,
-          Error
-            (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
-        )
+  match recv_fields transport with
+  | Error error -> Ok (List.rev acc, Error error)
+  | Ok (tag, fields) -> (
+      match tag with
+      | t when t = record_tag ->
+          let record = match fields with [ Packstream.List values ] -> values | _ -> fields in
+          collect_records (record :: acc) transport
+      | t when t = success_tag ->
+          let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
+          Ok (List.rev acc, Ok metadata)
+      | t when t = failure_tag ->
+          let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
+          let code = failure_code metadata in
+          let message = Option.value ~default:"" (field_string "message" metadata) in
+          let gql_status = field_string "gql_status" metadata in
+          Ok (List.rev acc, Error (Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message))
+      | t when t = ignored_tag ->
+          Ok (List.rev acc, Error (Errors.Service_unavailable "Unexpected IGNORED response"))
+      | tag ->
+          Ok
+            ( List.rev acc,
+              Error
+                (Errors.Service_unavailable
+                   (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag)) ))
 
 let pull transport ~extra =
   let* () = send transport ~tag:pull_tag [ extra ] in

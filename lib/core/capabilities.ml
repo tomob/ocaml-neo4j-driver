@@ -9,7 +9,8 @@
    - the ROUTE message: Bolt 4.3
    - server-side routing (ssr.enabled hint): Bolt 4.3
    - the routing context in HELLO (server-side routing): Bolt 4.1
-   - the TELEMETRY message: Bolt 5.4 *)
+   - the TELEMETRY message: Bolt 5.4
+   - the GOODBYE message (client-initiated close): Bolt 4.4 *)
 
 type t = {
   supports_multiple_results : bool;
@@ -20,6 +21,7 @@ type t = {
   supports_ssr : bool;
   supports_connection_context : bool;
   supports_telemetry : bool;
+  supports_goodbye : bool;
 }
 
 let of_version major minor =
@@ -33,4 +35,5 @@ let of_version major minor =
     supports_ssr = at_least 4 3;
     supports_connection_context = at_least 4 1;
     supports_telemetry = at_least 5 4;
+    supports_goodbye = at_least 4 4;
   }

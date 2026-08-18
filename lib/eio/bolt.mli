@@ -27,6 +27,8 @@ val commit_tag : int
 (** Message tag of COMMIT (0x12). *)
 
 val rollback_tag : int
+
+val goodbye_tag : int
 (** Message tag of ROLLBACK (0x13). *)
 
 val discard_tag : int
@@ -93,6 +95,9 @@ val commit : Transport.t -> (Packstream.value, Errors.t) result
 
 val rollback : Transport.t -> (Packstream.value, Errors.t) result
 (** Send a ROLLBACK message and read the response. *)
+
+val goodbye : Transport.t -> (unit, Errors.t) result
+(** Send a GOODBYE message (the client is closing the connection); no response is read. *)
 
 val route :
   Transport.t ->
