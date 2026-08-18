@@ -1,5 +1,5 @@
 # Shared helpers for the TestKit harness scripts that run the backend on the
-# host (testkit_run_locally.sh, testkit_routing.sh). Sourced, not executed:
+# host (testkit_run_locally.sh, testkit_stub.sh). Sourced, not executed:
 # the sourcing script must define die() first and set TESTKIT_BACKEND_PORT,
 # BACKEND_BINARY and backend_pid.
 

@@ -13,16 +13,24 @@ against a real Neo4j server:
 Both scripts manage a Neo4j container (`scripts/integration.sh`), run the
 harness on the host, and tear everything down afterwards.
 
-A third script, `testkit_routing.sh`, runs the **stub routing suite**
-(`tests.stub.routing`) against the locally built backend with **no Neo4j
-server** (the stub servers run in-process inside the Python harness). It is the
-only way to exercise the `GetRoutingTable` / `ForcedRoutingTableUpdate`
-commands and the `Backend:RTFetch` / `Backend:RTForceUpdate` features; the
-`tests.neo4j` suites do not select those tests.
+A third script, `testkit_stub.sh`, runs the **stub suites** (`tests.stub.*`)
+against the locally built backend with **no Neo4j server** (the stub servers run
+in-process inside the Python harness). With no arguments it runs every stub
+suite; pass test modules as arguments to run a subset, e.g. the routing suites:
+
+```sh
+scripts/testkit_stub.sh tests.stub.routing.test_routing_v4x4 tests.stub.routing.test_routing_v5x0
+```
+
+Use `--help` for the full usage and `--list-suites` to enumerate every available
+stub test module. The stub harness is the only way to exercise the
+`GetRoutingTable` / `ForcedRoutingTableUpdate` commands and the
+`Backend:RTFetch` / `Backend:RTForceUpdate` features; the `tests.neo4j` suites
+do not select those tests.
 
 ## Prerequisites
 
-- `docker` (for the Neo4j container; not needed for `testkit_routing.sh`).
+- `docker` (for the Neo4j container; not needed for `testkit_stub.sh`).
 - A checkout of `neo4j-drivers/testkit` with its virtualenv installed.
 - The `neodriver` packages built (`dune build`).
 
@@ -37,8 +45,8 @@ scripts/testkit_run_locally.sh
 # Backend in a container
 scripts/testkit_run.sh
 
-# Stub routing suite (no Neo4j needed)
-scripts/testkit_routing.sh
+# Stub suites (no Neo4j needed)
+scripts/testkit_stub.sh tests.stub.routing.test_routing_v4x4 tests.stub.routing.test_routing_v5x0
 ```
 
 With the default configuration the suite is fully green:

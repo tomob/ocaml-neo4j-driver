@@ -250,7 +250,8 @@ its [+s]/[+ssc] variants) drivers now route:
   to the cluster ([None] / an error for direct `bolt://` drivers). The `RoutingTable` response
   matches the Python backend 1:1 (requested database with `ttl:0` and empty roles when nothing is
   cached; the table's `database`, TTL and role addresses otherwise). The stub routing suite
-  (`scripts/testkit_routing.sh`, no Neo4j needed) runs `RoutingV4x4`/`RoutingV5x0`. Unit tests
+  (`scripts/testkit_stub.sh tests.stub.routing.test_routing_v4x4 tests.stub.routing.test_routing_v5x0`,
+  no Neo4j needed) runs `RoutingV4x4`/`RoutingV5x0`. Unit tests
   cover the cached-table read, a forced update (ROUTE bookmarks on the wire, the stored table, the
   refreshed readers) and a failed forced update storing nothing. **A7 is now 100% done.**
 
@@ -262,8 +263,8 @@ its [+s]/[+ssc] variants) drivers now route:
   RESETs a connection on release regardless of its state (failed connections are recovered, not
   closed). Remaining stub-suite failures are pre-existing driver gaps outside this item (fast-fail
   vs retry on interrupted connections, resolver-based rediscovery, system-bookmark routing,
-  multi-db/leader-switch scenarios); `scripts/testkit_routing.sh` is the harness for iterating on
-  them.
+  multi-db/leader-switch scenarios); `scripts/testkit_stub.sh` (no arguments runs every
+  `tests.stub.*` suite, or pass modules explicitly) is the harness for iterating on them.
 
 **Deferred (follow-ups):**
 
