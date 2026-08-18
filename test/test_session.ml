@@ -205,6 +205,20 @@ let run_captures_bookmark () =
       (* consume() discards the rest of the stream instead of pulling it. *)
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x2F ] (message_tags received))
 
+(* A negative transaction/query timeout is rejected up front as a configuration
+   error, without touching the connection. *)
+let negative_timeout () =
+  Eio_main.run (fun env ->
+      let clock = Eio.Stdenv.mono_clock env in
+      let connect ~mode:_ ~database:_ ~bookmarks:_ = fail "connect must not be called" in
+      let session = Session.create Session.default_config ~clock ~connect () in
+      (match Session.begin_transaction ~timeout:(-1.0) session with
+      | Error (Errors.Configuration_error _) -> ()
+      | _ -> fail "expected a configuration error");
+      match Session.run session ~query:"q" ~parameters:[] ~timeout:(-1.0) with
+      | Error (Errors.Configuration_error _) -> ()
+      | _ -> fail "expected a configuration error")
+
 (* A session cannot hold two explicit transactions at once. *)
 let already_open () =
   Test_mock.with_mock
@@ -337,4 +351,5 @@ let tests =
       [ test_case "resolved home db in RUN" `Quick run_uses_effective_database ] );
     ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
+    ("[Session] negative_timeout", [ test_case "negative tx/query timeout" `Quick negative_timeout ]);
   ]

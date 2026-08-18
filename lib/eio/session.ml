@@ -113,6 +113,17 @@ let mark_bookmark t = function
 let now t = Eio.Time.Mono.now t.clock
 let elapsed_s t t0 = Mtime.Span.to_float_ns (Mtime.span (now t) t0) /. 1_000_000_000.
 
+(* A negative transaction/query timeout is a configuration error (the Python
+   driver raises ConfigurationError for it). *)
+let validate_timeout = function
+  | Some timeout when timeout < 0.0 ->
+      Error (Errors.Configuration_error "Transaction timeout cannot be negative")
+  | _ -> Ok ()
+
+(* [validate_timeout] for managed transactions, in [execute]'s failure type. *)
+let validate_execute_timeout timeout =
+  match validate_timeout timeout with Ok () -> Ok () | Error e -> Error (Driver e)
+
 (* The jittered backoff delays of the Python driver's retry_delay_generator. *)
 let retry_delay_generator config =
   let delay = ref config.initial_retry_delay in
@@ -123,6 +134,7 @@ let retry_delay_generator config =
     value
 
 let run ?timeout ?metadata t ~query ~parameters =
+  let* () = validate_timeout timeout in
   let* conn = conn t in
   (* A new auto-commit query cannot start while the previous result is still
      streaming on the connection: drain it first (like the Python driver's
@@ -155,6 +167,7 @@ let run ?timeout ?metadata t ~query ~parameters =
   Ok (Neo4j_result.make ?fetch_size:t.config.fetch_size ~query ~parameters stream)
 
 let begin_transaction_mode ?metadata ?timeout t ~mode =
+  let* () = validate_timeout timeout in
   match !(t.current_tx) with
   | Some tx when not (Tx.closed tx) ->
       Error (Errors.Transaction_error "Explicit transaction already open")
@@ -196,6 +209,7 @@ let mark_tx_ended t ~bookmark =
   t.current_tx := None
 
 let execute t ~mode ?metadata ?timeout work =
+  let* () = validate_execute_timeout timeout in
   let t0 = now t in
   let delay = retry_delay_generator t.config in
   let within_budget () = elapsed_s t t0 <= t.config.max_transaction_retry_time in
