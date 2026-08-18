@@ -56,7 +56,6 @@ let reuse () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Records ([ [ Packstream.Int 2L ] ], false);
-           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
@@ -70,9 +69,7 @@ let reuse () =
           run_query conn "RETURN 2";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      check (list int) "wire"
-        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x10; 0x3F; 0x0F ]
-        (message_tags received))
+      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x10; 0x3F ] (message_tags received))
 
 (* A connection that failed a query is closed on release; the next acquire
    creates a fresh one (HELLO again). *)
@@ -126,7 +123,6 @@ let lifetime_expired () =
           Test_mock.Success;
           Test_mock.Success;
           Test_mock.Records ([ [ Packstream.Int 1L ] ], false);
-          Test_mock.Success;
         ] );
       ( (5, 4),
         received,
@@ -135,7 +131,6 @@ let lifetime_expired () =
           Test_mock.Success;
           Test_mock.Success;
           Test_mock.Records ([ [ Packstream.Int 2L ] ], false);
-          Test_mock.Success;
         ] );
     ]
     (fun net clock sw port ->
@@ -152,7 +147,7 @@ let lifetime_expired () =
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check (list int) "wire"
-        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x01; 0x6A; 0x10; 0x3F; 0x0F ]
+        [ 0x01; 0x6A; 0x10; 0x3F; 0x01; 0x6A; 0x10; 0x3F ]
         (message_tags received))
 
 (* With a liveness check enabled, reusing an idle connection sends a RESET. *)
@@ -169,9 +164,7 @@ let liveness_check () =
            Test_mock.Records ([ [ Packstream.Int 1L ] ], false);
            Test_mock.Success;
            Test_mock.Success;
-           Test_mock.Success;
            Test_mock.Records ([ [ Packstream.Int 2L ] ], false);
-           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let pool_config = { Config.default_pool_config with liveness_check_timeout = Some 0.5 } in
@@ -186,9 +179,7 @@ let liveness_check () =
           run_query conn "RETURN 2";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      check (list int) "wire"
-        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x0F; 0x10; 0x3F; 0x0F ]
-        (message_tags received))
+      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x10; 0x3F ] (message_tags received))
 
 (* A pool of size 1 with a short acquisition timeout: while the only connection
    is held, a second acquire fails with Connection_acquisition_timeout. *)
@@ -245,7 +236,6 @@ let session_close_once () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Records ([ [ Packstream.Int 1L ] ], false);
-           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
@@ -262,7 +252,7 @@ let session_close_once () =
       | Error e -> fail (Errors.to_string e));
       Session.close session;
       Session.close session;
-      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F ] (message_tags received))
+      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received))
 
 (* The in-use count tracks checked-out connections: 0 when idle, 1 while held,
    back to 0 after release, and 1 again when the idle connection is reused. *)
@@ -270,9 +260,7 @@ let in_use_count () =
   let received = ref [] in
   Test_mock.with_mock
     (Test_mock.Session
-       ( (5, 4),
-         received,
-         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+       ((5, 4), received, [ Test_mock.Success; Test_mock.Success; Test_mock.Success ]))
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
       check int "fresh pool" 0 (Pool.in_use_count pool);

@@ -56,7 +56,10 @@ let default_pool_config =
     connection_write_timeout = 30.0;
     keep_alive = true;
     telemetry_disabled = false;
-    home_db_cache_ttl = infinity;
+    (* The home-database cache is off by default (the Optimisation:HomeDatabaseCache
+       feature is not advertised): a default-database acquire always re-resolves
+       the home database over ROUTE, like the Python driver without the feature. *)
+    home_db_cache_ttl = 0.0;
   }
 
 let make_workspace_config

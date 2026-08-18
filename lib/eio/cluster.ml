@@ -347,6 +347,19 @@ let store_table cluster ~database table =
   Hashtbl.remove cluster.errors database;
   table
 
+(* Cache the home database of the fetched table for [imp_user] and store the
+   table under it too, so a later default-database session (which resolves to
+   it via the cache) reuses it without a ROUTE. The caller holds the lock. *)
+let cache_home_table_locked cluster ~imp_user table =
+  match Routing_table.database table with
+  | Some home_db ->
+      set_home_db cluster imp_user home_db;
+      Hashtbl.replace cluster.tables (Some home_db) (table, now cluster)
+  | None -> ()
+
+let cache_home_table cluster ~imp_user table =
+  with_lock cluster (fun () -> cache_home_table_locked cluster ~imp_user table)
+
 (* Apply an [rt] routing table received from the server (SSR) for [database]:
    parse it and, when valid, replace the cached table (fresh timestamp),
    refresh [routers] and clear a cached fetch error. The table's [db] field is
@@ -368,8 +381,12 @@ let update_table cluster ~database ~imp_user rt =
 
 (* Fetch a fresh table for [database] outside the lock while holding the
    single-flight marker, then store it (or record the failure in the negative
-   cache). Cancellation (e.g. the caller's acquisition timeout) still clears the
-   marker and wakes the waiters. *)
+   cache) and broadcast — all in one lock section, so a waiter woken by the
+   broadcast sees the stored table and the (default-database) home-db cache and
+   does not re-fetch. A default-database fetch also caches the home database
+   returned in the [rt] here, inside the same lock section. Cancellation (e.g.
+   the caller's acquisition timeout) still clears the marker and wakes the
+   waiters. *)
 let fetch_and_store cluster ~database ~imp_user ~bookmarks routers =
   let result =
     Fun.protect
@@ -381,7 +398,12 @@ let fetch_and_store cluster ~database ~imp_user ~bookmarks routers =
   in
   with_lock cluster (fun () ->
       match result with
-      | Ok table -> Ok (store_table cluster ~database table)
+      | Ok table ->
+          if database = None then cache_home_table_locked cluster ~imp_user table;
+          let stored = store_table cluster ~database table in
+          Hashtbl.remove cluster.in_flight database;
+          Eio.Condition.broadcast cluster.cond;
+          Ok stored
       | Error error ->
           Hashtbl.replace cluster.errors database (error, now cluster);
           result)
@@ -390,11 +412,15 @@ let fetch_and_store cluster ~database ~imp_user ~bookmarks routers =
    cache lookup and the single-flight coordination — the actual ROUTE fetch runs
    outside it — and at most one fetch per database is in progress at a time:
    concurrent acquires wait on the condition, then re-check the caches. A recent
-   failure is served from the negative cache instead of being re-fetched. *)
-let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
+   failure is served from the negative cache instead of being re-fetched. With
+   [force] (a default-database resolve whose home-db cache is empty or expired)
+   the fresh-table cache is skipped, so the ROUTE is always issued: like the
+   Python driver without the home-database-cache optimisation, a default-
+   database acquire re-resolves the home database every time. *)
+let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~(force : bool) =
   let decision =
     with_lock cluster (fun () ->
-        match fresh_table cluster ~database ~mode with
+        match if force then None else fresh_table cluster ~database ~mode with
         | Some table -> `Ok table
         | None -> (
             match cached_error cluster ~database with
@@ -412,7 +438,17 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks =
   match decision with
   | `Ok table -> Ok table
   | `Error error -> Error error
-  | `Wait -> resolve_table cluster ~database ~mode ~imp_user ~bookmarks
+  | `Wait ->
+      if force then
+        (* A concurrent default-database fetch may have cached the home
+           database while we waited: re-resolve through the cache, falling back
+           to another forced fetch only if it still isn't cached. *)
+        begin match with_lock cluster (fun () -> home_db_of cluster imp_user) with
+        | Some home_db ->
+            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
+        | None -> resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:true
+        end
+      else resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false
   | `Fetch -> fetch_and_store cluster ~database ~imp_user ~bookmarks (fetch_routers cluster)
 
 (* Load of an address: in-use connections of its pool, or 0 if no pool exists
@@ -441,18 +477,6 @@ let select_from_table ?(exclude = []) cluster ~mode table =
       | Some addr -> Ok (addr, pool_for cluster addr)
       | None -> Error (Errors.Service_unavailable "routing table has no suitable address"))
 
-(* The default-database fetch returned the home database's table: cache the
-   home database for [imp_user] and store the table under it too, so a later
-   default-database session (which resolves to it via the cache) reuses it
-   without a ROUTE. *)
-let cache_home_table cluster ~imp_user table =
-  match Routing_table.database table with
-  | Some home_db ->
-      with_lock cluster (fun () ->
-          set_home_db cluster imp_user home_db;
-          Hashtbl.replace cluster.tables (Some home_db) (table, now cluster))
-  | None -> ()
-
 (* Resolve the effective database for [database] and the routing table to use:
    a fixed database is used as-is (the effective database equals it); the
    default database is resolved to the server's home database — from the cache
@@ -461,17 +485,30 @@ let cache_home_table cluster ~imp_user table =
 let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
   match database with
   | Some _ ->
-      let* table = resolve_table cluster ~database ~mode ~imp_user ~bookmarks in
+      let* table = resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false in
       Ok (table, database)
   | None -> (
       match with_lock cluster (fun () -> home_db_of cluster imp_user) with
       | Some home_db ->
-          let* table = resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks in
+          let* table =
+            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
+          in
           Ok (table, Some home_db)
       | None ->
-          let* table = resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks in
+          (* The home database is not cached (the home-db cache is disabled or
+             expired): resolve it over a fresh ROUTE rather than serving the
+             cached routing table. *)
+          let* table =
+            resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
+          in
           cache_home_table cluster ~imp_user table;
           Ok (table, Routing_table.database table))
+
+(* Result of trying to acquire a connection from a table: [Role_empty] is the
+   table itself having no address for the role (an acquire may refetch once —
+   the router may have been updated); [Failed] is any other failure (a server
+   error such as authentication, or all addresses having failed to connect). *)
+type acquire_outcome = Acquired of Conn.t * string option | Role_empty | Failed of Errors.t
 
 (* Try to acquire a connection for [mode] from [table]: the least-loaded
    address first; an unreachable server is deactivated and the next
@@ -482,12 +519,12 @@ let rec acquire_from_table cluster ~mode ~effective table tried =
   match select_from_table ~exclude:tried cluster ~mode table with
   | Ok (addr, pool) -> (
       match Pool.acquire pool with
-      | Ok conn -> Ok (conn, effective)
+      | Ok conn -> Acquired (conn, effective)
       | Error (Errors.Service_unavailable _) ->
           deactivate cluster addr;
           acquire_from_table cluster ~mode ~effective table (Addressing.to_string addr :: tried)
-      | Error error -> Error error)
-  | Error _ -> Error (Errors.Service_unavailable "routing table has no suitable address")
+      | Error error -> Failed error)
+  | Error error -> if tried = [] then Role_empty else Failed error
 
 let acquire cluster ~mode ~database ~imp_user ~bookmarks =
   with_acquisition_timeout cluster ~on_timeout:"Timed out acquiring a connection" (fun () ->
@@ -495,16 +532,19 @@ let acquire cluster ~mode ~database ~imp_user ~bookmarks =
          router may have been updated), but only a bounded number of times, so
          an acquire whose role stays empty fails fast instead of spinning until
          the acquisition timeout; the caller (a managed transaction or an
-         auto-commit query) then retries. *)
+         auto-commit query) then retries. Connection failures do not trigger a
+         refetch — the failed addresses are deactivated and the next ones of
+         the same table tried within [acquire_from_table]. *)
       let max_refetches = 1 in
       let rec attempt refetches =
         let* table, effective = resolve_for cluster ~database ~mode ~imp_user ~bookmarks in
         match acquire_from_table cluster ~mode ~effective table [] with
-        | Ok _ as ok -> ok
-        | Error _ when refetches < max_refetches ->
+        | Acquired (conn, effective) -> Ok (conn, effective)
+        | Role_empty when refetches < max_refetches ->
             with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
             attempt (refetches + 1)
-        | Error _ as error -> error
+        | Role_empty -> Error (Errors.Service_unavailable "routing table has no suitable address")
+        | Failed error -> Error error
       in
       attempt 0)
 

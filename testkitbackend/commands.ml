@@ -65,7 +65,6 @@ type driver = {
   max_transaction_retry_time : float;
   resolver_registered : bool;
   driver : Driver.t;
-  conn : Conn.t option ref;
 }
 
 type session = { driver_id : int; session : Session.t }
@@ -192,21 +191,6 @@ let domain_name_resolver ctx name =
   | Some addresses -> Ok addresses
   | None -> Error (Errors.Service_unavailable "no domain-name resolution received")
 
-(* A connection for driver-level operations (acquired from the pool on first
-   use, returned to it on DriverClose). *)
-let ensure_conn (driver : driver) =
-  match !(driver.conn) with
-  | Some conn -> Ok conn
-  | None -> (
-      match Driver.acquire driver.driver with
-      | Error error -> Error error
-      | Ok conn ->
-          driver.conn := Some conn;
-          Ok conn)
-
-let conn_of (driver : driver) =
-  match ensure_conn driver with Ok conn -> conn | Error error -> raise (Driver_error error)
-
 (* The session's connection (created lazily by the Session itself). *)
 let session_conn (session : session) =
   match Session.conn session.session with
@@ -272,7 +256,6 @@ let new_driver ctx fields =
           max_transaction_retry_time;
           resolver_registered;
           driver;
-          conn = ref None;
         };
       ("Driver", `Assoc [ ("id", `Int id) ])
 
@@ -281,11 +264,7 @@ let driver_close fields =
   Hashtbl.iter
     (fun _ session -> if session.driver_id = id then close_session_conns session)
     sessions;
-  (match Hashtbl.find_opt drivers id with
-  | Some driver ->
-      (match !(driver.conn) with Some conn -> Driver.release driver.driver conn | None -> ());
-      Driver.close driver.driver
-  | None -> ());
+  (match Hashtbl.find_opt drivers id with Some driver -> Driver.close driver.driver | None -> ());
   Hashtbl.remove drivers id;
   ("Driver", `Assoc [ ("id", `Int id) ])
 
@@ -347,22 +326,32 @@ let resolver_resolution_completed fields =
 let verify_connectivity fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  ignore (conn_of driver);
-  ("Driver", `Assoc [ ("id", `Int id) ])
+  (* Acquire a fresh connection for the default database (a routed driver
+     fetches a routing table and connects to a reader); re-acquired on every
+     call so a changed cluster is re-discovered. *)
+  match Driver.acquire ~mode:Config.Read driver.driver with
+  | Ok conn ->
+      Driver.release driver.driver conn;
+      ("Driver", `Assoc [ ("id", `Int id) ])
+  | Error error -> raise (Driver_error error)
 
 let get_server_info fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  let conn = conn_of driver in
-  let major, minor = Conn.version conn in
-  let agent = Option.value ~default:"" (Conn.server_agent conn) in
-  ( "ServerInfo",
-    `Assoc
-      [
-        ("address", `String (Addressing.to_string (Conn.address conn)));
-        ("agent", `String agent);
-        ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
-      ] )
+  match Driver.acquire ~mode:Config.Read driver.driver with
+  | Ok conn ->
+      let major, minor = Conn.version conn in
+      let agent = Option.value ~default:"" (Conn.server_agent conn) in
+      let address = Addressing.to_string (Conn.address conn) in
+      Driver.release driver.driver conn;
+      ( "ServerInfo",
+        `Assoc
+          [
+            ("address", `String address);
+            ("agent", `String agent);
+            ("protocolVersion", `String (Printf.sprintf "%d.%d" major minor));
+          ] )
+  | Error error -> raise (Driver_error error)
 
 let check_multi_db_support fields =
   let id = int "driverId" fields in

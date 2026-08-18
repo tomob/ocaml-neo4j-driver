@@ -350,8 +350,20 @@ Order of work (least → most effort):
    `authorization`.
 3. **GOODBYE on close** (Bolt ≥ 4.4) + disconnect-detection semantics → `disconnects`.
 4. **`tx_timeout < 0` validation** → `tx_begin_parameters`.
-5. **`connectivity_check`/get_server_info**: no double ROUTE for `database:None`, close
-   connections so stub servers shut down between tests.
+5. **`connectivity_check`/get_server_info** — **Done** (commit "step 5", 2026-08-18): backend
+   `GetServerInfo`/`VerifyConnectivity` now do a fresh `Driver.acquire ~mode:Read` per call
+   (released to the pool) instead of caching one driver-level connection; the home-db cache
+   default became `0.0` (disabled — the feature is not advertised), so a default-database acquire
+   always re-resolves the home database over ROUTE (like the Python driver without the
+   optimisation / on Bolt 4.4), with the cache-population moved inside the single-flight lock
+   section to avoid a re-ROUTE race; `Cluster.acquire` now refetches only when the table's role is
+   genuinely empty (not on authentication/connection failures, which would hit an exhausted
+   router script); the pool resets a connection lazily when an acquire reuses it, and on release
+   only a FAILED connection is reset (like the Python driver's `is_reset` release check) — clean
+   connections are released without a RESET. Result: `connectivity_check` `OK (36)`; the
+   previously empty error code on routed auth failures is now `Neo.ClientError.Security.Unauthorized`.
+   Cluster unit tests opt into the home-db cache explicitly (`home_db_cache_ttl = infinity`) and
+   their `rt` fixtures carry `db:`.
 6. **Measure + fix the big modules**: `summary` (128, run alone), `homedb` (48), `iteration`
    (56), `datatypes` (31), `driver_parameters` (40), `notifications_config`.
 7. **`authorization`** (71) last (depends on 2; may need auth-manager features).

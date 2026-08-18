@@ -98,6 +98,10 @@ let hello_headers (config : config) major minor =
 
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
+
+(* Whether the server answered the last request with a FAILURE: the connection
+   is not in a clean state and needs a RESET before it can be reused. *)
+let is_failed t = State.failed !(t.state)
 let address t = t.address
 
 (* The connection reports request failures to an optional callback (installed by

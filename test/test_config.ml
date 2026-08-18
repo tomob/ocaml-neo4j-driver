@@ -20,7 +20,7 @@ let defaults () =
   check (float 1e-9) "connection write timeout" 30.0 pool.connection_write_timeout;
   check bool "keep alive" true pool.keep_alive;
   check bool "telemetry enabled" false pool.telemetry_disabled;
-  check bool "home db cache ttl default is infinity" true (pool.home_db_cache_ttl = infinity)
+  check bool "home db cache ttl default is disabled" true (pool.home_db_cache_ttl = 0.0)
 
 let access_mode () =
   check bool "default access mode is write" true (Config.default_access_mode = Config.Write)

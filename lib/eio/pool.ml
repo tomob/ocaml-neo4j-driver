@@ -52,17 +52,18 @@ let over_lifetime t created_at =
   let age = Mtime.span (now t) created_at in
   Mtime.Span.to_float_ns age >= t.pool_config.max_connection_lifetime *. 1_000_000_000.
 
-(* Liveness-check an idle connection: send a RESET within the configured
-   timeout. On failure the connection is closed. *)
+(* Liveness-check an idle connection: send a RESET (bounded by the configured
+   timeout when set), like the Python driver which resets a connection lazily
+   when it is reused. On failure the connection is closed. *)
 let liveness_ok t conn =
   match t.pool_config.liveness_check_timeout with
-  | None -> true
   | Some timeout -> (
       try
         Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds t.clock timeout) (fun () ->
             Conn.reset conn)
         |> Stdlib.Result.is_ok
       with _ -> false)
+  | None -> Result.is_ok (Conn.reset conn)
 
 (* Pop a reusable connection off the idle queue, closing any that are over
    their lifetime or fail the liveness check. *)
@@ -123,18 +124,22 @@ let put_conn t conn =
 
 (* Return [conn] to the pool. A second release of the same connection (already
    idle) is a no-op: it is not queued again and no permit is released, so the
-   permit count cannot exceed [max_connection_pool_size]. Like the Python
-   driver, a RESET is sent on release regardless of the connection's state (the
-   server answers it even after a FAILURE), so failed connections are recovered
-   rather than closed; only a connection whose RESET fails (unreachable server)
-   is closed. *)
+   permit count cannot exceed [max_connection_pool_size]. A connection left in
+   the FAILED state (a request answered with a FAILURE) is recovered with a
+   RESET here, like the Python driver's release (which resets anything not
+   already clean); a connection whose RESET fails (unreachable server) is
+   closed. Clean connections are released without a RESET — the reset is sent
+   lazily when the next acquire reuses one. *)
 let release t conn =
   if t.closed then begin
     Conn.close conn;
     Eio.Semaphore.release t.permits
   end
   else begin
-    let reusable = match Conn.reset conn with Ok () -> true | Error _ -> false in
+    let reusable =
+      if Conn.is_failed conn then match Conn.reset conn with Ok () -> true | Error _ -> false
+      else true
+    in
     let outcome =
       with_lock t.mutex (fun () ->
           if t.closed then `Close

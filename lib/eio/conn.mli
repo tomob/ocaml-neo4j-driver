@@ -66,6 +66,10 @@ val version : t -> int * int
 val server_state : t -> State.t
 (** The tracked server protocol state. *)
 
+val is_failed : t -> bool
+(** Whether the server answered the last request with a FAILURE: the connection is not in a clean
+    state and needs a RESET before it can be reused. *)
+
 val set_on_error : t -> (t -> Errors.t -> unit) -> unit
 (** Install a callback invoked with [t] and the error whenever a request on the connection fails:
     failed auto-RESETs and failed messages in {!run} and {!route}, and server failures surfaced by
