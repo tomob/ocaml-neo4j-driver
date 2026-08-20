@@ -15,6 +15,7 @@ let config host port scheme =
       user_agent = "test-agent";
       auth = Conn.basic_auth ();
       routing_context = None;
+      telemetry_disabled = false;
     }
 
 let unpack_message bytes =

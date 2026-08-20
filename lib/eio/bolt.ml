@@ -31,6 +31,10 @@ let success_tag = 0x70
 let failure_tag = 0x7F
 let ignored_tag = 0x7E
 
+(* TELEMETRY (Bolt 5.4): a fire-and-forget notification about driver features
+   used, sent before the query. *)
+let telemetry_tag = 0x54
+
 let send transport ~tag fields =
   Packstream.pack (Packstream.Structure (tag, fields)) |> Transport.write_message transport
 

@@ -20,6 +20,7 @@ type config = {
   user_agent : string;
   auth : auth;
   routing_context : (string * string) list option;
+  telemetry_disabled : bool;
 }
 
 type t = {
@@ -33,9 +34,14 @@ type t = {
   on_error : (t -> Errors.t -> unit) ref;
   last_database : string option ref;
   ssr_enabled : bool ref;
+  telemetry_enabled : bool ref;
 }
 
-let default_user_agent = "ocaml-neo4j-driver/0.1.0"
+let default_user_agent = "ocaml-neo4j-driver/0.3.0"
+
+(* The bolt_agent product: the driver's own product string (independent of the
+   session user agent, like the Python driver's). *)
+let bolt_agent_product = default_user_agent
 
 (* The basic authentication token: scheme [basic] with the given principal and
    credentials. *)
@@ -57,10 +63,10 @@ let tls_of_scheme host = function
   | Addressing.Bolt_secure | Addressing.Neo4j_secure -> Ok (Transport.Verify host)
   | Addressing.Bolt_self_signed | Addressing.Neo4j_self_signed -> Ok (Transport.Trust_all host)
 
-let bolt_agent user_agent =
+let bolt_agent () =
   Packstream.Map
     [
-      ("product", Packstream.String user_agent);
+      ("product", Packstream.String bolt_agent_product);
       ("platform", Packstream.String Sys.os_type);
       ("language", Packstream.String "OCaml");
       ("language_details", Packstream.String Sys.ocaml_version);
@@ -83,7 +89,7 @@ let hello_headers (config : config) major minor =
     | Some _ | None -> []
   in
   let bolt_agent =
-    if bolt_agent_version major minor then [ ("bolt_agent", bolt_agent config.user_agent) ] else []
+    if bolt_agent_version major minor then [ ("bolt_agent", bolt_agent ()) ] else []
   in
   let auth =
     if re_auth_of major minor then []
@@ -112,12 +118,13 @@ let set_last_database t database = t.last_database := database
 let report t error = !(t.on_error) t error
 
 (* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
-   V2 = Bolt 5, V3 = Bolt 6). *)
+   V2 = Bolt 5, V3 = Bolt 6). The minor version gates Bolt 6.1-only types
+   (UUID). *)
 let hydration t =
   let version =
     match t.major with 3 | 4 -> Hydration.V1 | 5 -> Hydration.V2 | _ -> Hydration.V3
   in
-  Hydration.create version
+  Hydration.create version ~minor:t.minor
 
 (* Send a RESET and read the response; the server returns to READY. *)
 let reset t =
@@ -127,6 +134,11 @@ let reset t =
       t.state := State.Ready;
       Ok ()
   | Error _ as error -> error
+
+(* Whether a TELEMETRY notification should be sent on this connection: Bolt
+   5.4+, the server advertised it in HELLO, and the driver configuration does
+   not disable it. *)
+let telemetry_wanted t = (capabilities_of t).supports_telemetry && !(t.telemetry_enabled)
 
 (* Send [action] (a Bolt message that already reads its response) and update the
    server state. If the server is in the FAILED state, a RESET is sent first.
@@ -152,6 +164,47 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
           report t error;
           Error error)
 
+(* Like [request], but batches a TELEMETRY notification for [feature] before the
+   request and reads the telemetry's SUCCESS before the request's own response
+   (the server answers both in order). [action] must only SEND the request
+   message (no read); only RUN/BEGIN use this. The state transitions as usual
+   (a RUN enters [Streaming] until the follow-up PULL/DISCARD). *)
+let request_telemetry t ~message ~re_auth feature action =
+  let pre_error =
+    match if State.failed !(t.state) then reset t else Ok () with
+    | Ok () -> None
+    | Error error -> Some error
+  in
+  match pre_error with
+  | Some error ->
+      report t error;
+      Error error
+  | None -> (
+      let outcome =
+        let* () =
+          Bolt.send t.transport ~tag:Bolt.telemetry_tag [ Packstream.Int (Int64.of_int feature) ]
+        in
+        let* () = action () in
+        match Bolt.respond t.transport with
+        | Error error ->
+            (* TELEMETRY failed: the server IGNOREs the already-sent request, so
+               its response is still on the wire — drain it to keep the message
+               stream in sync for the follow-up RESET. *)
+            ignore (Bolt.respond t.transport);
+            Error error
+        | Ok _ ->
+            let* _ = Bolt.respond t.transport in
+            Bolt.respond t.transport
+      in
+      match outcome with
+      | Ok response ->
+          t.state := State.server_transition ~re_auth ~has_more:false !(t.state) message;
+          Ok response
+      | Error error ->
+          t.state := State.Failed;
+          report t error;
+          Error error)
+
 (* Part 1 of the connection pipeline: open a TCP (optionally TLS) transport to a
    single address. *)
 (* let connect_transport net sw ~timeout ~tls address = Transport.connect net sw ~timeout ~tls address *)
@@ -166,10 +219,17 @@ let set_hello_metadata conn = function
       | _ -> ());
       match List.assoc_opt "hints" fields with
       | Some (Packstream.Map hints) -> (
-          match List.assoc_opt "ssr.enabled" hints with
+          (match List.assoc_opt "ssr.enabled" hints with
           | Some (Packstream.Bool true) -> conn.ssr_enabled := true
-          | _ -> ())
-      | _ -> ())
+          | _ -> ());
+          (* The effective telemetry flag combines the driver configuration
+             (telemetry_disabled) with the server's hint, folded into
+             [telemetry_enabled] at connect time: a server that does not
+             advertise telemetry (or explicitly disables it) turns it off. *)
+          match List.assoc_opt "telemetry.enabled" hints with
+          | Some (Packstream.Bool true) -> ()
+          | _ -> conn.telemetry_enabled := false)
+      | _ -> conn.telemetry_enabled := false)
   | _ -> ()
 
 (* Part 3 of the connection pipeline: authenticate with HELLO (+ a separate
@@ -251,6 +311,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       on_error = ref (fun _ _ -> ());
       last_database = ref None;
       ssr_enabled = ref false;
+      telemetry_enabled = ref (not config.telemetry_disabled);
     }
   in
   let* () = authenticate conn config in
@@ -332,24 +393,37 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
   in
   Packstream.Map items
 
-let run ?mode ?db ?bookmarks ?timeout ?metadata t ~hydration ~query ~parameters =
+let run ?mode ?db ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~parameters =
   (* Like the Python driver, the connection's last database is only updated
      outside a transaction: inside one the BEGIN's database stays authoritative
      (a tx RUN does not carry [db]). *)
   if !(t.state) <> State.Tx_ready_or_tx_streaming then t.last_database := db;
-  let parameters =
-    Packstream.Map
-      (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)) parameters)
+  let* parameters =
+    Result.map
+      (fun items -> Packstream.Map items)
+      (Hydration.dehydrate_assoc_list hydration parameters)
   in
-  let metadata =
-    Option.map
-      (List.map (fun (name, value) -> (name, Hydration.dehydrate hydration value)))
-      metadata
+  let* metadata =
+    match metadata with
+    | None -> Ok None
+    | Some entries ->
+        Result.map (fun items -> Some items) (Hydration.dehydrate_assoc_list hydration entries)
   in
+  let re_auth = re_auth_of t.major t.minor in
   let* metadata_response =
-    request t ~message:State.Run ~re_auth:(re_auth_of t.major t.minor) (fun () ->
-        Bolt.run t.transport ~query ~parameters
-          ~extra:(build_extra ?mode ?db ?bookmarks ?timeout ?metadata ()))
+    match telemetry with
+    | Some feature when telemetry_wanted t ->
+        request_telemetry t ~message:State.Run ~re_auth feature (fun () ->
+            Bolt.send t.transport ~tag:Bolt.run_tag
+              [
+                Packstream.String query;
+                parameters;
+                build_extra ?mode ?db ?bookmarks ?timeout ?metadata ();
+              ])
+    | _ ->
+        request t ~message:State.Run ~re_auth (fun () ->
+            Bolt.run t.transport ~query ~parameters
+              ~extra:(build_extra ?mode ?db ?bookmarks ?timeout ?metadata ()))
   in
   Ok (run_metadata_of metadata_response)
 
@@ -409,6 +483,7 @@ type stream = {
   mutable error : Errors.t option;
   mutable has_more : bool;
   mutable closed : bool;
+  mutable had_record : bool;
   on_complete : Packstream.value -> unit;
   on_error : Errors.t -> unit;
 }
@@ -423,6 +498,7 @@ let stream ?(on_complete = fun _ -> ()) ?(on_error = fun _ -> ()) conn ~hydratio
     error = None;
     has_more = true;
     closed = false;
+    had_record = false;
     on_complete;
     on_error;
   }
@@ -431,6 +507,7 @@ let connection s = s.conn
 let has_more s = s.has_more
 let error s = s.error
 let summary s = s.summary
+let had_record s = s.had_record
 let run_metadata s = s.run_metadata
 
 (* Whether the stream's transaction was closed (the stream is out of scope:
@@ -459,6 +536,7 @@ let pull_stream ?n s =
   if not s.has_more then Ok []
   else
     let* records, outcome = pull ?n ?qid:s.run_metadata.qid s.conn ~hydration:s.hydration in
+    if records <> [] then s.had_record <- true;
     List.iter (fun record -> Queue.push record s.records) records;
     match outcome with
     | Error error ->
@@ -502,7 +580,7 @@ let discard_stream s =
 let rec drain_stream s =
   if has_more s then match pull_stream s with Ok _ -> drain_stream s | Error _ -> ()
 
-let begin_ t ~extra =
+let begin_ ?telemetry t ~extra =
   (* A transaction pins the connection to a database (its BEGIN extra's [db]).
      Like the Python driver, BEGIN records it as the connection's last
      database, so a failure inside the transaction (e.g. NotALeader) is keyed
@@ -514,7 +592,13 @@ let begin_ t ~extra =
       | _ -> ())
   | _ -> ());
   let re_auth = re_auth_of t.major t.minor in
-  let* _ = request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra) in
+  let* _ =
+    match telemetry with
+    | Some feature when telemetry_wanted t ->
+        request_telemetry t ~message:State.Begin ~re_auth feature (fun () ->
+            Bolt.send t.transport ~tag:Bolt.begin_tag [ extra ])
+    | _ -> request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra)
+  in
   Ok ()
 
 let commit t =
@@ -661,6 +745,10 @@ let server_agent t = !(t.server_agent)
 let ssr_enabled t = !(t.ssr_enabled)
 let capabilities t = capabilities_of t
 let current_auth t = !(t.current_auth)
+
+(* The TELEMETRY notification for a feature is batched with the next request
+   by [request] (which consumes its SUCCESS before the request's response);
+   the session layers pass [~telemetry] to [run]/[begin_]. *)
 
 (* Re-authenticate when [auth] differs from the current token: LOGOFF then
    LOGON (Bolt >= 5.1). Returns whether the token changed. *)

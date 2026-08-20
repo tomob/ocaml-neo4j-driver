@@ -12,6 +12,7 @@ type state = Open | Failed | Closed
 
 type t = {
   conn : Conn.t;
+  fetch_size : int option;
   mutable state : state;
   bookmark : string option ref;
   mutable streams : Conn.stream list;
@@ -30,10 +31,10 @@ let metadata_string key = function
       match List.assoc_opt key fields with Some (Packstream.String v) -> Some v | _ -> None)
   | _ -> None
 
-let begin_transaction conn ~extra =
-  match Conn.begin_ conn ~extra with
+let begin_transaction conn ~extra ~fetch_size ~telemetry =
+  match Conn.begin_ ?telemetry conn ~extra with
   | Error _ as error -> error
-  | Ok () -> Ok { conn; state = Open; bookmark = ref None; streams = [] }
+  | Ok () -> Ok { conn; fetch_size; state = Open; bookmark = ref None; streams = [] }
 
 (* Drain the transaction's still-open results (like the Python driver's
    _consume_results) so COMMIT/ROLLBACK can follow, and mark them closed: a
@@ -65,7 +66,7 @@ let run t ~hydration ~query ~parameters =
             List.iter (fun s -> Conn.mark_stream_error s error) t.streams)
       in
       t.streams <- stream :: t.streams;
-      Ok (Neo4j_result.make ~query ~parameters stream)
+      Ok (Neo4j_result.make ?fetch_size:t.fetch_size ~query ~parameters stream)
 
 let commit t =
   let* () = check_open t in

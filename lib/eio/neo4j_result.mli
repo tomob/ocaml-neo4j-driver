@@ -42,5 +42,6 @@ val consume : t -> (Summary.t, Errors.t) result
 val single : t -> (Values.t list, Errors.t) result
 (** The single remaining record; an error unless exactly one. *)
 
-val single_optional : t -> (Values.t list option, Errors.t) result
-(** The single remaining record, or [None]; an error if more than one. *)
+val single_optional : t -> (Values.t list option * string list, Errors.t) result
+(** Expect at most one record. Zero records is [Ok (None, [])]; one is [Ok (Some _, [])]; more than
+    one returns the first record together with a warning (draining the rest of the stream). *)

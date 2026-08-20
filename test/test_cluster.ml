@@ -22,6 +22,7 @@ let config host port =
       user_agent = "test-agent";
       auth = auth ();
       routing_context = None;
+      telemetry_disabled = false;
     }
 
 let server addresses role =

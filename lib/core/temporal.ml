@@ -463,6 +463,16 @@ module DateTime = struct
     | Some (Zone_name name) -> zone_offset name t
     | None -> None
 
+  (* The offset in effect at a WALL-clock [seconds]: the wall seconds are
+     treated as a UTC instant to resolve the zone (an approximation used by the
+     Bolt 3/4 decode, whose DateTime [seconds] field is the wall clock; the
+     running v4x4 TestKit cases do not straddle a DST transition). *)
+  let offset_seconds_at_wall ~tz wall_seconds =
+    match tz with
+    | Offset offset -> Some offset
+    | Zone_name name ->
+        zone_offset name { epoch_seconds = wall_seconds; nanoseconds = 0; tz = Some tz }
+
   let to_ymd_hms t =
     match t.tz with
     | Some (Zone_name name) when t.epoch_seconds < 0L -> (
@@ -547,6 +557,11 @@ module DateTime = struct
       | None, _ -> None
       | Some _, Some (Zone_name name) -> of_zone name (y, mo, d) (h, m, s) ns
       | Some _, _ -> of_offset_or_naive tz (y, mo, d) (h, m, s) ns
+
+  (* Whether [name] is a zone the embedded IANA database knows (after alias
+     resolution): an unknown named zone in a received value is an error, not a
+     silent LMT fallback. *)
+  let is_known_zone name = Timedesc.Time_zone.make (canonical_zone name) <> None
 
   let compare a b =
     match Int64.compare a.epoch_seconds b.epoch_seconds with

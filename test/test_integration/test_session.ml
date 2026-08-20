@@ -96,7 +96,7 @@ let stream_through_session () =
             | Error e -> fail (Errors.to_string e)
           in
           (match Neo4jResult.single_optional result with
-          | Ok (Some r) -> check int "single_optional" 1 (record_int r)
+          | Ok (Some r, _) -> check int "single_optional" 1 (record_int r)
           | _ -> fail "expected single_optional 1");
           let result =
             match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
@@ -290,6 +290,33 @@ let error_recovery () =
           | Error e -> fail (Errors.to_string e));
           Session.close session))
 
+(* An auto-commit query is rejected while an explicit transaction is open (the
+   connection is in a transaction state where a TELEMETRY notification and an
+   auto-commit RUN are not valid); after the rollback the connection still
+   works. *)
+let auto_commit_rejected_in_tx () =
+  with_env (fun env ->
+      with_driver env (fun driver ->
+          let session = Driver.session driver in
+          let tx =
+            match Session.begin_transaction session with
+            | Ok tx -> tx
+            | Error e -> fail (Errors.to_string e)
+          in
+          (match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
+          | Ok _ -> fail "auto-commit run inside an explicit transaction should be rejected"
+          | Error (Errors.Transaction_error message) ->
+              check string "message" "Explicit transaction already open" message
+          | Error _ -> fail "expected a Transaction_error");
+          (match Tx.rollback tx with Ok () -> () | Error e -> fail (Errors.to_string e));
+          (match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
+          | Ok result -> (
+              match Neo4jResult.values result with
+              | Ok rs -> check (list int) "recovered" [ 1 ] (List.map record_int rs)
+              | Error e -> fail (Errors.to_string e))
+          | Error e -> fail (Errors.to_string e));
+          Session.close session))
+
 let tests =
   [
     ( "[Integration > Session] streaming",
@@ -306,4 +333,6 @@ let tests =
     ( "[Integration > Session] auto-commit drains previous",
       [ test_case "drain" `Quick auto_commit_drains_previous ] );
     ("[Integration > Session] error recovery", [ test_case "recovery" `Quick error_recovery ]);
+    ( "[Integration > Session] auto-commit rejected in tx",
+      [ test_case "no auto-commit in an explicit transaction" `Quick auto_commit_rejected_in_tx ] );
   ]

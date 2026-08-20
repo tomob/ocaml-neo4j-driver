@@ -54,6 +54,7 @@ type t = {
   bookmarks : string list ref;
   current_tx : Tx.t option ref;
   auto_result : Conn.stream option ref;
+  telemetry_sent_on : (Conn.t * int) list ref;
 }
 
 let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> ()) () =
@@ -68,6 +69,7 @@ let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> (
     bookmarks = ref config.bookmarks;
     current_tx = ref None;
     auto_result = ref None;
+    telemetry_sent_on = ref [];
   }
 
 (* The session's connection for [mode], connecting on first use. A cached
@@ -135,53 +137,85 @@ let retry_delay_generator config =
 
 let run ?timeout ?metadata t ~query ~parameters =
   let* () = validate_timeout timeout in
-  let* conn = conn t in
-  (* A new auto-commit query cannot start while the previous result is still
-     streaming on the connection: drain it first (like the Python driver's
-     consume of the auto result). Draining fires the stream's on_complete
-     hook, which records the auto-commit bookmark. *)
-  (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
-  let hydration = Conn.hydration conn in
-  let* run_metadata =
-    match
-      Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters
-        ~bookmarks:!(t.bookmarks) ?db:!(t.database) ?timeout ?metadata
-    with
-    | Ok run_metadata -> Ok run_metadata
-    | Error _ as error ->
-        (* Recover the connection after a FAILURE (the Python driver resets it;
-           the stub scripts expect the RESET). *)
-        ignore (Conn.reset conn);
-        error
-  in
-  (* Server-side routing: when the server advertised [ssr.enabled] and answered
-     RUN with an [rt] routing table, hand it to the on_rt callback (the routing
-     cluster of a routed driver updates its table). The callback gets the
-     session's effective database, so SSR tables land under the resolved key. *)
-  (if Conn.ssr_enabled conn then
-     match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
-  let stream =
-    Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary -> mark_bookmark t summary)
-  in
-  t.auto_result := Some stream;
-  Ok (Neo4j_result.make ?fetch_size:t.config.fetch_size ~query ~parameters stream)
+  (* An auto-commit query cannot run while an explicit transaction is open (the
+     Python driver raises TransactionError before sending anything; the
+     connection is in a transaction state where a TELEMETRY notification and an
+     auto-commit RUN are not valid). *)
+  match !(t.current_tx) with
+  | Some tx when not (Tx.closed tx) ->
+      Error (Errors.Transaction_error "Explicit transaction already open")
+  | _ ->
+      let* conn = conn t in
+      (* A new auto-commit query cannot start while the previous result is still
+         streaming on the connection: drain it first (like the Python driver's
+         consume of the auto result). Draining fires the stream's on_complete
+         hook, which records the auto-commit bookmark. *)
+      (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
+      let hydration = Conn.hydration conn in
+      let* run_metadata =
+        match
+          Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ~telemetry:2
+            ~bookmarks:!(t.bookmarks) ?db:!(t.database) ?timeout ?metadata
+        with
+        | Ok run_metadata -> Ok run_metadata
+        | Error _ as error ->
+            (* Recover the connection after a FAILURE (the Python driver resets
+               it; the stub scripts expect the RESET). *)
+            ignore (Conn.reset conn);
+            error
+      in
+      (* Server-side routing: when the server advertised [ssr.enabled] and
+         answered RUN with an [rt] routing table, hand it to the on_rt callback
+         (the routing cluster of a routed driver updates its table). The
+         callback gets the session's effective database, so SSR tables land
+         under the resolved key. *)
+      (if Conn.ssr_enabled conn then
+         match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
+      let stream =
+        Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary ->
+            mark_bookmark t summary)
+      in
+      t.auto_result := Some stream;
+      Ok (Neo4j_result.make ?fetch_size:t.config.fetch_size ~query ~parameters stream)
 
-let begin_transaction_mode ?metadata ?timeout t ~mode =
+let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
   let* () = validate_timeout timeout in
   match !(t.current_tx) with
   | Some tx when not (Tx.closed tx) ->
       Error (Errors.Transaction_error "Explicit transaction already open")
   | _ -> (
       let* conn = conn_for_mode t ~mode in
+      (* A TELEMETRY notification is reported once per connection per API call
+         (feature): a retry of the same API call reusing the same connection
+         does not re-report it, while a retry that reconnected (or a different
+         API call, e.g. a managed transaction then an explicit one) sends it
+         again. *)
+      let telemetry =
+        match telemetry with
+        | Some feature
+          when List.exists (fun (c, f) -> c == conn && f = feature) !(t.telemetry_sent_on) ->
+            None
+        | Some feature ->
+            t.telemetry_sent_on := (conn, feature) :: !(t.telemetry_sent_on);
+            Some feature
+        | None -> None
+      in
       let hydration = Conn.hydration conn in
-      let metadata =
-        Option.map (List.map (fun (k, v) -> (k, Hydration.dehydrate hydration v))) metadata
+      (* Dehydrate the tx metadata with the same error handling as the
+         auto-commit path: a value the connection's protocol cannot represent
+         (e.g. a UUID before Bolt 6.1) surfaces as a [Configuration_error]
+         instead of an uncaught [Invalid_argument]. *)
+      let* metadata =
+        match metadata with
+        | None -> Ok None
+        | Some entries ->
+            Result.map (fun items -> Some items) (Hydration.dehydrate_assoc_list hydration entries)
       in
       let extra =
         Conn.build_extra ~mode ?db:!(t.database) ?imp_user:t.config.impersonated_user ?timeout
           ?metadata ~bookmarks:!(t.bookmarks) ()
       in
-      match Tx.begin_transaction conn ~extra with
+      match Tx.begin_transaction conn ~extra ~fetch_size:t.config.fetch_size ~telemetry with
       | Ok tx ->
           t.current_tx := Some tx;
           Ok tx
@@ -198,7 +232,7 @@ let begin_transaction_mode ?metadata ?timeout t ~mode =
           error)
 
 let begin_transaction ?metadata ?timeout t =
-  begin_transaction_mode ?metadata ?timeout t ~mode:t.config.access_mode
+  begin_transaction_mode ?metadata ?timeout ~telemetry:1 t ~mode:t.config.access_mode
 
 let last_bookmarks t = !(t.bookmarks)
 
@@ -215,7 +249,7 @@ let execute t ~mode ?metadata ?timeout work =
   let within_budget () = elapsed_s t t0 <= t.config.max_transaction_retry_time in
   let retry () = Eio.Time.Mono.sleep t.clock (delay ()) in
   let begin_tx () =
-    match begin_transaction_mode ?metadata ?timeout t ~mode with
+    match begin_transaction_mode ?metadata ?timeout ~telemetry:0 t ~mode with
     | Ok tx -> Ok tx
     | Error error -> Error (Driver error)
   in

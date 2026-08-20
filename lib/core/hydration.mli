@@ -11,8 +11,9 @@ type version =
 type t
 (** A hydration scope holding the per-query graph state; create one per result. *)
 
-val create : version -> t
-(** Create a new hydration scope for the given protocol version. *)
+val create : ?minor:int -> version -> t
+(** A fresh hydration scope. [minor] (default 0) is the negotiated protocol minor version, which
+    gates Bolt 6.1-only types such as UUID. *)
 
 val version : t -> version
 (** The protocol version of this scope. *)
@@ -24,6 +25,12 @@ val hydrate : t -> Packstream.value -> Values.t
 val dehydrate : t -> Values.t -> Packstream.value
 (** Convert a rich value back into a transport-level PackStream value. Raises [Invalid_argument] for
     [Broken] values. *)
+
+val dehydrate_assoc_list :
+  t -> (string * Values.t) list -> ((string * Packstream.value) list, Errors.t) result
+(** Dehydrate an association list of [(name, value)] pairs (query parameters or tx_metadata),
+    failing with a [Configuration_error] on a value the negotiated protocol version cannot encode
+    (e.g. a UUID before Bolt 6.1). *)
 
 val nodes : t -> Values.node list
 (** All nodes hydrated so far in this scope, deduplicated by [element_id]. *)

@@ -14,6 +14,7 @@ let config host port =
       user_agent = "test-agent";
       auth = { scheme = "basic"; principal = "neo4j"; credentials = "password" };
       routing_context = None;
+      telemetry_disabled = false;
     }
 
 let connect net clock sw port =

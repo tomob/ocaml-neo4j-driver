@@ -35,6 +35,9 @@ let features : string list =
     "Feature:API:Type.UUID";
     (* BEGIN is sent eagerly when the transaction starts. *)
     "Optimization:EagerTransactionBegin";
+    (* A clean connection is released without a RESET (reset happens lazily on
+       reuse, or to recover a FAILED connection on release). *)
+    "Optimization:MinimalResets";
     (* Test-support commands for the stub routing suite. *)
     "Backend:RTFetch";
     (* GetRoutingTable *)

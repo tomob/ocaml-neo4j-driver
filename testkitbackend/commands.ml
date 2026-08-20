@@ -10,9 +10,7 @@
 
 open Neodriver
 open Neodriver_eio
-
-exception Backend_error of string
-exception Driver_error of Errors.t
+open Tk_errors
 
 (* --- Connection context --- *)
 
@@ -209,7 +207,7 @@ let get_features _fields =
 
 let new_driver ctx fields =
   let uri_string = string "uri" fields in
-  let user_agent = Option.value ~default:"ocaml-neo4j-driver" (opt_string "userAgent" fields) in
+  let user_agent = Option.value ~default:Conn.default_user_agent (opt_string "userAgent" fields) in
   let auth = auth_of fields in
   let resolver_registered =
     match List.assoc_opt "resolverRegistered" fields with Some (`Bool b) -> b | _ -> false
@@ -240,9 +238,33 @@ let new_driver ctx fields =
   let conn_auth =
     Conn.{ scheme = auth.scheme; principal = auth.principal; credentials = auth.credentials }
   in
+  let pool_config =
+    let max_connection_pool_size =
+      match List.assoc_opt "maxConnectionPoolSize" fields with
+      | Some (`Int n) -> n
+      | Some (`Intlit n) -> ( match int_of_string_opt n with Some n -> n | None -> 100)
+      | _ -> Config.default_pool_config.max_connection_pool_size
+    in
+    let connection_acquisition_timeout =
+      match List.assoc_opt "connectionAcquisitionTimeoutMs" fields with
+      | Some (`Int ms) -> float_of_int ms /. 1000.0
+      | Some (`Intlit ms) -> (
+          match float_of_string_opt ms with Some f -> f /. 1000.0 | None -> 60.0)
+      | _ -> Config.default_pool_config.connection_acquisition_timeout
+    in
+    let telemetry_disabled =
+      match List.assoc_opt "telemetryDisabled" fields with Some (`Bool b) -> b | _ -> false
+    in
+    match
+      Config.make_pool_config ~max_connection_pool_size ~connection_acquisition_timeout
+        ~telemetry_disabled ()
+    with
+    | Ok pool_config -> pool_config
+    | Error error -> raise (Driver_error error)
+  in
   match
     Driver.connect ?resolver:custom ?domain_name_resolver:custom_domain_name ~uri:uri_string
-      ~auth:conn_auth ~user_agent ~connection_timeout ctx.net ctx.clock ctx.sw
+      ~auth:conn_auth ~user_agent ~connection_timeout ~pool_config ctx.net ctx.clock ctx.sw
   with
   | Error error -> raise (Driver_error error)
   | Ok driver ->
@@ -541,6 +563,87 @@ let counters_json c =
       ("systemUpdates", `Int c.Summary.system_updates);
     ]
 
+(* The parsed notification severity/category levels: the raw string is mapped to
+   the known enum values; anything else is UNKNOWN (like the Python driver's
+   _SEVERITY_LOOKUP/_CATEGORY_LOOKUP). *)
+let parsed_severity = function ("WARNING" | "INFORMATION") as s -> s | _ -> "UNKNOWN"
+
+let parsed_category = function
+  | ( "HINT" | "UNRECOGNIZED" | "UNSUPPORTED" | "PERFORMANCE" | "DEPRECATION" | "GENERIC"
+    | "SECURITY" | "TOPOLOGY" | "SCHEMA" ) as c ->
+      c
+  | _ -> "UNKNOWN"
+
+(* The position of a notification/status: [column]/[offset]/[line]. *)
+let position_json = function
+  | Some (Values.Map pos) -> (
+      let int key =
+        match List.assoc_opt key pos with Some (Values.Int n) -> Int64.to_int n | _ -> 0
+      in
+      match List.assoc_opt "column" pos with
+      | None -> `Null
+      | Some _ ->
+          `Assoc
+            [
+              ("column", `Int (int "column"));
+              ("offset", `Int (int "offset"));
+              ("line", `Int (int "line"));
+            ])
+  | _ -> `Null
+
+(* A summary notification, serialized for the TestKit Summary response. From
+   Bolt 5.0 the parsed severity and category levels are added
+   (rawSeverityLevel/severityLevel/rawCategory/category), like the Python
+   driver's SummaryNotification; a legacy Bolt 4.x notification passes the raw
+   fields through, dropping the raw [severity] only when a [position] is
+   present (the legacy TestKit shape). *)
+let notification_json major = function
+  | Values.Map fields ->
+      let full = major >= 5 in
+      if not full then
+        let has_position = List.mem_assoc "position" fields in
+        `Assoc
+          (List.filter_map
+             (fun (k, v) ->
+               if k = "severity" && has_position then None else Some (k, values_to_plain v))
+             fields)
+      else
+        let string key =
+          match List.assoc_opt key fields with Some (Values.String s) -> s | _ -> ""
+        in
+        let position =
+          match List.assoc_opt "position" fields with
+          | Some _ as pos -> position_json pos
+          | None -> `Null
+        in
+        let base =
+          [ ("description", `String (string "description")); ("code", `String (string "code")) ]
+          @ (match List.assoc_opt "position" fields with
+            | Some _ -> [ ("position", position) ]
+            | None -> [])
+          @ [ ("title", `String (string "title")) ]
+        in
+        let severity = string "severity" in
+        let category = string "category" in
+        `Assoc
+          ([
+             ("rawSeverityLevel", `String severity);
+             ("severityLevel", `String (parsed_severity severity));
+             ("rawCategory", `String category);
+             ("category", `String (parsed_category category));
+           ]
+          @ base)
+  | _ -> `Null
+
+(* The default diagnostic-record values the driver fills in when the server
+   omitted them. *)
+let default_diagnostic_entries =
+  [
+    ("OPERATION", Values.String "");
+    ("OPERATION_CODE", Values.String "0");
+    ("CURRENT_SCHEMA", Values.String "/");
+  ]
+
 (* The GQL status objects of a summary, serialized for the TestKit Summary
    response (every field is required by the harness's GqlStatusObject). *)
 let gql_status_json = function
@@ -551,20 +654,14 @@ let gql_status_json = function
       let diagnostic =
         match List.assoc_opt "diagnostic_record" fields with Some (Values.Map d) -> d | _ -> []
       in
-      let position =
-        match List.assoc_opt "_position" diagnostic with
-        | Some (Values.Map pos) -> (
-            match
-              (List.assoc_opt "column" pos, List.assoc_opt "line" pos, List.assoc_opt "offset" pos)
-            with
-            | Some (Values.Int column), Some (Values.Int line), Some (Values.Int offset) ->
-                `Assoc
-                  [
-                    ("column", `Int (Int64.to_int column));
-                    ("line", `Int (Int64.to_int line));
-                    ("offset", `Int (Int64.to_int offset));
-                  ]
-            | _ -> `Null)
+      let raw_classification =
+        match List.assoc_opt "_classification" diagnostic with
+        | Some (Values.String s) -> `String s
+        | _ -> `Null
+      in
+      let raw_severity =
+        match List.assoc_opt "_severity" diagnostic with
+        | Some (Values.String s) -> `String s
         | _ -> `Null
       in
       let is_notification = List.assoc_opt "neo4j_code" fields <> None in
@@ -573,17 +670,104 @@ let gql_status_json = function
           ("isNotification", `Bool is_notification);
           ("gqlStatus", `String (string "gql_status" fields));
           ("statusDescription", `String (string "status_description" fields));
-          ("rawClassification", `Null);
-          ("classification", `String (string "_classification" diagnostic));
-          ("rawSeverity", `Null);
-          ("severity", `String (string "_severity" diagnostic));
+          ("rawClassification", raw_classification);
+          ("classification", `String (parsed_category (string "_classification" diagnostic)));
+          ("rawSeverity", raw_severity);
+          ("severity", `String (parsed_severity (string "_severity" diagnostic)));
           ( "diagnosticRecord",
             match List.assoc_opt "diagnostic_record" fields with
-            | Some value -> values_to_plain value
-            | None -> `Assoc [] );
-          ("position", position);
+            | Some (Values.Map d) ->
+                let d =
+                  List.fold_left
+                    (fun acc (k, v) -> if List.mem_assoc k acc then acc else (k, v) :: acc)
+                    d default_diagnostic_entries
+                in
+                `Assoc (List.map (fun (k, v) -> (k, Testkit_values.to_yojson v)) d)
+            | Some value -> `Assoc [ ("value", Testkit_values.to_yojson value) ]
+            | None ->
+                `Assoc
+                  (List.map
+                     (fun (k, v) -> (k, Testkit_values.to_yojson v))
+                     (List.rev default_diagnostic_entries)) );
+          ("position", position_json (List.assoc_opt "_position" diagnostic));
         ]
   | _ -> `Null
+
+(* The default status for a Bolt < 5.6 summary (the server sent no [statuses]):
+   Success when records were pulled, No Data when the query had keys but no
+   records, Omitted Result otherwise (like the Python driver). *)
+let default_legacy_status s =
+  let gql_status, description =
+    if s.Summary.had_records then ("00000", "note: successful completion")
+    else if s.Summary.had_keys then ("02000", "note: no data")
+    else ("00001", "note: successful completion - omitted result")
+  in
+  Values.Map
+    [
+      ("gql_status", Values.String gql_status);
+      ("status_description", Values.String description);
+      ("diagnostic_record", Values.Map (List.rev default_diagnostic_entries));
+    ]
+
+(* A Bolt < 5.6 notification converted into a GQL status object: warning
+   notifications get [01N42], information [03N42] (the Python driver's
+   _from_notification_metadata). A missing description falls back to the
+   Python driver's "warn: unknown warning" / "info: unknown notification". *)
+let legacy_notification_status = function
+  | Values.Map fields ->
+      let string key =
+        match List.assoc_opt key fields with Some (Values.String s) -> s | _ -> ""
+      in
+      let severity = string "severity" in
+      let description = string "description" in
+      let diagnostic =
+        List.rev default_diagnostic_entries
+        @ (match severity with "" -> [] | s -> [ ("_severity", Values.String s) ])
+        @ (match string "category" with "" -> [] | c -> [ ("_classification", Values.String c) ])
+        @
+        match List.assoc_opt "position" fields with
+        | Some value -> [ ("_position", value) ]
+        | None -> []
+      in
+      let gql_status = if severity = "WARNING" then "01N42" else "03N42" in
+      let status_description =
+        if description <> "" then description
+        else if severity = "WARNING" then "warn: unknown warning"
+        else "info: unknown notification"
+      in
+      Values.Map
+        [
+          ("gql_status", Values.String gql_status);
+          ("status_description", Values.String status_description);
+          ("neo4j_code", Values.String (string "code"));
+          ("diagnostic_record", Values.Map diagnostic);
+        ]
+  | _ -> Values.Null
+
+(* The GQL status precedence of the Python driver: no data (02xxx) > warning
+   (01xxx) > success (00xxx) > informational (03xxx). *)
+let legacy_status_order = function
+  | Values.Map fields -> (
+      match List.assoc_opt "gql_status" fields with
+      | Some (Values.String s) when String.length s >= 2 -> (
+          match String.sub s 0 2 with "02" -> 3 | "01" -> 2 | "00" -> 1 | _ -> 0)
+      | _ -> 0)
+  | _ -> 0
+
+(* The GQL status objects of a summary. From Bolt 5.6 the server sends a
+   [statuses] field; on older versions the driver synthesizes them from the
+   summary's notifications and whether records were seen. *)
+let gql_status_objects_json s =
+  match s.Summary.gql_status_objects with
+  | [] ->
+      let statuses =
+        List.map legacy_notification_status s.Summary.notifications @ [ default_legacy_status s ]
+      in
+      let statuses =
+        List.sort (fun a b -> compare (legacy_status_order b) (legacy_status_order a)) statuses
+      in
+      List.map gql_status_json statuses
+  | statuses -> List.map gql_status_json statuses
 
 let summary_json s =
   let major, minor = s.Summary.server_info.protocol_version in
@@ -604,8 +788,8 @@ let summary_json s =
       ( "notifications",
         match s.Summary.notifications with
         | [] -> `Null
-        | items -> `List (List.map values_to_plain items) );
-      ("gqlStatusObjects", `List (List.map gql_status_json s.Summary.gql_status_objects));
+        | items -> `List (List.map (notification_json major) items) );
+      ("gqlStatusObjects", `List (gql_status_objects_json s));
       ("plan", value_or_null s.Summary.plan);
       ("profile", value_or_null s.Summary.profile);
       ( "query",
@@ -616,7 +800,7 @@ let summary_json s =
               `Assoc (List.map (fun (k, v) -> (k, Testkit_values.to_yojson v)) s.Summary.parameters)
             );
           ] );
-      ("queryType", `String s.Summary.query_type);
+      ("queryType", match s.Summary.query_type with Some t -> `String t | None -> `Null);
       ("resultAvailableAfter", int_or_null s.Summary.result_available_after);
       ("resultConsumedAfter", int_or_null s.Summary.result_consumed_after);
     ]
@@ -638,16 +822,18 @@ let result_single fields =
   | Error error -> raise (Driver_error error)
   | Ok record -> ("Record", record_json record)
 
-(* Expect at most one record in the result stream. *)
+(* Expect at most one record in the result stream: more than one yields the
+   first record with a warning. *)
 let result_single_optional fields =
   let r = get_result (int "resultId" fields) in
-  let record =
+  let record, warnings =
     match Neo4jResult.single_optional r.res with
     | Error error -> raise (Driver_error error)
-    | Ok None -> `Null
-    | Ok (Some record) -> record_json record
+    | Ok (None, warnings) -> (`Null, warnings)
+    | Ok (Some record, warnings) -> (record_json record, warnings)
   in
-  ("RecordOptional", `Assoc [ ("record", record); ("warnings", `List []) ])
+  ( "RecordOptional",
+    `Assoc [ ("record", record); ("warnings", `List (List.map (fun w -> `String w) warnings)) ] )
 
 (* --- Routing table (test-support) --- *)
 

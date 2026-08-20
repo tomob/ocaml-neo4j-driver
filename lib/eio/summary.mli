@@ -31,19 +31,24 @@ type t = {
   counters : counters;
   plan : Values.t option;
   profile : Values.t option;
-  query_type : string;
+  query_type : string option;
   database : string option;
   result_available_after : int option;
   result_consumed_after : int option;
   notifications : Values.t list;
   gql_status_objects : Values.t list;
+  had_records : bool;
+  had_keys : bool;
   server_info : server_info;
   query : string;
   parameters : (string * Values.t) list;
 }
 (** A query result summary: counters, plan/profile, timings, notifications and GQL status objects,
-    the [server_info] and the original [query]/[parameters]. *)
+    the [server_info] and the original [query]/[parameters]. [query_type] is [None] when the server
+    sent no [type] in the PULL summary. *)
 
-val of_stream : Conn.stream -> query:string -> parameters:(string * Values.t) list -> t
+val of_stream :
+  Conn.stream -> query:string -> parameters:(string * Values.t) list -> (t, Errors.t) result
 (** Build the summary from a completed stream (after the final PULL). The plan, profile,
-    notifications and GQL status objects are hydrated into [Values.t]. *)
+    notifications and GQL status objects are hydrated into [Values.t]. An invalid [type] (outside
+    [r], [w], [rw], [s]) is rejected with a [Configuration_error]. *)

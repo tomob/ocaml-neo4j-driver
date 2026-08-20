@@ -181,7 +181,8 @@ let broken_propagation () =
   | v -> fail (Values.to_string v)
 
 let round_trip () =
-  let h = Hydration.create Hydration.V2 in
+  (* V3 (Bolt 6.1): the list includes a UUID, a Bolt 6.1 type. *)
+  let h = Hydration.create Hydration.V3 ~minor:1 in
   let values =
     [
       Values.Null;

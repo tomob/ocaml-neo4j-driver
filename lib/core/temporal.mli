@@ -174,10 +174,17 @@ module DateTime : sig
       time zone database embedded in [Timedesc]; [None] for unknown zones or out-of-range values. *)
 
   val to_ymd_hms : t -> (int * int * int) * (int * int * int) * int
+
+  (** Whether [name] is a zone the embedded IANA database knows (after alias resolution). *)
+  val is_known_zone : string -> bool
   (** The wall clock ((y, m, d), (h, m, s), nanoseconds) in the datetime's zone. For named zones the
       offset at the instant is resolved from the embedded IANA database. *)
 
   val offset_seconds : t -> int option
+
+  (** The offset in effect at a WALL-clock [seconds] (the wall seconds treated as a UTC instant to
+      resolve the zone — the Bolt 3/4 DateTime decoding approximation). *)
+  val offset_seconds_at_wall : tz:tz -> int64 -> int option
   (** The UTC offset in seconds at the datetime's instant: the fixed offset for [Offset] zones,
       resolved from the embedded IANA database for [Zone_name] zones ([None] if the zone is
       unknown). *)

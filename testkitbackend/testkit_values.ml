@@ -1,4 +1,5 @@
 open Neodriver
+open Tk_errors
 
 (* TestKit value encoding: Values.t -> TestKit JSON.
 
@@ -44,7 +45,7 @@ let rec to_yojson = function
   | Values.Vector v -> vector v
   | Values.Uuid u -> field "CypherUUID" (`String u)
   | Values.Unsupported u -> unsupported u
-  | Values.Broken _ -> invalid_arg "Broken values cannot be encoded"
+  | Values.Broken broken -> raise (Driver_error (Errors.Broken_record_error broken.Values.error))
 
 and node n =
   `Assoc

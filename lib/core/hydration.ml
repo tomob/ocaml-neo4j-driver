@@ -24,11 +24,12 @@ type version = V1 | V2 | V3
 
 type t = {
   version : version;
+  minor : int;
   mutable nodes : (string * Values.node) list;
   mutable relationships : (string * Values.relationship) list;
 }
 
-let create version = { version; nodes = []; relationships = [] }
+let create ?(minor = 0) version = { version; minor; nodes = []; relationships = [] }
 let version t = t.version
 let nodes t = List.rev_map snd t.nodes
 let relationships t = List.rev_map snd t.relationships
@@ -100,21 +101,50 @@ let hydrate_time fields =
       | None -> None)
   | _ -> None
 
-let hydrate_datetime_offset fields =
+(* Wall-clock seconds (the V1 encoding of a DateTime) for a UTC [epoch] and
+   an [offset] in seconds. *)
+let wall_to_epoch_seconds version sec offset =
+  if version = V1 then Int64.sub sec (Int64.of_int offset) else sec
+
+let hydrate_datetime_offset t fields =
   match fields with
   | [ seconds; nanoseconds; tz ] -> (
       match (int64_ seconds, int_ nanoseconds, int_ tz) with
       | Some sec, Some ns, Some off ->
-          Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:(Offset off) sec ns))
+          Some
+            (Values.DateTime
+               (Temporal.DateTime.of_epoch_seconds ~tz:(Offset off)
+                  (wall_to_epoch_seconds t.version sec off)
+                  ns))
       | _ -> None)
   | _ -> None
 
-let hydrate_datetime_zone fields =
+let hydrate_datetime_zone t fields =
   match fields with
   | [ seconds; nanoseconds; name ] -> (
       match (int64_ seconds, int_ nanoseconds, str name) with
       | Some sec, Some ns, Some name ->
-          Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:(Zone_name name) sec ns))
+          (* An unknown named zone is a value the driver cannot represent: it
+             must be surfaced as an error (with the zone in the message), not
+             silently fallen back to a UTC/LMT guess. *)
+          if Temporal.DateTime.is_known_zone name then
+            let zone = Temporal.Zone_name name in
+            let epoch =
+              match Temporal.DateTime.offset_seconds_at_wall ~tz:zone sec with
+              | Some off -> wall_to_epoch_seconds t.version sec off
+              | None -> sec
+            in
+            Some (Values.DateTime (Temporal.DateTime.of_epoch_seconds ~tz:zone epoch ns))
+          else
+            (* The raw value carries the actual wire tag: [f] (0x66) on Bolt 3/4,
+               [i] (0x69) on Bolt 5/6. *)
+            let tag = if t.version = V1 then 0x66 else 0x69 in
+            Some
+              (Values.Broken
+                 {
+                   Values.error = Printf.sprintf "unknown timezone %S" name;
+                   Values.raw = Packstream.Structure (tag, fields);
+                 })
       | _ -> None)
   | _ -> None
 
@@ -195,7 +225,15 @@ let rec hydrate t value =
   | Packstream.Float f -> Values.Float f
   | Packstream.String s -> Values.String s
   | Packstream.Bytes b -> Values.Bytes b
-  | Packstream.Uuid u -> Values.Uuid u
+  | Packstream.Uuid u -> (
+      (* UUID (marker 0xE0) is a Bolt 6.1 type: an earlier protocol version
+          rejecting it keeps the driver honest about its negotiated
+          capabilities. *)
+      match (t.version, t.minor) with
+      | V3, minor when minor >= 1 -> Values.Uuid u
+      | _ ->
+          Values.Broken
+            { Values.error = "UUID is not supported before Bolt 6.1"; Values.raw = value })
   | Packstream.List items ->
       let items = List.map (hydrate t) items in
       if List.exists (function Values.Broken _ -> true | _ -> false) items then
@@ -229,10 +267,10 @@ let rec hydrate t value =
       | 0x58 | 0x59 -> wrap (hydrate_point fields)
       | 0x44 -> wrap (hydrate_date fields)
       | 0x54 | 0x74 -> wrap (hydrate_time fields)
-      | 0x46 when t.version = V1 -> wrap (hydrate_datetime_offset fields)
-      | 0x66 when t.version = V1 -> wrap (hydrate_datetime_zone fields)
-      | 0x49 when t.version <> V1 -> wrap (hydrate_datetime_offset fields)
-      | 0x69 when t.version <> V1 -> wrap (hydrate_datetime_zone fields)
+      | 0x46 when t.version = V1 -> wrap (hydrate_datetime_offset t fields)
+      | 0x66 when t.version = V1 -> wrap (hydrate_datetime_zone t fields)
+      | 0x49 when t.version <> V1 -> wrap (hydrate_datetime_offset t fields)
+      | 0x69 when t.version <> V1 -> wrap (hydrate_datetime_zone t fields)
       | 0x46 | 0x66 | 0x49 | 0x69 ->
           (* F/f (v1) or I/i (v2/v3) used with the wrong protocol version. *)
           wrap None
@@ -495,7 +533,10 @@ let rec dehydrate t value =
   | Values.Float f -> Packstream.Float f
   | Values.String s -> Packstream.String s
   | Values.Bytes b -> Packstream.Bytes b
-  | Values.Uuid u -> Packstream.Uuid u
+  | Values.Uuid u -> (
+      match (t.version, t.minor) with
+      | V3, minor when minor >= 1 -> Packstream.Uuid u
+      | _ -> invalid_arg "UUID is not supported before Bolt 6.1")
   | Values.List items -> Packstream.List (List.map (dehydrate t) items)
   | Values.Map entries -> Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) entries)
   | Values.Node n ->
@@ -585,6 +626,11 @@ let rec dehydrate t value =
           Packstream.Structure (0x54, [ Packstream.Int ns; Packstream.Int (Int64.of_int off) ]))
   | Values.DateTime dt -> (
       let seconds, nanoseconds = Temporal.DateTime.to_epoch_seconds dt in
+      (* Bolt 3/4 encodes the WALL-clock seconds (the local unix epoch), Bolt
+         5+ the UTC epoch; the offset/zone is carried separately in both. *)
+      let wire_seconds offset =
+        if t.version = V1 then Int64.add seconds (Int64.of_int offset) else seconds
+      in
       match Temporal.DateTime.tz dt with
       | None ->
           Packstream.Structure
@@ -594,16 +640,19 @@ let rec dehydrate t value =
           Packstream.Structure
             ( tag,
               [
-                Packstream.Int seconds;
+                Packstream.Int (wire_seconds offset);
                 Packstream.Int (Int64.of_int nanoseconds);
                 Packstream.Int (Int64.of_int offset);
               ] )
       | Some (Zone_name name) ->
           let tag = if t.version = V1 then 0x66 else 0x69 in
+          let offset =
+            match Temporal.DateTime.offset_seconds dt with Some off -> off | None -> 0
+          in
           Packstream.Structure
             ( tag,
               [
-                Packstream.Int seconds;
+                Packstream.Int (wire_seconds offset);
                 Packstream.Int (Int64.of_int nanoseconds);
                 Packstream.String name;
               ] ))
@@ -638,3 +687,19 @@ let rec dehydrate t value =
 
 and dehydrate_props t properties =
   Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) properties)
+
+(* Dehydrate an association list of [(name, value)] pairs (query parameters or
+   tx_metadata), failing with a Configuration_error on a value the negotiated
+   protocol version cannot encode (e.g. a UUID before Bolt 6.1). *)
+let dehydrate_assoc_list t entries =
+  let rec go acc = function
+    | [] -> Ok (List.rev acc)
+    | (name, value) :: rest -> (
+        match
+          try Ok (dehydrate t value)
+          with Invalid_argument msg -> Error (Errors.Configuration_error msg)
+        with
+        | Error _ as error -> error
+        | Ok v -> go ((name, v) :: acc) rest)
+  in
+  go [] entries

@@ -364,8 +364,27 @@ Order of work (least → most effort):
    previously empty error code on routed auth failures is now `Neo.ClientError.Security.Unauthorized`.
    Cluster unit tests opt into the home-db cache explicitly (`home_db_cache_ttl = infinity`) and
    their `rt` fixtures carry `db:`.
-6. **Measure + fix the big modules**: `summary` (128, run alone), `homedb` (48), `iteration`
-   (56), `datatypes` (31), `driver_parameters` (40), `notifications_config`.
+6. **Measure + fix the big modules** — **Done** (commit "step 6", 2026-08-19): `summary` (132),
+   `iteration` (56), `datatypes` (31), `driver_parameters` (incl. telemetry), `notifications_config`
+   and `homedb` (verify-only) are green. Fixes: transaction results now honour the session
+   `fetch_size` (PULL n: the tx iteration tests); a consumed result raises on further reads, and
+   `single_optional` with > 1 record returns the first record + a warning; `query_type` is `None`
+   when the server sends no type and invalid types are rejected; `contains-updates` flags are
+   derived from the counters; the HELLO `bolt_agent.product` is the driver's own product (not the
+   user agent); the backend honours `maxConnectionPoolSize`/`connectionAcquisitionTimeoutMs`;
+   UUID is rejected before Bolt 6.1 and unknown timezone IDs raise (no silent LMT fallback);
+   Bolt 3/4 DateTime encodes/decodes the WALL-clock seconds (the V1 local-epoch quirk); Bolt 5.4+
+   TELEMETRY messages are batched with RUN/BEGIN once per connection; the Summary now fills the
+   `contains-*` flags, transforms notifications per Bolt version (legacy raw vs parsed
+   severity/category levels from Bolt 5.0), synthesizes GQL status objects for Bolt 4.x
+   (success/no-data/omitted + per-notification statuses with the diagnostic-record defaults) and
+   fills the diagnostic defaults for Bolt 5.6 statuses. TestKit harness: added the `ocaml`
+   per-driver error/warning mappings to the iteration suite. The backend now advertises
+   `Optimization:MinimalResets` (a clean connection is released without a RESET, resetting lazily
+   on reuse or to recover a FAILED connection) — this matches the driver's pool behaviour and
+   skips the non-minimal-resets `disconnects.test_fail_on_reset`. Full stub suite: 0 failures,
+   25 errors (all pre-existing: `errors`/`authorization` bearer-auth gaps and one
+   `disconnects`/`authorization` edge), down from 130 failures + 70 errors at the step-5 baseline.
 7. **`authorization`** (71) last (depends on 2; may need auth-manager features).
 
 Final: `scripts/testkit_stub.sh` → `OK (skipped=<feature-skips>)`, 0 failures; `dune runtest`

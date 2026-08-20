@@ -46,4 +46,5 @@ let conn_config ?scheme ?password (env : t) =
           credentials = Option.value ~default:env.password password;
         };
       routing_context = None;
+      telemetry_disabled = false;
     }

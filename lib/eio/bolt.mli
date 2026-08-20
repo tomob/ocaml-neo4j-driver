@@ -29,7 +29,10 @@ val commit_tag : int
 val rollback_tag : int
 
 val goodbye_tag : int
-(** Message tag of ROLLBACK (0x13). *)
+(** Message tag of GOODBYE (0x02). *)
+
+val telemetry_tag : int
+(** The TELEMETRY message tag (Bolt 5.4+). *)
 
 val discard_tag : int
 (** Message tag of DISCARD (0x2F). *)

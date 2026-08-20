@@ -19,8 +19,8 @@ type t = { clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t; connection : cluste
 
 (* The routing cluster for a [neo4j://] URI: its address is the initial router
    and routing tables are fetched from it on demand. *)
-let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~pool_config
-    ~connection_timeout ~user_agent ~auth net clock sw =
+let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
+    ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent ~auth net clock sw =
   let initial = Addressing.of_host_port parsed.host parsed.port in
   (* The routing context carries the cluster's own address (like the Python
      driver, which prepends "address" at pool creation): the server uses it for
@@ -42,6 +42,7 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~poo
           user_agent;
           auth;
           routing_context = Some routing_context;
+          telemetry_disabled = pool_config.telemetry_disabled;
         }
     in
     Conn.connect ?domain_name_resolver net clock sw config
@@ -57,6 +58,7 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~poo
           user_agent;
           auth;
           routing_context = Some routing_context;
+          telemetry_disabled = pool_config.telemetry_disabled;
         }
     in
     Conn.connect ?resolver ?domain_name_resolver net clock sw config
@@ -67,8 +69,8 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~poo
   Ok (Cluster cluster)
 
 (* The connection pool for a direct [bolt://] URI. *)
-let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~pool_config
-    ~connection_timeout ~user_agent ~auth net clock sw =
+let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
+    ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent ~auth net clock sw =
   let conn_config =
     Conn.
       {
@@ -79,6 +81,7 @@ let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri) ~pool_c
         user_agent;
         auth;
         routing_context = None;
+        telemetry_disabled = pool_config.telemetry_disabled;
       }
   in
   let connect () = Conn.connect ?resolver ?domain_name_resolver net clock sw conn_config in

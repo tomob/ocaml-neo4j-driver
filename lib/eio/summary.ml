@@ -29,12 +29,14 @@ type t = {
   counters : counters;
   plan : Values.t option;
   profile : Values.t option;
-  query_type : string;
+  query_type : string option;
   database : string option;
   result_available_after : int option;
   result_consumed_after : int option;
   notifications : Values.t list;
   gql_status_objects : Values.t list;
+  had_records : bool;
+  had_keys : bool;
   server_info : server_info;
   query : string;
   parameters : (string * Values.t) list;
@@ -57,12 +59,38 @@ let metadata_value key = function Packstream.Map fields -> List.assoc_opt key fi
 let stat key stats =
   match List.assoc_opt key stats with Some (Packstream.Int n) -> Int64.to_int n | _ -> 0
 
-let stat_bool key stats =
-  match List.assoc_opt key stats with Some (Packstream.Bool b) -> b | _ -> false
-
 let counters_of metadata =
   let stats = match metadata_value "stats" metadata with Some (Packstream.Map s) -> s | _ -> [] in
   let n key = stat key stats in
+  let flag key =
+    match List.assoc_opt key stats with Some (Packstream.Bool b) -> Some b | _ -> None
+  in
+  (* The contains-updates flags are derived from the counters when the server
+     did not send them (like the Python driver): contains_updates = any graph
+     counter > 0, contains_system_updates = system_updates > 0. *)
+  let graph_counters =
+    [
+      n "nodes-created";
+      n "nodes-deleted";
+      n "relationships-created";
+      n "relationships-deleted";
+      n "properties-set";
+      n "labels-added";
+      n "labels-removed";
+      n "indexes-added";
+      n "indexes-removed";
+      n "constraints-added";
+      n "constraints-removed";
+    ]
+  in
+  let contains_updates =
+    match flag "contains-updates" with
+    | Some b -> b
+    | None -> List.exists (fun c -> c > 0) graph_counters
+  in
+  let contains_system_updates =
+    match flag "contains-system-updates" with Some b -> b | None -> n "system-updates" > 0
+  in
   {
     nodes_created = n "nodes-created";
     nodes_deleted = n "nodes-deleted";
@@ -76,8 +104,8 @@ let counters_of metadata =
     constraints_added = n "constraints-added";
     constraints_removed = n "constraints-removed";
     system_updates = n "system-updates";
-    contains_updates = stat_bool "contains-updates" stats;
-    contains_system_updates = stat_bool "contains-system-updates" stats;
+    contains_updates;
+    contains_system_updates;
   }
 
 (* A legacy notification from a Bolt 6 GQL status carrying a [neo4j_code]. *)
@@ -126,22 +154,35 @@ let of_stream stream ~query ~parameters =
     | _ -> []
   in
   let major, minor = Conn.version conn in
-  {
-    counters = counters_of metadata;
-    plan = value_of "plan";
-    profile = value_of "profile";
-    query_type = Option.value ~default:"r" (metadata_string "type" metadata);
-    database = metadata_string "db" metadata;
-    result_available_after = run_metadata.t_first;
-    result_consumed_after = metadata_int "t_last" metadata;
-    notifications;
-    gql_status_objects;
-    server_info =
+  (* A query type outside {r, w, rw, s} is a protocol violation: the driver
+     rejects it (the TestKit invalid-query-type tests). *)
+  let query_type = metadata_string "type" metadata in
+  let valid_query_type =
+    match query_type with None -> true | Some t -> List.mem t [ "r"; "w"; "rw"; "s" ]
+  in
+  if not valid_query_type then
+    Errors.Configuration_error (Printf.sprintf "invalid query type %S" (Option.get query_type))
+    |> Result.error
+  else
+    Ok
       {
-        address = Conn.address conn;
-        agent = Conn.server_agent conn;
-        protocol_version = (major, minor);
-      };
-    query;
-    parameters;
-  }
+        counters = counters_of metadata;
+        plan = value_of "plan";
+        profile = value_of "profile";
+        query_type;
+        database = metadata_string "db" metadata;
+        result_available_after = run_metadata.t_first;
+        result_consumed_after = metadata_int "t_last" metadata;
+        notifications;
+        gql_status_objects;
+        had_records = Conn.had_record stream;
+        had_keys = run_metadata.fields <> [];
+        server_info =
+          {
+            address = Conn.address conn;
+            agent = Conn.server_agent conn;
+            protocol_version = (major, minor);
+          };
+        query;
+        parameters;
+      }

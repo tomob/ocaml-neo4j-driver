@@ -25,10 +25,11 @@ type t = {
   fetch_size : int;
   query : string;
   parameters : (string * Values.t) list;
+  mutable consumed : bool;
 }
 
 let make ?(fetch_size = default_fetch_size) ?(query = "") ?(parameters = []) stream =
-  { stream; fetch_size; query; parameters }
+  { stream; fetch_size; query; parameters; consumed = false }
 
 let stream t = t.stream
 let keys t = (Conn.run_metadata t.stream).fields
@@ -47,10 +48,11 @@ let result t =
   | Some record -> Ok (Some record)
   | None -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
 
-(* A result is out of scope once its transaction closed: further reads must
-   fail immediately (the Python driver's ResultConsumedError). *)
+(* A result is out of scope once it was consumed or its transaction closed:
+   further reads must fail immediately (the Python driver's ResultConsumedError). *)
 let check_open t =
-  if Conn.stream_closed t.stream then
+  if t.consumed then Error (Errors.Result_consumed_error "result is not fully consumed")
+  else if Conn.stream_closed t.stream then
     Error (Errors.Result_consumed_error "result is not fully consumed")
   else Ok ()
 
@@ -83,20 +85,21 @@ let data t =
   Ok (List.map (fun record -> List.map2 (fun k v -> (k, v)) ks record) records)
 
 let consume t =
-  let* () = check_open t in
   (* Drain the rest of the stream with a DISCARD (like the Python driver's
-     consume), not a PULL-all, and return the final summary. Consuming an
-     already-consumed result returns the cached summary again. *)
+     consume), not a PULL-all, and return the final summary. The result is
+     marked consumed, so reading it further raises (whether the stream was
+     already exhausted or still had records to discard). *)
   let stream = t.stream in
+  t.consumed <- true;
   match Conn.summary stream with
-  | Some _ -> Ok (Summary.of_stream stream ~query:t.query ~parameters:t.parameters)
+  | Some _ -> Summary.of_stream stream ~query:t.query ~parameters:t.parameters
   | None -> (
       match Conn.error stream with
       | Some error -> Error error
       | None -> (
           let* () = Conn.discard_stream stream in
           match Conn.summary stream with
-          | Some _ -> Ok (Summary.of_stream stream ~query:t.query ~parameters:t.parameters)
+          | Some _ -> Summary.of_stream stream ~query:t.query ~parameters:t.parameters
           | None -> Error (Errors.Result_consumed_error "result is not fully consumed")))
 
 let single t =
@@ -106,10 +109,21 @@ let single t =
   | [ record ] -> Ok record
   | _ -> Error (Errors.Result_not_single_error "expected exactly one record")
 
+(* Expect at most one record: zero records is [None], one is [Some record], and
+   more than one returns the first record together with a warning (like the
+   Python driver), draining the rest of the stream so it cannot be used as a
+   cheap [next]. *)
 let single_optional t =
   let* () = check_open t in
-  let* records = values t in
-  match records with
-  | [] -> Ok None
-  | [ record ] -> Ok (Some record)
-  | _ -> Error (Errors.Result_not_single_error "expected at most one record")
+  match next t with
+  | Error _ as error -> error
+  | Ok None -> Ok (None, [])
+  | Ok (Some record) -> (
+      match next t with
+      | Error _ as error -> error
+      | Ok None -> Ok (Some record, [])
+      | Ok (Some _) ->
+          (* More than one record: drain the rest with a DISCARD (like the
+             Python driver's single(strict=False)), not a PULL-all. *)
+          let* () = Conn.discard_stream t.stream in
+          Ok (Some record, [ "expected at most one record but got multiple records" ]))

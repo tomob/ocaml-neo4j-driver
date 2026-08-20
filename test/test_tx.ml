@@ -17,6 +17,7 @@ let config host port scheme =
       user_agent = "test-agent";
       auth = auth ();
       routing_context = None;
+      telemetry_disabled = false;
     }
 
 let unpack_message bytes =
@@ -49,7 +50,7 @@ let connect net clock sw port =
   | Error error -> fail (Errors.to_string error)
 
 let begin_tx conn =
-  match Tx.begin_transaction conn ~extra:(Conn.build_extra ()) with
+  match Tx.begin_transaction conn ~extra:(Conn.build_extra ()) ~fetch_size:None ~telemetry:None with
   | Ok tx -> tx
   | Error error -> fail (Errors.to_string error)
 
@@ -127,7 +128,7 @@ let build_extra_fields () =
     (fun net clock sw port ->
       let conn = connect net clock sw port in
       let extra = Conn.build_extra ~mode:Config.Read ~bookmarks:[ "bookmark-0" ] ~timeout:2.5 () in
-      (match Tx.begin_transaction conn ~extra with
+      (match Tx.begin_transaction conn ~extra ~fetch_size:None ~telemetry:None with
       | Ok _ -> ()
       | Error e -> fail (Errors.to_string e));
       let tag, fields = unpack_message (List.hd !received) in

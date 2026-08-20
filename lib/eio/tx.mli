@@ -15,9 +15,16 @@ type state = Open | Failed | Closed  (** Per-transaction state. *)
 type t
 (** An explicit transaction. *)
 
-val begin_transaction : Conn.t -> extra:Packstream.value -> (t, Errors.t) result
+val begin_transaction :
+  Conn.t ->
+  extra:Packstream.value ->
+  fetch_size:int option ->
+  telemetry:int option ->
+  (t, Errors.t) result
 (** Send BEGIN on [conn] and return an [Open] transaction. A RESET is sent first if the connection
-    is in the [Failed] state (recovering from a previous failed transaction). *)
+    is in the [Failed] state (recovering from a previous failed transaction). [fetch_size] is the
+    session's fetch size, used for the transaction's result PULL batches. [telemetry] batches a
+    TELEMETRY notification with the BEGIN. *)
 
 val run :
   t ->

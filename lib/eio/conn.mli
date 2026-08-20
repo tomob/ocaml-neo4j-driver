@@ -17,12 +17,14 @@ type config = {
   user_agent : string;
   auth : auth;
   routing_context : (string * string) list option;
+  telemetry_disabled : bool;
 }
 (** Target connection settings. The scheme selects TLS: [Bolt] plain, [Bolt_secure] TLS with
     certificate validation, [Bolt_self_signed] TLS without validation. [routing_context] is sent as
     the [routing] field of HELLO (server-side routing) for routed ([neo4j*]) drivers: [None] for
     direct [bolt*] drivers, [Some ctx] for routed ones (an empty list sends [routing: {}]). The
-    field is only sent on Bolt >= 4.1. *)
+    field is only sent on Bolt >= 4.1. [telemetry_disabled] suppresses the Bolt 5.4+ TELEMETRY
+    notifications. *)
 
 type t
 (** An established, authenticated Bolt connection: the transport, the negotiated protocol version
@@ -119,6 +121,7 @@ val run :
   ?bookmarks:string list ->
   ?timeout:float ->
   ?metadata:(string * Values.t) list ->
+  ?telemetry:int ->
   t ->
   hydration:Hydration.t ->
   query:string ->
@@ -126,14 +129,15 @@ val run :
   (run_metadata, Errors.t) result
 (** Send a RUN message for [query]. [parameters] are dehydrated with [hydration]. The optional
     [mode], [db], [bookmarks], [timeout] (seconds) and [metadata] ([tx_metadata]) go into the
-    request's [extra] map.
+    request's [extra] map. [telemetry] batches a TELEMETRY notification (Bolt 5.4+) with the RUN.
     @return
       [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
       the next request). *)
 
-val begin_ : t -> extra:Packstream.value -> (unit, Errors.t) result
+val begin_ : ?telemetry:int -> t -> extra:Packstream.value -> (unit, Errors.t) result
 (** Send a BEGIN message (start a transaction) with the given [extra] map (see [build_extra]). A
-    RESET is sent first if the server is in the [Failed] state. *)
+    RESET is sent first if the server is in the [Failed] state. [telemetry] batches a TELEMETRY
+    notification with the BEGIN. *)
 
 val build_extra :
   ?mode:Config.access_mode ->
@@ -236,6 +240,10 @@ val error : stream -> Errors.t option
 
 val summary : stream -> Packstream.value option
 (** The final PULL summary metadata, once the stream has ended normally. *)
+
+val had_record : stream -> bool
+(** Whether any record was pulled on this stream (used to synthesize the Bolt 4.x GQL status
+    objects: a result with records is a Success, one without is No Data). *)
 
 val run_metadata : stream -> run_metadata
 (** The RUN metadata (field names, query id, timings, bookmark). *)

@@ -1,13 +1,13 @@
 (executable
  (name testkitbackend)
- (modules testkitbackend backend commands features testkit_values)
+ (modules testkitbackend backend commands tk_errors features testkit_values)
  (libraries neodriver yojson eio eio_main mtime)
  (enabled_if
   (= %{profile} dev)))
 
 (test
  (name test_values)
- (modules test_values testkit_values)
+ (modules test_values testkit_values tk_errors)
  (libraries alcotest neodriver yojson)
  (enabled_if
   (= %{profile} dev)))
