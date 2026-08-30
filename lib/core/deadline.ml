@@ -8,15 +8,15 @@
 type t = { deadline : float; original_timeout : float option }
 
 let now () = Int64.to_float (Mtime_clock.now_ns ()) /. 1_000_000_000.
+let unset = { deadline = infinity; original_timeout = None }
 
 let create = function
-  | None -> { deadline = infinity; original_timeout = None }
-  | Some timeout ->
-      if timeout = infinity then { deadline = infinity; original_timeout = None }
-      else { deadline = now () +. timeout; original_timeout = Some timeout }
+  | None -> unset
+  | Some timeout when timeout = infinity -> unset
+  | Some timeout -> { deadline = now () +. timeout; original_timeout = Some timeout }
 
 let to_timeout t = if t.deadline = infinity then None else Some (max 0.0 (t.deadline -. now ()))
-let expired t = to_timeout t = Some 0.0
+let expired t = t.deadline <> infinity && t.deadline <= now ()
 let is_set t = t.deadline <> infinity
 let original_timeout t = t.original_timeout
 

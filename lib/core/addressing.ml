@@ -78,14 +78,17 @@ let parse ?(default_host = default_host) ?(default_port = default_port) s =
 
 (* Parse a whitespace-separated list of targets into addresses. *)
 let parse_list ?(default_host = default_host) ?(default_port = default_port) targets =
-  let rec go = function
-    | [] -> Ok []
-    | target :: rest ->
-        let* address = parse ~default_host ~default_port target in
-        let* addresses = go rest in
-        Ok (address :: addresses)
+  let items =
+    targets |> List.concat_map (String.split_on_char ' ') |> List.filter (fun s -> s <> "")
   in
-  targets |> List.concat_map (String.split_on_char ' ') |> List.filter (fun s -> s <> "") |> go
+  let rec go acc = function
+    | [] -> Ok (List.rev acc)
+    | target :: rest -> (
+        match parse ~default_host ~default_port target with
+        | Error _ as err -> err
+        | Ok address -> go (address :: acc) rest)
+  in
+  go [] items
 
 let make_resolved address unresolved_host = { address; unresolved_host }
 

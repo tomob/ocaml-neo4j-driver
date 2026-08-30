@@ -303,7 +303,7 @@ module Duration = struct
         Buffer.add_char buffer 'S'
       end
     end;
-    if Buffer.length buffer = 1 + if negative then 1 else 0 then Buffer.add_string buffer "T0S";
+    if Buffer.length buffer = if negative then 2 else 1 then Buffer.add_string buffer "T0S";
     Buffer.contents buffer
 
   let of_iso8601 s =

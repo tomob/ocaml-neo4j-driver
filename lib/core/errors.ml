@@ -141,18 +141,14 @@ let specific_of_code = function
   | _ -> Other
 
 (* Build a [Neo4j] error from a server-provided code, message and GQL status. *)
-let server_error_of_code ~gql_status ~code ~message =
+let of_neo4j_code_with_gql_status ~gql_status ~code ~message =
   let code = if code = "" then unknown_code else code in
   let classification = classification_of_code code in
   let classification, code = rewrite code classification in
   let retryable = classification = Transient in
   Neo4j { code; message; classification; retryable; gql_status }
 
-let of_neo4j_code ~code ~message = server_error_of_code ~gql_status:None ~code ~message
-
-let of_neo4j_code_with_gql_status ~gql_status ~code ~message =
-  server_error_of_code ~gql_status ~code ~message
-
+let of_neo4j_code ~code ~message = of_neo4j_code_with_gql_status ~gql_status:None ~code ~message
 let code = function Neo4j server -> Some server.code | _ -> None
 
 let message = function

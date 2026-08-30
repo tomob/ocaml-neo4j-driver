@@ -48,6 +48,7 @@ let float_ = function
 let bytes_ = function Packstream.Bytes b -> Some b | _ -> None
 let list_ = function Packstream.List l -> Some l | _ -> None
 let map_ = function Packstream.Map m -> Some m | _ -> None
+let is_broken = function Values.Broken _ -> true | _ -> false
 
 (* The identity (element_id, legacy_id) of a graph entity from its single id
    field: a String is the element_id (Bolt 5.0+), an Int is the legacy id (used
@@ -217,6 +218,14 @@ let hydrate_unsupported fields =
 
 (* --- graph hydrators (mutually recursive with [hydrate]) --- *)
 
+(* Map a list with a partial function, short-circuiting on the first [None]. *)
+let list_map_some f items =
+  let rec go acc = function
+    | [] -> Some (List.rev acc)
+    | x :: rest -> ( match f x with Some y -> go (y :: acc) rest | None -> None)
+  in
+  go [] items
+
 let rec hydrate t value =
   match value with
   | Packstream.Null -> Values.Null
@@ -236,13 +245,13 @@ let rec hydrate t value =
             { Values.error = "UUID is not supported before Bolt 6.1"; Values.raw = value })
   | Packstream.List items ->
       let items = List.map (hydrate t) items in
-      if List.exists (function Values.Broken _ -> true | _ -> false) items then
+      if List.exists is_broken items then
         Values.Broken { Values.error = "broken list"; Values.raw = value }
       else Values.List items
   | Packstream.Map entries ->
       let entries = List.map (fun (k, v) -> (k, hydrate t v)) entries in
-      if List.exists (fun (_, v) -> match v with Values.Broken _ -> true | _ -> false) entries
-      then Values.Broken { Values.error = "broken map"; Values.raw = value }
+      if List.exists (fun (_, v) -> is_broken v) entries then
+        Values.Broken { Values.error = "broken map"; Values.raw = value }
       else Values.Map entries
   | Packstream.Structure (tag, fields) -> (
       let wrap opt =
@@ -276,8 +285,8 @@ let rec hydrate t value =
           wrap None
       | 0x64 -> wrap (hydrate_local_datetime fields)
       | 0x45 -> wrap (hydrate_duration fields)
-      | (0x56 | 0x3F) when t.version = V3 ->
-          if tag = 0x56 then wrap (hydrate_vector fields) else wrap (hydrate_unsupported fields)
+      | 0x56 when t.version = V3 -> wrap (hydrate_vector fields)
+      | 0x3F when t.version = V3 -> wrap (hydrate_unsupported fields)
       | 0x56 | 0x3F -> wrap None
       | _ ->
           Values.Broken
@@ -410,36 +419,22 @@ and hydrate_node_list t nodes =
   match list_ nodes with
   | None -> None
   | Some ls ->
-      let rec go acc = function
-        | [] -> Some (List.rev acc)
-        | Packstream.Structure (0x4E, fields) :: rest -> (
-            match hydrate_node t fields with Some n -> go (n :: acc) rest | None -> None)
-        | _ -> None
-      in
-      go [] ls
+      list_map_some
+        (function Packstream.Structure (0x4E, fields) -> hydrate_node t fields | _ -> None)
+        ls
 
 and hydrate_unbound_list t rels =
   match list_ rels with
   | None -> None
   | Some ls ->
-      let rec go acc = function
-        | [] -> Some (List.rev acc)
-        | Packstream.Structure (0x72, fields) :: rest -> (
-            match hydrate_unbound_relationship t fields with
-            | Some r -> go (r :: acc) rest
-            | None -> None)
-        | _ -> None
-      in
-      go [] ls
+      list_map_some
+        (function
+          | Packstream.Structure (0x72, fields) -> hydrate_unbound_relationship t fields | _ -> None)
+        ls
 
 and int_list = function
   | Packstream.List items ->
-      let rec go acc = function
-        | [] -> Some (List.rev acc)
-        | Packstream.Int n :: rest -> go (Int64.to_int n :: acc) rest
-        | _ -> None
-      in
-      go [] items
+      list_map_some (function Packstream.Int n -> Some (Int64.to_int n) | _ -> None) items
   | _ -> None
 
 and hydrate_path t fields =
@@ -499,24 +494,15 @@ and stitch_path node_list rel_list seq =
 and hydrate_labels labels =
   match list_ labels with
   | None -> None
-  | Some ls ->
-      let rec go acc = function
-        | [] -> Some (List.rev acc)
-        | Packstream.String l :: rest -> go (l :: acc) rest
-        | _ -> None
-      in
-      go [] ls
+  | Some ls -> list_map_some (function Packstream.String l -> Some l | _ -> None) ls
 
 and hydrate_props t props =
   match map_ props with
   | None -> None
   | Some entries ->
-      let rec go acc = function
-        | [] -> Some (List.rev acc)
-        | (k, v) :: rest -> (
-            match hydrate t v with Values.Broken _ -> None | hv -> go ((k, hv) :: acc) rest)
-      in
-      go [] entries
+      list_map_some
+        (fun (k, v) -> match hydrate t v with Values.Broken _ -> None | hv -> Some (k, hv))
+        entries
 
 and merge_labels a b =
   List.fold_left (fun acc l -> if List.mem l acc then acc else l :: acc) a b |> List.rev
@@ -540,41 +526,31 @@ let rec dehydrate t value =
   | Values.List items -> Packstream.List (List.map (dehydrate t) items)
   | Values.Map entries -> Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) entries)
   | Values.Node n ->
-      let id_field =
-        match (n.legacy_id, t.version) with
-        | Some id, V1 -> Packstream.Int (Int64.of_int id)
-        | _ -> Packstream.String n.element_id
-      in
       Packstream.Structure
         ( 0x4E,
           [
-            id_field;
+            id_field t.version n.legacy_id n.element_id;
             Packstream.List (List.map (fun l -> Packstream.String l) n.labels);
             dehydrate_props t n.properties;
           ] )
   | Values.Relationship r ->
-      let id_field =
-        match (r.legacy_id, t.version) with
-        | Some id, V1 -> Packstream.Int (Int64.of_int id)
-        | _ -> Packstream.String r.element_id
-      in
       Packstream.Structure
         ( 0x52,
           [
-            id_field;
+            id_field t.version r.legacy_id r.element_id;
             Packstream.String r.start;
             Packstream.String r.end_;
             Packstream.String r.rel_type;
             dehydrate_props t r.properties;
           ] )
   | Values.Unbound_relationship r ->
-      let id_field =
-        match (r.legacy_id, t.version) with
-        | Some id, V1 -> Packstream.Int (Int64.of_int id)
-        | _ -> Packstream.String r.element_id
-      in
       Packstream.Structure
-        (0x72, [ id_field; Packstream.String r.rel_type; dehydrate_props t r.properties ])
+        ( 0x72,
+          [
+            id_field t.version r.legacy_id r.element_id;
+            Packstream.String r.rel_type;
+            dehydrate_props t r.properties;
+          ] )
   | Values.Path p ->
       let nodes = List.map (fun n -> dehydrate t (Values.Node n)) p.nodes in
       let rels =
@@ -688,6 +664,13 @@ let rec dehydrate t value =
 and dehydrate_props t properties =
   Packstream.Map (List.map (fun (k, v) -> (k, dehydrate t v)) properties)
 
+(* The leading id field of a graph entity on the wire: the legacy integer id
+   for Bolt 3/4, the element_id string otherwise. *)
+and id_field version legacy_id element_id =
+  match (legacy_id, version) with
+  | Some id, V1 -> Packstream.Int (Int64.of_int id)
+  | _ -> Packstream.String element_id
+
 (* Dehydrate an association list of [(name, value)] pairs (query parameters or
    tx_metadata), failing with a Configuration_error on a value the negotiated
    protocol version cannot encode (e.g. a UUID before Bolt 6.1). *)
@@ -695,11 +678,8 @@ let dehydrate_assoc_list t entries =
   let rec go acc = function
     | [] -> Ok (List.rev acc)
     | (name, value) :: rest -> (
-        match
-          try Ok (dehydrate t value)
-          with Invalid_argument msg -> Error (Errors.Configuration_error msg)
-        with
-        | Error _ as error -> error
-        | Ok v -> go ((name, v) :: acc) rest)
+        match dehydrate t value with
+        | v -> go ((name, v) :: acc) rest
+        | exception Invalid_argument msg -> Error (Errors.Configuration_error msg))
   in
   go [] entries
