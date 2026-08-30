@@ -33,10 +33,7 @@ let authenticator = function
 
 (* The host is used for SNI and hostname verification. Addresses that are not
    valid domain names (e.g. IP literals) simply skip both. *)
-let peer_name host =
-  match Domain_name.of_string host with
-  | Error _ -> None
-  | Ok raw -> ( match Domain_name.host raw with Ok host -> Some host | Error _ -> None)
+let peer_name host = Result.to_option (Result.bind (Domain_name.of_string host) Domain_name.host)
 
 let wrap config socket =
   let* authenticator = authenticator config.mode in

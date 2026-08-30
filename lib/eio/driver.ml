@@ -60,11 +60,11 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
 (* The connection pool for a direct [bolt://] URI. *)
 let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent ~auth net clock sw =
-  let conn_config =
+  let config =
     conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth ~routing_context:None
       (Addressing.of_host_port parsed.host parsed.port)
   in
-  let connect () = Conn.connect ?resolver ?domain_name_resolver net clock sw conn_config in
+  let connect () = Conn.connect ?resolver ?domain_name_resolver net clock sw config in
   let pool = Pool.create ~pool_config ~connect clock in
   Ok (Pool pool)
 

@@ -64,16 +64,23 @@ let failure_code payload =
   | Some code -> code
   | None -> Option.value ~default:"" (field_string "code" payload)
 
+(* The metadata of a message as a map: its single field, or an empty map when
+   the message carries no fields. *)
+let metadata_of_fields = function [] -> Packstream.Map [] | field :: _ -> field
+
+(* A server FAILURE as a driver error, from its metadata map. *)
+let failure_error metadata =
+  let code = failure_code metadata in
+  let message = Option.value ~default:"" (field_string "message" metadata) in
+  let gql_status = field_string "gql_status" metadata in
+  Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message
+
 let respond transport =
   let* tag, payload = recv transport in
   match tag with
   | t when t = success_tag -> Ok (Option.value ~default:(Packstream.Map []) payload)
   | t when t = failure_tag ->
-      let payload = Option.value ~default:(Packstream.Map []) payload in
-      let code = failure_code payload in
-      let message = Option.value ~default:"" (field_string "message" payload) in
-      let gql_status = field_string "gql_status" payload in
-      Error (Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message)
+      Error (failure_error (Option.value ~default:(Packstream.Map []) payload))
   | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")
   | tag ->
       Error (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
@@ -132,15 +139,9 @@ let rec collect_records acc transport =
       | t when t = record_tag ->
           let record = match fields with [ Packstream.List values ] -> values | _ -> fields in
           collect_records (record :: acc) transport
-      | t when t = success_tag ->
-          let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
-          Ok (List.rev acc, Ok metadata)
+      | t when t = success_tag -> Ok (List.rev acc, Ok (metadata_of_fields fields))
       | t when t = failure_tag ->
-          let metadata = match fields with [] -> Packstream.Map [] | field :: _ -> field in
-          let code = failure_code metadata in
-          let message = Option.value ~default:"" (field_string "message" metadata) in
-          let gql_status = field_string "gql_status" metadata in
-          Ok (List.rev acc, Error (Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message))
+          Ok (List.rev acc, Error (failure_error (metadata_of_fields fields)))
       | t when t = ignored_tag ->
           Ok (List.rev acc, Error (Errors.Service_unavailable "Unexpected IGNORED response"))
       | tag ->

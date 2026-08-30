@@ -67,15 +67,15 @@ let create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~in
 let now t = Eio.Time.Mono.now t.clock
 let elapsed_s t since = Mtime.Span.to_float_ns (Mtime.span (now t) since) /. 1_000_000_000.
 
-let with_lock t f =
-  Eio.Mutex.lock t.lock;
-  Fun.protect ~finally:(fun () -> Eio.Mutex.unlock t.lock) f
+let with_mutex mutex f =
+  Eio.Mutex.lock mutex;
+  Fun.protect ~finally:(fun () -> Eio.Mutex.unlock mutex) f
+
+let with_lock t f = with_mutex t.lock f
 
 (* Serializes routing-table fetches (the ROUTE requests on the shared routing
    connections must not interleave across concurrent fetches). *)
-let with_routing_lock t f =
-  Eio.Mutex.lock t.routing_lock;
-  Fun.protect ~finally:(fun () -> Eio.Mutex.unlock t.routing_lock) f
+let with_routing_lock t f = with_mutex t.routing_lock f
 
 (* Run [f] bounded by the connection-acquisition timeout. *)
 let with_acquisition_timeout cluster ~on_timeout f =
@@ -388,24 +388,31 @@ let update_table cluster ~database ~imp_user rt =
    waiters. *)
 let fetch_and_store cluster ~database ~imp_user ~bookmarks routers =
   let result =
-    Fun.protect
-      ~finally:(fun () ->
-        with_lock cluster (fun () ->
-            Hashtbl.remove cluster.in_flight database;
-            Eio.Condition.broadcast cluster.cond))
-      (fun () -> fetch_table cluster ~database ~imp_user ~bookmarks None routers)
+    try fetch_table cluster ~database ~imp_user ~bookmarks None routers
+    with exn ->
+      (* Cancellation (or an unexpected error) during the fetch: still clear
+         the single-flight marker and wake the waiters, then re-raise. *)
+      with_lock cluster (fun () ->
+          Hashtbl.remove cluster.in_flight database;
+          Eio.Condition.broadcast cluster.cond);
+      raise exn
   in
   with_lock cluster (fun () ->
-      match result with
-      | Ok table ->
-          if database = None then cache_home_table_locked cluster ~imp_user table;
-          let stored = store_table cluster ~database table in
-          Hashtbl.remove cluster.in_flight database;
-          Eio.Condition.broadcast cluster.cond;
-          Ok stored
-      | Error error ->
-          Hashtbl.replace cluster.errors database (error, now cluster);
-          result)
+      let outcome =
+        match result with
+        | Ok table ->
+            if database = None then cache_home_table_locked cluster ~imp_user table;
+            Ok (store_table cluster ~database table)
+        | Error error ->
+            Hashtbl.replace cluster.errors database (error, now cluster);
+            Error error
+      in
+      (* Store (or record the failure) and wake the waiters in one lock section,
+         so a waiter woken by the broadcast sees the stored table and the
+         (default-database) home-db cache and does not re-fetch. *)
+      Hashtbl.remove cluster.in_flight database;
+      Eio.Condition.broadcast cluster.cond;
+      outcome)
 
 (* Resolve the routing table for [database]. The lock is held only for the fast
    cache lookup and the single-flight coordination — the actual ROUTE fetch runs

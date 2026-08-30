@@ -140,24 +140,31 @@ let reset t =
    not disable it. *)
 let telemetry_wanted t = (capabilities_of t).supports_telemetry && !(t.telemetry_enabled)
 
+(* Reset a connection left in the FAILED state (reporting a reset failure via
+   [report]), so the next request runs on a clean connection. *)
+let ensure_ready t =
+  if State.failed !(t.state) then (
+    match reset t with
+    | Ok () -> Ok ()
+    | Error error ->
+        report t error;
+        Error error)
+  else Ok ()
+
 (* Send [action] (a Bolt message that already reads its response) and update the
    server state. If the server is in the FAILED state, a RESET is sent first.
    [has_more result] decides whether the state stays in STREAMING after the
    message (used by PULL/DISCARD). *)
 let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
-  match if State.failed !(t.state) then reset t else Ok () with
+  let* () = ensure_ready t in
+  match action () with
+  | Ok result ->
+      t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
+      Ok result
   | Error error ->
+      t.state := State.Failed;
       report t error;
       Error error
-  | Ok () -> (
-      match action () with
-      | Ok result ->
-          t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
-          Ok result
-      | Error error ->
-          t.state := State.Failed;
-          report t error;
-          Error error)
 
 (* Like [request], but batches a TELEMETRY notification for [feature] before the
    request and reads the telemetry's SUCCESS before the request's own response
@@ -165,39 +172,31 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
    message (no read); only RUN/BEGIN use this. The state transitions as usual
    (a RUN enters [Streaming] until the follow-up PULL/DISCARD). *)
 let request_telemetry t ~message ~re_auth feature action =
-  match if State.failed !(t.state) then reset t else Ok () with
+  let* () = ensure_ready t in
+  let outcome =
+    let* () =
+      Bolt.send t.transport ~tag:Bolt.telemetry_tag [ Packstream.Int (Int64.of_int feature) ]
+    in
+    let* () = action () in
+    match Bolt.respond t.transport with
+    | Error error ->
+        (* TELEMETRY failed: the server IGNOREs the already-sent request, so
+           its response is still on the wire — drain it to keep the message
+           stream in sync for the follow-up RESET. *)
+        ignore (Bolt.respond t.transport);
+        Error error
+    | Ok _ ->
+        let* _ = Bolt.respond t.transport in
+        Bolt.respond t.transport
+  in
+  match outcome with
+  | Ok response ->
+      t.state := State.server_transition ~re_auth ~has_more:false !(t.state) message;
+      Ok response
   | Error error ->
+      t.state := State.Failed;
       report t error;
       Error error
-  | Ok () -> (
-      let outcome =
-        let* () =
-          Bolt.send t.transport ~tag:Bolt.telemetry_tag [ Packstream.Int (Int64.of_int feature) ]
-        in
-        let* () = action () in
-        match Bolt.respond t.transport with
-        | Error error ->
-            (* TELEMETRY failed: the server IGNOREs the already-sent request, so
-               its response is still on the wire — drain it to keep the message
-               stream in sync for the follow-up RESET. *)
-            ignore (Bolt.respond t.transport);
-            Error error
-        | Ok _ ->
-            let* _ = Bolt.respond t.transport in
-            Bolt.respond t.transport
-      in
-      match outcome with
-      | Ok response ->
-          t.state := State.server_transition ~re_auth ~has_more:false !(t.state) message;
-          Ok response
-      | Error error ->
-          t.state := State.Failed;
-          report t error;
-          Error error)
-
-(* Part 1 of the connection pipeline: open a TCP (optionally TLS) transport to a
-   single address. *)
-(* let connect_transport net sw ~timeout ~tls address = Transport.connect net sw ~timeout ~tls address *)
 
 (* Record the HELLO response metadata: the server agent, and the [ssr.enabled]
    hint that turns on server-side routing (the server then sends [rt] routing
