@@ -17,5 +17,7 @@ depend on the network backend.
   and rich values.
 - {!module:Neodriver_core.Capabilities} — per-version Bolt protocol
   capabilities.
+- {!module:Neodriver_core.Routing_table} — routing tables for [neo4j://]
+  (routed) drivers.
 
 The root {!module:Neodriver_core} aggregates all of the above.

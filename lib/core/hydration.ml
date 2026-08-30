@@ -448,7 +448,7 @@ and hydrate_path t fields =
       let* node_list = hydrate_node_list t nodes in
       let* rel_list = hydrate_unbound_list t rels in
       let* seq = int_list sequence in
-      if List.length node_list < 1 || List.length seq mod 2 <> 0 then None
+      if node_list = [] || List.length seq mod 2 <> 0 then None
       else stitch_path node_list rel_list seq
   | _ -> None
 

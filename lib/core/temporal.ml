@@ -64,6 +64,37 @@ let days_in_month (y, m) =
 (* Proleptic Gregorian ordinal of 1970-01-01. *)
 let epoch_ordinal = 719163
 
+(* --- Shared time arithmetic --- *)
+
+(* A (hour, minute, second, nanosecond) wall-clock time as nanoseconds. *)
+let hms_ns_to_ticks h m s ns =
+  Int64.add
+    (Int64.mul 3_600_000_000_000L (Int64.of_int h))
+    (Int64.add
+       (Int64.mul 60_000_000_000L (Int64.of_int m))
+       (Int64.add (Int64.mul 1_000_000_000L (Int64.of_int s)) (Int64.of_int ns)))
+
+(* Nanoseconds as a (hour, minute, second, nanosecond) wall-clock time. *)
+let hms_ns_of_ticks ticks =
+  let ns = Int64.to_int (Int64.rem ticks 1_000_000_000L) in
+  let s = Int64.to_int (Int64.rem (Int64.div ticks 1_000_000_000L) 60L) in
+  let m = Int64.to_int (Int64.rem (Int64.div ticks 60_000_000_000L) 60L) in
+  let h = Int64.to_int (Int64.div ticks 3_600_000_000_000L) in
+  (h, m, s, ns)
+
+(* Seconds as a (hour, minute, second) wall-clock time. *)
+let hms_of_seconds seconds =
+  let h = Int64.to_int (Int64.div seconds 3_600L) in
+  let m = Int64.to_int (Int64.div (Int64.rem seconds 3_600L) 60L) in
+  let s = Int64.to_int (Int64.rem seconds 60L) in
+  (h, m, s)
+
+(* A wall-clock (y, mo, d) (h, m, s) as epoch seconds. *)
+let wall_epoch_seconds (y, mo, d) (h, m, s) =
+  Int64.add
+    (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
+    (Int64.of_int ((h * 3600) + (m * 60) + s))
+
 (* --- Time zones --- *)
 
 type tz = Offset of int | Zone_name of string
@@ -133,23 +164,9 @@ module Time = struct
 
   let of_hms_ns ?tz_offset_seconds h m s ns =
     if h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59 || ns < 0 || ns > 999_999_999 then None
-    else
-      let ticks =
-        Int64.add
-          (Int64.mul 3_600_000_000_000L (Int64.of_int h))
-          (Int64.add
-             (Int64.mul 60_000_000_000L (Int64.of_int m))
-             (Int64.add (Int64.mul 1_000_000_000L (Int64.of_int s)) (Int64.of_int ns)))
-      in
-      Some { ticks; tz_offset_seconds }
+    else Some { ticks = hms_ns_to_ticks h m s ns; tz_offset_seconds }
 
-  let to_hms_ns t =
-    let ns = Int64.to_int (Int64.rem t.ticks 1_000_000_000L) in
-    let s = Int64.to_int (Int64.rem (Int64.div t.ticks 1_000_000_000L) 60L) in
-    let m = Int64.to_int (Int64.rem (Int64.div t.ticks 60_000_000_000L) 60L) in
-    let h = Int64.to_int (Int64.div t.ticks 3_600_000_000_000L) in
-    (h, m, s, ns)
-
+  let to_hms_ns t = hms_ns_of_ticks t.ticks
   let add nanoseconds t = { t with ticks = Int64.add t.ticks nanoseconds }
   let sub nanoseconds t = { t with ticks = Int64.sub t.ticks nanoseconds }
   let compare a b = compare a.ticks b.ticks
@@ -481,11 +498,7 @@ module DateTime = struct
             let days, rem =
               floor_div_rem (Int64.add t.epoch_seconds (Int64.of_int offset)) seconds_per_day
             in
-            let days = Int64.to_int days in
-            let h = Int64.to_int (Int64.div rem 3_600L) in
-            let m = Int64.to_int (Int64.div (Int64.rem rem 3_600L) 60L) in
-            let s = Int64.to_int (Int64.rem rem 60L) in
-            (civil_from_days days, (h, m, s), t.nanoseconds)
+            (civil_from_days (Int64.to_int days), hms_of_seconds rem, t.nanoseconds)
         | None -> ((1970, 1, 1), (0, 0, 0), 0))
     | Some (Zone_name name) -> (
         match timedesc_of_epoch name t with
@@ -496,11 +509,7 @@ module DateTime = struct
         | None -> ((1970, 1, 1), (0, 0, 0), 0))
     | _ ->
         let days, rem = floor_div_rem (wall_seconds t) seconds_per_day in
-        let days = Int64.to_int days in
-        let h = Int64.to_int (Int64.div rem 3_600L) in
-        let m = Int64.to_int (Int64.div (Int64.rem rem 3_600L) 60L) in
-        let s = Int64.to_int (Int64.rem rem 60L) in
-        (civil_from_days days, (h, m, s), t.nanoseconds)
+        (civil_from_days (Int64.to_int days), hms_of_seconds rem, t.nanoseconds)
 
   (* A named-zone datetime from a wall clock, resolved through the embedded
      IANA database. *)
@@ -524,11 +533,7 @@ module DateTime = struct
     if y < 1970 then
       match lmt_offset name with
       | Some offset ->
-          let wall =
-            Int64.add
-              (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
-              (Int64.of_int ((h * 3600) + (m * 60) + s))
-          in
+          let wall = wall_epoch_seconds (y, mo, d) (h, m, s) in
           Some
             {
               epoch_seconds = Int64.sub wall (Int64.of_int offset);
@@ -540,11 +545,7 @@ module DateTime = struct
 
   (* A fixed-offset or naive datetime from a wall clock. *)
   let of_offset_or_naive tz (y, mo, d) (h, m, s) ns =
-    let wall =
-      Int64.add
-        (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
-        (Int64.of_int ((h * 3600) + (m * 60) + s))
-    in
+    let wall = wall_epoch_seconds (y, mo, d) (h, m, s) in
     let epoch =
       match tz with Some (Offset offset) -> Int64.sub wall (Int64.of_int offset) | _ -> wall
     in
@@ -574,20 +575,11 @@ module DateTime = struct
 
   let normalize_time (h, m, s, ns) add_seconds add_ns =
     let total =
-      Int64.add
-        (Int64.mul 3_600_000_000_000L (Int64.of_int h))
-        (Int64.add
-           (Int64.mul 60_000_000_000L (Int64.of_int m))
-           (Int64.add (Int64.mul 1_000_000_000L (Int64.of_int s)) (Int64.of_int ns)))
-    in
-    let total =
-      Int64.add total (Int64.add (Int64.mul add_seconds 1_000_000_000L) (Int64.of_int add_ns))
+      Int64.add (hms_ns_to_ticks h m s ns)
+        (Int64.add (Int64.mul add_seconds 1_000_000_000L) (Int64.of_int add_ns))
     in
     let days, rem = floor_div_rem total ns_per_day in
-    let h' = Int64.to_int (Int64.div rem 3_600_000_000_000L) in
-    let m' = Int64.to_int (Int64.div (Int64.rem rem 3_600_000_000_000L) 60_000_000_000L) in
-    let s' = Int64.to_int (Int64.div (Int64.rem rem 60_000_000_000L) 1_000_000_000L) in
-    let ns' = Int64.to_int (Int64.rem rem 1_000_000_000L) in
+    let h', m', s', ns' = hms_ns_of_ticks rem in
     (Int64.to_int days, (h', m', s', ns'))
 
   let add (d : Duration.t) t =
@@ -603,15 +595,7 @@ module DateTime = struct
             let y', mo', d' = civil_from_days (Date.to_days date) in
             of_ymd_hms ?tz (y', mo', d') (h', m', s') ns')
 
-  let sub (d : Duration.t) t =
-    add
-      {
-        months = -d.months;
-        days = -d.days;
-        seconds = Int64.neg d.seconds;
-        nanoseconds = -d.nanoseconds;
-      }
-      t
+  let sub (d : Duration.t) t = add (Duration.neg d) t
 
   (* Difference [a - b] expressed in days, seconds and nanoseconds. *)
   let diff a b =
@@ -679,11 +663,7 @@ module DateTime = struct
     let (y, mo, d), ((h, m, s), _) = Ptime.to_date_time ptime in
     let _, ps = Ptime.Span.to_d_ps (Ptime.to_span ptime) in
     let nanoseconds = Int64.to_int (Int64.rem (Int64.div ps 1_000L) 1_000_000_000L) in
-    let epoch_seconds =
-      Int64.add
-        (Int64.mul (Int64.of_int (days_from_civil (y, mo, d))) seconds_per_day)
-        (Int64.of_int ((h * 3600) + (m * 60) + s))
-    in
+    let epoch_seconds = wall_epoch_seconds (y, mo, d) (h, m, s) in
     { epoch_seconds; nanoseconds; tz }
 
   let to_string = to_iso8601

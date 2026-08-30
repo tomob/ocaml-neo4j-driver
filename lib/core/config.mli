@@ -28,8 +28,8 @@ type pool_config = {
   home_db_cache_ttl : float;
 }
 (** Connection pool settings. [home_db_cache_ttl] is how long a routed driver remembers a resolved
-    home database (default [infinity]); after it elapses the next default-database session
-    re-fetches it over ROUTE. *)
+    home database (default [0.0], i.e. the cache is off); after it elapses the next default-database
+    session re-fetches it over ROUTE. *)
 
 val default_access_mode : access_mode
 (** Default access mode ([Write]). *)

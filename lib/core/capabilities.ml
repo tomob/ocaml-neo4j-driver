@@ -27,8 +27,8 @@ type t = {
 let of_version major minor =
   let at_least m n = major > m || (major = m && minor >= n) in
   {
-    supports_multiple_results = major >= 4;
-    supports_multiple_databases = major >= 4;
+    supports_multiple_results = at_least 4 0;
+    supports_multiple_databases = at_least 4 0;
     supports_re_auth = at_least 5 1;
     supports_notification_filtering = at_least 5 2;
     supports_route_message = at_least 4 3;

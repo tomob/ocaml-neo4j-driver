@@ -50,9 +50,9 @@ let parse value =
                 Some
                   {
                     ttl_seconds = Int64.to_int ttl;
-                    routers;
-                    readers;
-                    writers;
+                    routers = List.rev routers;
+                    readers = List.rev readers;
+                    writers = List.rev writers;
                     database =
                       (match List.assoc_opt "db" fields with
                       | Some (Packstream.String db) -> Some db
@@ -60,9 +60,12 @@ let parse value =
                   }
             | server :: rest -> (
                 match parse_server server with
-                | Some ("ROUTE", addresses) -> go (routers @ addresses) readers writers rest
-                | Some ("READ", addresses) -> go routers (readers @ addresses) writers rest
-                | Some ("WRITE", addresses) -> go routers readers (writers @ addresses) rest
+                | Some ("ROUTE", addresses) ->
+                    go (List.rev_append addresses routers) readers writers rest
+                | Some ("READ", addresses) ->
+                    go routers (List.rev_append addresses readers) writers rest
+                | Some ("WRITE", addresses) ->
+                    go routers readers (List.rev_append addresses writers) rest
                 | _ -> go routers readers writers rest)
           in
           go [] [] [] servers

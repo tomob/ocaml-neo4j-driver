@@ -62,6 +62,10 @@ let default_pool_config =
     home_db_cache_ttl = 0.0;
   }
 
+(* The names of the checks that fail, in order. *)
+let invalid_names checks =
+  List.filter_map (fun (name, valid) -> if valid then None else Some name) checks
+
 let make_workspace_config
     ?(max_transaction_retry_time = default_workspace_config.max_transaction_retry_time)
     ?(initial_retry_delay = default_workspace_config.initial_retry_delay)
@@ -72,8 +76,7 @@ let make_workspace_config
     ?(impersonated_user = default_workspace_config.impersonated_user)
     ?(disable_auto_commit_retries = default_workspace_config.disable_auto_commit_retries) () =
   let invalid =
-    List.filter_map
-      (fun (name, valid) -> if valid then None else Some name)
+    invalid_names
       [
         ("max_transaction_retry_time", max_transaction_retry_time >= 0.0);
         ("initial_retry_delay", initial_retry_delay >= 0.0);
@@ -108,8 +111,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
     ?(telemetry_disabled = default_pool_config.telemetry_disabled)
     ?(home_db_cache_ttl = default_pool_config.home_db_cache_ttl) () =
   let invalid =
-    List.filter_map
-      (fun (name, valid) -> if valid then None else Some name)
+    invalid_names
       [
         ("max_connection_lifetime", max_connection_lifetime >= 0.0);
         ("max_connection_pool_size", max_connection_pool_size <> 0);
