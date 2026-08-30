@@ -145,16 +145,11 @@ let telemetry_wanted t = (capabilities_of t).supports_telemetry && !(t.telemetry
    [has_more result] decides whether the state stays in STREAMING after the
    message (used by PULL/DISCARD). *)
 let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
-  let pre_error =
-    match if State.failed !(t.state) then reset t else Ok () with
-    | Ok () -> None
-    | Error error -> Some error
-  in
-  match pre_error with
-  | Some error ->
+  match if State.failed !(t.state) then reset t else Ok () with
+  | Error error ->
       report t error;
       Error error
-  | None -> (
+  | Ok () -> (
       match action () with
       | Ok result ->
           t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
@@ -170,16 +165,11 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
    message (no read); only RUN/BEGIN use this. The state transitions as usual
    (a RUN enters [Streaming] until the follow-up PULL/DISCARD). *)
 let request_telemetry t ~message ~re_auth feature action =
-  let pre_error =
-    match if State.failed !(t.state) then reset t else Ok () with
-    | Ok () -> None
-    | Error error -> Some error
-  in
-  match pre_error with
-  | Some error ->
+  match if State.failed !(t.state) then reset t else Ok () with
+  | Error error ->
       report t error;
       Error error
-  | None -> (
+  | Ok () -> (
       let outcome =
         let* () =
           Bolt.send t.transport ~tag:Bolt.telemetry_tag [ Packstream.Int (Int64.of_int feature) ]
@@ -288,11 +278,20 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
     Ok (transport, major, minor, address)
   in
   let rec attempt failed errors = function
-    | [] ->
-        let failures = { Errors.last = List.hd errors; all = List.rev errors } in
-        Error
-          (Errors.Service_unavailable
-             (Addressing.connect_failure_message ~address:initial ~resolved:failed ~failures))
+    | [] -> (
+        (* A resolver / domain-name resolver may legitimately return no
+           addresses: report it instead of crashing on an empty failure list. *)
+        match errors with
+        | error :: _ ->
+            let failures = { Errors.last = error; all = List.rev errors } in
+            Error
+              (Errors.Service_unavailable
+                 (Addressing.connect_failure_message ~address:initial ~resolved:failed ~failures))
+        | [] ->
+            Error
+              (Errors.Service_unavailable
+                 (Printf.sprintf "Couldn't connect to %s (no addresses resolved)"
+                    (Addressing.to_string initial))))
     | address :: rest -> (
         match connect_single address with
         | Ok connected -> Ok connected
@@ -379,12 +378,10 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
         Option.map (fun user -> ("imp_user", Packstream.String user)) imp_user;
         (* Like the Python driver, an empty bookmark list is omitted from the
            extra map (the server defaults to no bookmarks). *)
-        Option.bind bookmarks (fun bookmarks ->
-            match bookmarks with
-            | [] -> None
-            | _ ->
-                Some
-                  ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)));
+        Option.bind bookmarks (function
+          | [] -> None
+          | bookmarks ->
+              Some ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)));
         Option.map
           (fun seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))))
           timeout;
@@ -726,12 +723,13 @@ let route_message ?db ?imp_user t ~routing_context ~bookmarks =
           ~bookmarks:(Packstream.List (List.map (fun b -> Packstream.String b) bookmarks))
           ~extra)
   in
+  let missing_rt =
+    Error (Errors.Service_unavailable "ROUTE response is missing the routing table")
+  in
   match metadata with
   | Packstream.Map fields -> (
-      match List.assoc_opt "rt" fields with
-      | Some rt -> Ok rt
-      | None -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table"))
-  | _ -> Error (Errors.Service_unavailable "ROUTE response is missing the routing table")
+      match List.assoc_opt "rt" fields with Some rt -> Ok rt | None -> missing_rt)
+  | _ -> missing_rt
 
 (* Fetch the routing table of [db] (the default database when [None]) over the
    ROUTE message (Bolt 4.3+) or, on older servers, by calling the routing

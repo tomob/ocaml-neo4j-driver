@@ -17,6 +17,21 @@ let default_connection_timeout = 30.0
 type cluster_or_pool = Cluster of Cluster.t | Pool of Pool.t
 type t = { clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t; connection : cluster_or_pool }
 
+(* The target connection configuration for a single address. *)
+let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~connection_timeout
+    ~user_agent ~auth ~routing_context addr =
+  Conn.
+    {
+      host = Addressing.host addr;
+      port = Addressing.port addr;
+      scheme = parsed.scheme;
+      connection_timeout;
+      user_agent;
+      auth;
+      routing_context;
+      telemetry_disabled = pool_config.telemetry_disabled;
+    }
+
 (* The routing cluster for a [neo4j://] URI: its address is the initial router
    and routing tables are fetched from it on demand. *)
 let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
@@ -31,38 +46,12 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
      resolves hostnames among those via the domain-name resolver. Data-pool
      connections (readers/writers) do resolve addresses, since a routing table
      may list addresses a custom resolver maps to real servers. *)
-  let connect_routing addr =
-    let config =
-      Conn.
-        {
-          host = Addressing.host addr;
-          port = Addressing.port addr;
-          scheme = parsed.scheme;
-          connection_timeout;
-          user_agent;
-          auth;
-          routing_context = Some routing_context;
-          telemetry_disabled = pool_config.telemetry_disabled;
-        }
-    in
-    Conn.connect ?domain_name_resolver net clock sw config
+  let config addr =
+    conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth
+      ~routing_context:(Some routing_context) addr
   in
-  let connect addr =
-    let config =
-      Conn.
-        {
-          host = Addressing.host addr;
-          port = Addressing.port addr;
-          scheme = parsed.scheme;
-          connection_timeout;
-          user_agent;
-          auth;
-          routing_context = Some routing_context;
-          telemetry_disabled = pool_config.telemetry_disabled;
-        }
-    in
-    Conn.connect ?resolver ?domain_name_resolver net clock sw config
-  in
+  let connect_routing addr = Conn.connect ?domain_name_resolver net clock sw (config addr) in
+  let connect addr = Conn.connect ?resolver ?domain_name_resolver net clock sw (config addr) in
   let cluster =
     Cluster.create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial clock
   in
@@ -72,17 +61,8 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
 let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent ~auth net clock sw =
   let conn_config =
-    Conn.
-      {
-        host = parsed.host;
-        port = parsed.port;
-        scheme = parsed.scheme;
-        connection_timeout;
-        user_agent;
-        auth;
-        routing_context = None;
-        telemetry_disabled = pool_config.telemetry_disabled;
-      }
+    conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth ~routing_context:None
+      (Addressing.of_host_port parsed.host parsed.port)
   in
   let connect () = Conn.connect ?resolver ?domain_name_resolver net clock sw conn_config in
   let pool = Pool.create ~pool_config ~connect clock in
@@ -105,13 +85,12 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?user_agent ?connection_t
   Ok { clock; connection }
 
 let session ?config t =
-  let config = match config with Some config -> config | None -> Session.default_config in
+  let config = Option.value ~default:Session.default_config config in
   let connect ~mode ~database ~bookmarks =
     match t.connection with
     | Cluster cluster ->
         Cluster.acquire cluster ~mode ~database ~imp_user:config.impersonated_user ~bookmarks
-    | Pool pool -> (
-        match Pool.acquire pool with Ok conn -> Ok (conn, database) | Error error -> Error error)
+    | Pool pool -> Result.map (fun conn -> (conn, database)) (Pool.acquire pool)
   in
   let release conn =
     match t.connection with
@@ -132,10 +111,8 @@ let session ?config t =
    (default [Write]; [Read] for read-only checks). *)
 let acquire ?(mode = Config.Write) t =
   match t.connection with
-  | Cluster cluster -> (
-      match Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[] with
-      | Ok (conn, _) -> Ok conn
-      | Error error -> Error error)
+  | Cluster cluster ->
+      Result.map fst (Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[])
   | Pool pool -> Pool.acquire pool
 
 let release t conn =

@@ -72,6 +72,14 @@ let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> (
     telemetry_sent_on = ref [];
   }
 
+(* Drain a pending auto-commit result (the Python driver's consume of the auto
+   result): a new query on the same connection must finish the previous stream
+   first. Draining fires the stream's on_complete hook, which records the
+   auto-commit bookmark. *)
+let drain_auto_result t =
+  (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
+  t.auto_result := None
+
 (* The session's connection for [mode], connecting on first use. A cached
    connection acquired for a different access mode (e.g. a read managed
    transaction on a write-mode session) is returned to the pool and re-acquired
@@ -80,8 +88,7 @@ let rec conn_for_mode (t : t) ~mode =
   match !(t.conn) with
   | Some (conn, cached_mode) when cached_mode = mode -> Ok conn
   | Some (conn, _) ->
-      (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
-      t.auto_result := None;
+      drain_auto_result t;
       t.conn := None;
       t.release conn;
       conn_for_mode t ~mode
@@ -147,10 +154,8 @@ let run ?timeout ?metadata t ~query ~parameters =
   | _ ->
       let* conn = conn t in
       (* A new auto-commit query cannot start while the previous result is still
-         streaming on the connection: drain it first (like the Python driver's
-         consume of the auto result). Draining fires the stream's on_complete
-         hook, which records the auto-commit bookmark. *)
-      (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
+         streaming on the connection: drain it first. *)
+      drain_auto_result t;
       let hydration = Conn.hydration conn in
       let* run_metadata =
         match
@@ -219,17 +224,14 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
       | Ok tx ->
           t.current_tx := Some tx;
           Ok tx
-      | Error _ as error ->
+      | Error (Errors.Neo4j _ as error) -> Error error
+      | Error error ->
           (* A failed BEGIN (e.g. a connection-level error on a connection whose
              server has gone away) leaves the connection unusable: drop it so
              the next operation reconnects instead of reusing it. *)
-          (match error with
-          | Ok _ -> ()
-          | Error (Errors.Neo4j _) -> ()
-          | Error _ ->
-              t.conn := None;
-              t.release conn);
-          error)
+          t.conn := None;
+          t.release conn;
+          Error error)
 
 let begin_transaction ?metadata ?timeout t =
   begin_transaction_mode ?metadata ?timeout ~telemetry:1 t ~mode:t.config.access_mode
@@ -259,8 +261,7 @@ let execute t ~mode ?metadata ?timeout work =
      failed writer/reader was deactivated, so the next ROUTE skips it). Any
      pending auto-commit stream is drained first. *)
   let reconnect () =
-    (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
-    t.auto_result := None;
+    drain_auto_result t;
     match !(t.conn) with
     | None -> ()
     | Some (conn, _) ->
@@ -268,37 +269,19 @@ let execute t ~mode ?metadata ?timeout work =
         t.release conn
   in
   let rec attempt () =
+    (* Roll back the failed transaction, release its connection and retry the
+       unit of work when [error] is retryable and the retry budget remains. *)
+    let finish tx error =
+      ignore (Tx.rollback tx);
+      t.current_tx := None;
+      reconnect ();
+      if Errors.is_retryable error && within_budget () then begin
+        retry ();
+        attempt ()
+      end
+      else Error (Driver error)
+    in
     match begin_tx () with
-    | Ok tx -> (
-        match work tx with
-        | Ok () -> (
-            match Tx.commit tx with
-            | Ok bookmark ->
-                (match bookmark with Some b -> t.bookmarks := [ b ] | None -> ());
-                t.current_tx := None;
-                reconnect ();
-                Ok ()
-            | Error error ->
-                ignore (Tx.rollback tx);
-                t.current_tx := None;
-                reconnect ();
-                if Errors.is_retryable error && within_budget () then (
-                  retry ();
-                  attempt ())
-                else Error (Driver error))
-        | Error Client ->
-            ignore (Tx.rollback tx);
-            t.current_tx := None;
-            reconnect ();
-            Error Client
-        | Error (Driver error) ->
-            ignore (Tx.rollback tx);
-            t.current_tx := None;
-            reconnect ();
-            if Errors.is_retryable error && within_budget () then (
-              retry ();
-              attempt ())
-            else Error (Driver error))
     | Error (Driver error) when Errors.is_retryable error && within_budget () ->
         (* Acquiring the connection failed (e.g. no address available for the
            mode): retry without running the unit of work. *)
@@ -306,6 +289,21 @@ let execute t ~mode ?metadata ?timeout work =
         retry ();
         attempt ()
     | Error _ as error -> error
+    | Ok tx -> (
+        match work tx with
+        | Error Client ->
+            ignore (Tx.rollback tx);
+            t.current_tx := None;
+            reconnect ();
+            Error Client
+        | Error (Driver error) -> finish tx error
+        | Ok () -> (
+            match Tx.commit tx with
+            | Ok bookmark ->
+                mark_tx_ended t ~bookmark;
+                reconnect ();
+                Ok ()
+            | Error error -> finish tx error))
   in
   attempt ()
 

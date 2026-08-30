@@ -43,30 +43,28 @@ let rec ensure t =
     ensure t
   else Ok ()
 
-let result t =
-  match Conn.next_record t.stream with
+(* The next record, or a deferred server failure once the buffer is empty. *)
+let outcome pop stream =
+  match pop stream with
   | Some record -> Ok (Some record)
-  | None -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
+  | None -> ( match Conn.error stream with Some error -> Error error | None -> Ok None)
 
 (* A result is out of scope once it was consumed or its transaction closed:
    further reads must fail immediately (the Python driver's ResultConsumedError). *)
 let check_open t =
-  if t.consumed then Error (Errors.Result_consumed_error "result is not fully consumed")
-  else if Conn.stream_closed t.stream then
+  if t.consumed || Conn.stream_closed t.stream then
     Error (Errors.Result_consumed_error "result is not fully consumed")
   else Ok ()
 
 let next t =
   let* () = check_open t in
   let* () = ensure t in
-  result t
+  outcome Conn.next_record t.stream
 
 let peek t =
   let* () = check_open t in
   let* () = ensure t in
-  match Conn.peek_record t.stream with
-  | Some record -> Ok (Some record)
-  | None -> ( match Conn.error t.stream with Some error -> Error error | None -> Ok None)
+  outcome Conn.peek_record t.stream
 
 let rec fetch_loop n acc t =
   if n = 0 then Ok (List.rev acc)
@@ -82,7 +80,7 @@ let values t = fetch_loop max_int [] t
 let data t =
   let ks = keys t in
   let* records = values t in
-  Ok (List.map (fun record -> List.map2 (fun k v -> (k, v)) ks record) records)
+  Ok (List.map (fun record -> List.combine ks record) records)
 
 let consume t =
   (* Drain the rest of the stream with a DISCARD (like the Python driver's

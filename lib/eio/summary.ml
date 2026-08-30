@@ -157,32 +157,29 @@ let of_stream stream ~query ~parameters =
   (* A query type outside {r, w, rw, s} is a protocol violation: the driver
      rejects it (the TestKit invalid-query-type tests). *)
   let query_type = metadata_string "type" metadata in
-  let valid_query_type =
-    match query_type with None -> true | Some t -> List.mem t [ "r"; "w"; "rw"; "s" ]
-  in
-  if not valid_query_type then
-    Errors.Configuration_error (Printf.sprintf "invalid query type %S" (Option.get query_type))
-    |> Result.error
-  else
-    Ok
-      {
-        counters = counters_of metadata;
-        plan = value_of "plan";
-        profile = value_of "profile";
-        query_type;
-        database = metadata_string "db" metadata;
-        result_available_after = run_metadata.t_first;
-        result_consumed_after = metadata_int "t_last" metadata;
-        notifications;
-        gql_status_objects;
-        had_records = Conn.had_record stream;
-        had_keys = run_metadata.fields <> [];
-        server_info =
-          {
-            address = Conn.address conn;
-            agent = Conn.server_agent conn;
-            protocol_version = (major, minor);
-          };
-        query;
-        parameters;
-      }
+  match query_type with
+  | Some t when not (List.mem t [ "r"; "w"; "rw"; "s" ]) ->
+      Errors.Configuration_error (Printf.sprintf "invalid query type %S" t) |> Result.error
+  | _ ->
+      Ok
+        {
+          counters = counters_of metadata;
+          plan = value_of "plan";
+          profile = value_of "profile";
+          query_type;
+          database = metadata_string "db" metadata;
+          result_available_after = run_metadata.t_first;
+          result_consumed_after = metadata_int "t_last" metadata;
+          notifications;
+          gql_status_objects;
+          had_records = Conn.had_record stream;
+          had_keys = run_metadata.fields <> [];
+          server_info =
+            {
+              address = Conn.address conn;
+              agent = Conn.server_agent conn;
+              protocol_version = (major, minor);
+            };
+          query;
+          parameters;
+        }

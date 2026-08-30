@@ -113,7 +113,7 @@ let fetch_routers cluster =
         let key = Addressing.to_string addr in
         if List.mem key seen then dedupe seen rest else addr :: dedupe (key :: seen) rest
   in
-  dedupe [] (List.flatten (List.map resolve candidates))
+  dedupe [] (List.concat_map resolve candidates)
 
 (* Close the pool for [key], if any (caller holds the lock). *)
 let drop_pool cluster key =
@@ -223,9 +223,9 @@ let routing_conn cluster addr =
 (* Whether [addr] appears among the readers or writers of [table] (i.e. the
    server doubles as a data node). *)
 let addr_is_data_server _cluster addr table =
-  let key = Addressing.to_string addr in
-  List.mem key (List.map Addressing.to_string (Routing_table.readers table))
-  || List.mem key (List.map Addressing.to_string (Routing_table.writers table))
+  let is_addr a = Addressing.to_string a = Addressing.to_string addr in
+  List.exists is_addr (Routing_table.readers table)
+  || List.exists is_addr (Routing_table.writers table)
 
 (* A router that also serves data makes its routing connection available to the
    data pool too: the server (a stub serves one connection at a time) expects
@@ -288,11 +288,16 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error ret
       | Some error -> Error error
       | None -> Error (Errors.Service_unavailable "no router available for routing"))
   | addr :: rest -> (
+      (* Continue with the next router, remembering [error] as the fallback
+         failure for the caller. *)
+      let continue error retried routers =
+        fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) retried routers
+      in
       match routing_conn cluster addr with
       | Error error when Errors.is_fatal_during_discovery error -> Error error
       | Error error ->
           deactivate cluster addr;
-          fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) false rest
+          continue error false rest
       | Ok conn -> (
           match classify ~retried (route_table cluster ~database ~imp_user ~bookmarks conn) with
           | Table table ->
@@ -303,15 +308,13 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error ret
               if addr_is_data_server cluster addr table then hand_routing_to_pool cluster addr;
               Ok table
           | Fatal error -> Error error
-          | Skip error ->
-              fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) false rest
+          | Skip error -> continue error false rest
           | Next error ->
               deactivate cluster addr;
-              fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) false rest
+              continue error false rest
           | Retry error ->
               deactivate cluster addr;
-              fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) true
-                (addr :: rest)))
+              continue error true (addr :: rest)))
 
 let fetch_table cluster ~database ~imp_user ~bookmarks last_error routers =
   with_routing_lock cluster (fun () ->
@@ -371,11 +374,7 @@ let update_table cluster ~database ~imp_user rt =
   | Some table ->
       ignore
         (with_lock cluster (fun () ->
-             (match Routing_table.database table with
-             | Some home_db ->
-                 set_home_db cluster imp_user home_db;
-                 Hashtbl.replace cluster.tables (Some home_db) (table, now cluster)
-             | None -> ());
+             cache_home_table_locked cluster ~imp_user table;
              store_table cluster ~database table))
   | None -> ()
 
