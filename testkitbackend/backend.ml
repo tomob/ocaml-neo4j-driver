@@ -72,14 +72,10 @@ let run () =
             Eio.Net.listen ~reuse_addr:true ~backlog:16 ~sw net (`Tcp (Eio.Net.Ipaddr.V4.any, port))
           in
           let rec serve () =
-            let flow, _ = Eio.Net.accept ~sw listening in
-            (* An I/O error on one connection (e.g. a peer that resets the socket
-               mid-read) must not abort the whole switch and take the backend
-               down: log it and keep serving the other connections. *)
-            Eio.Fiber.fork ~sw (fun () ->
-                try handle_connection net clock sw flow
-                with exn ->
-                  prerr_endline ("testkit backend: connection error: " ^ Printexc.to_string exn));
+            Eio.Net.accept_fork ~sw listening
+              ~on_error:(fun exn ->
+                prerr_endline ("testkit backend: connection error: " ^ Printexc.to_string exn))
+              (fun flow _client_addr -> handle_connection net clock sw flow);
             serve ()
           in
           serve ()))
