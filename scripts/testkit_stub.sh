@@ -8,7 +8,8 @@
 #   scripts/testkit_stub.sh [OPTION...] [SUITE ...]
 #
 # With no SUITE arguments every stub suite runs (`python -m tests.stub.suites`);
-# otherwise each argument is a test module, class or single test, e.g.:
+# otherwise each argument is run in its own process (a test module, class or
+# single test), e.g.:
 #   scripts/testkit_stub.sh tests.stub.routing.test_routing_v5x0
 #   scripts/testkit_stub.sh tests.stub.routing.test_routing_v4x4 \
 #     tests.stub.routing.test_routing_v5x0
@@ -25,6 +26,8 @@
 #   BACKEND_BINARY=...       override the built backend executable (default:
 #                            _build/default/testkitbackend/testkitbackend.exe)
 #   SUITE=...                test modules to run (alternative to arguments)
+#   TESTKIT_MODULE_TIMEOUT=600  per-module timeout in seconds (0 = no limit)
+#   TESTKIT_VERBOSITY=1      unittest verbosity for the per-module runs
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,6 +36,8 @@ cd "$REPO_ROOT"
 PY="${NEO4J_TESTKIT_DIR:+${NEO4J_TESTKIT_DIR}/.venv/bin/python}"
 TESTKIT_BACKEND_PORT="${TESTKIT_BACKEND_PORT:-9876}"
 BACKEND_BINARY="${BACKEND_BINARY:-${REPO_ROOT}/_build/default/testkitbackend/testkitbackend.exe}"
+TESTKIT_MODULE_TIMEOUT="${TESTKIT_MODULE_TIMEOUT:-600}"
+TESTKIT_VERBOSITY="${TESTKIT_VERBOSITY:-1}"
 
 usage() {
   cat <<'EOF'
@@ -45,7 +50,8 @@ Options:
   -h, --help          show this help and exit
   -l, --list-suites   list all available stub test modules and exit
 
-SUITE arguments are test modules / classes / single tests, e.g.:
+SUITE arguments are test modules / classes / single tests, run in their own
+process (one backend for the whole loop), e.g.:
   tests.stub.routing.test_routing_v5x0
   tests.stub.routing.test_routing_v4x4 tests.stub.routing.test_routing_v5x0
   tests.stub.summary.test_summary tests.stub.retry.test_retry
@@ -59,6 +65,8 @@ Environment:
   TESTKIT_BACKEND_PORT=9876
   BACKEND_BINARY=...       override the built backend executable
   SUITE=...                test modules to run (alternative to arguments)
+  TESTKIT_MODULE_TIMEOUT=600  per-module timeout in seconds (0 = no limit)
+  TESTKIT_VERBOSITY=1      unittest verbosity for the per-module runs
 EOF
 }
 
@@ -122,8 +130,36 @@ export PYTHONPATH="${NEO4J_TESTKIT_DIR}"
 export TEST_DRIVER_NAME=ocaml
 export TEST_BACKEND_HOST=127.0.0.1
 export TEST_BACKEND_PORT="${TESTKIT_BACKEND_PORT}"
-if [ "${#suites[@]}" -eq 0 ]; then
-  "${PY}" -m tests.stub.suites
-else
-  "${PY}" -m unittest "${suites[@]}"
+
+run_module() {
+  local mod="$1"
+  echo "=== ${mod} ==="
+  if [ "${TESTKIT_MODULE_TIMEOUT}" = "0" ]; then
+    TESTKIT_VERBOSITY="${TESTKIT_VERBOSITY}" \
+      "${PY}" "${REPO_ROOT}/scripts/lib/testkit_module_result.py" "${mod}"
+  else
+    timeout -k 30 "${TESTKIT_MODULE_TIMEOUT}" \
+      "${PY}" "${REPO_ROOT}/scripts/lib/testkit_module_result.py" "${mod}"
+  fi
+}
+
+if [ "${#suites[@]}" -gt 0 ]; then
+  # Per-module loop: one backend, one process per module (isolated runs).
+  failed=0
+  for mod in "${suites[@]}"; do
+    set +e
+    run_module "${mod}"
+    rc=$?
+    set -e
+    if [ "${rc}" -eq 124 ]; then
+      echo "!!! module timed out after ${TESTKIT_MODULE_TIMEOUT}s: ${mod}" >&2
+      failed=1
+    elif [ "${rc}" -ne 0 ]; then
+      echo "!!! module failed: ${mod}" >&2
+      failed=1
+    fi
+  done
+  exit "${failed}"
 fi
+
+"${PY}" -m tests.stub.suites

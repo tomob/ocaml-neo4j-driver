@@ -1,0 +1,13 @@
+; Convenience alias that runs every project test (unit, TestKit stub and
+; neo4j suites, integration) through scripts/run_all_tests.sh.
+;
+; Requires external infrastructure (docker and NEO4J_TESTKIT_DIR with a venv),
+; so it is deliberately NOT part of @runtest, which CI keeps offline.
+
+(rule
+ (alias test-all)
+ (deps
+  (sandbox none)
+  scripts/run_all_tests.sh)
+ (action
+  (system "bash scripts/run_all_tests.sh")))
