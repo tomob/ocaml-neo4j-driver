@@ -6,7 +6,7 @@ open Neodriver_eio
 open Alcotest
 
 let auth ?(principal = "neo4j") ?(credentials = "password") () =
-  Conn.{ scheme = "basic"; principal; credentials }
+  Conn.basic_auth ~principal ~credentials ()
 
 let config host port scheme =
   Conn.

@@ -21,14 +21,14 @@ let with_env f =
 let basic_auth_defaults () =
   let a = Conn.basic_auth () in
   check string "scheme" "basic" a.scheme;
-  check string "principal" "neo4j" a.principal;
-  check string "credentials" "" a.credentials
+  check (option string) "principal" (Some "neo4j") a.principal;
+  check (option string) "credentials" (Some "") a.credentials
 
 let basic_auth_overrides () =
   let a = Conn.basic_auth ~principal:"bob" ~credentials:"secret" () in
   check string "scheme" "basic" a.scheme;
-  check string "principal" "bob" a.principal;
-  check string "credentials" "secret" a.credentials
+  check (option string) "principal" (Some "bob") a.principal;
+  check (option string) "credentials" (Some "secret") a.credentials
 
 (* An unparseable URI is rejected by Driver.connect itself. *)
 let bad_uri () =

@@ -40,11 +40,9 @@ let conn_config ?scheme ?password (env : t) =
       connection_timeout = 10.0;
       user_agent = Neodriver_eio.Conn.default_user_agent;
       auth =
-        {
-          scheme = "basic";
-          principal = env.user;
-          credentials = Option.value ~default:env.password password;
-        };
+        Neodriver_eio.Conn.basic_auth ~principal:env.user
+          ~credentials:(Option.value ~default:env.password password)
+          ();
       routing_context = None;
       telemetry_disabled = false;
     }

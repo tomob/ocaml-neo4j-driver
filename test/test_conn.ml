@@ -5,7 +5,7 @@ open Neodriver_eio
 open Alcotest
 
 let auth ?(principal = "neo4j") ?(credentials = "password") () =
-  Conn.{ scheme = "basic"; principal; credentials }
+  Conn.basic_auth ~principal ~credentials ()
 
 let config host port scheme =
   Conn.
@@ -349,8 +349,12 @@ let hello_inline_auth () =
               check int "hello tag" 0x01 tag;
               check string "user_agent" config.user_agent (map_value fields "user_agent");
               check string "scheme" "basic" (map_value fields "scheme");
-              check string "principal" config.auth.principal (map_value fields "principal");
-              check string "credentials" config.auth.credentials (map_value fields "credentials");
+              check string "principal"
+                (Option.get config.auth.principal)
+                (map_value fields "principal");
+              check string "credentials"
+                (Option.get config.auth.credentials)
+                (map_value fields "credentials");
               check bool "no bolt_agent" true (not (List.mem_assoc "bolt_agent" fields))
           | _ -> fail "expected a single HELLO message");
           Conn.close conn)
@@ -375,9 +379,11 @@ let hello_logon () =
               let tag, logon_fields = unpack_message logon in
               check int "logon tag" 0x6A tag;
               check string "logon scheme" "basic" (map_value logon_fields "scheme");
-              check string "logon principal" config.auth.principal
+              check string "logon principal"
+                (Option.get config.auth.principal)
                 (map_value logon_fields "principal");
-              check string "logon credentials" config.auth.credentials
+              check string "logon credentials"
+                (Option.get config.auth.credentials)
                 (map_value logon_fields "credentials")
           | _ -> fail "expected HELLO followed by LOGON");
           Conn.close conn)
@@ -612,6 +618,93 @@ let re_auth_after_mark () =
           check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
           Conn.close conn)
 
+(* A bearer token sends only scheme + credentials on the wire (no principal). *)
+let logon_bearer_token () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), received, [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config =
+        { (config "127.0.0.1" port Addressing.Bolt) with auth = Conn.bearer_auth "tok123" }
+      in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match List.rev !received with
+          | [ hello; logon ] ->
+              let _, hello_fields = unpack_message hello in
+              check bool "hello has no scheme" true (not (List.mem_assoc "scheme" hello_fields));
+              let tag, logon_fields = unpack_message logon in
+              check int "logon tag" 0x6A tag;
+              check string "bearer scheme" "bearer" (map_value logon_fields "scheme");
+              check bool "bearer principal omitted" true
+                (not (List.mem_assoc "principal" logon_fields));
+              check string "bearer credentials" "tok123" (map_value logon_fields "credentials")
+          | _ -> fail "expected HELLO followed by LOGON");
+          Conn.close conn)
+
+(* The on-error hook can return a modified error: an auth manager marks the
+   error retryable after handling a security exception. *)
+let error_hook_makes_retryable () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         ref [],
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad creds");
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          Conn.set_on_error conn (fun _ error -> Errors.make_retryable error);
+          (match
+             Conn.run conn ~hydration:(Conn.hydration conn) ~query:"RETURN 1" ~parameters:[]
+           with
+          | Ok _ -> fail "unauthorized run should fail"
+          | Error (Errors.Neo4j server) -> check bool "error marked retryable" true server.retryable
+          | Error error -> fail (Errors.to_string error));
+          Conn.close conn)
+
+(* The auth manager behind the connection is stored and readable. *)
+let auth_manager_get_set () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          check bool "no manager initially" true (Option.is_none (Conn.auth_manager conn));
+          Conn.set_auth_manager conn (Auth_manager.static (auth ()));
+          check bool "manager stored" true
+            (match Conn.auth_manager conn with Some _ -> true | None -> false);
+          Conn.close conn)
+
+(* force re-authenticates even when the token is unchanged. *)
+let re_auth_force () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match Conn.re_auth ~force:true conn (auth ()) with
+          | Ok true -> check_state conn "Ready"
+          | Ok false -> fail "force should re-authenticate even for the same token"
+          | Error error -> fail (Errors.to_string error));
+          let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
+          check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
+          Conn.close conn)
+
 (* A Bolt 6 FAILURE carries its code under neo4j_code. *)
 let failure_gql_code () =
   Test_mock.with_mock
@@ -803,6 +896,12 @@ let tests =
       [ test_case "changed token does LOGOFF + LOGON" `Quick re_auth_changed_token ] );
     ( "[Conn] re_auth_after_mark",
       [ test_case "mark_unauthenticated forces LOGON" `Quick re_auth_after_mark ] );
+    ("[Conn] logon_bearer_token", [ test_case "bearer token on the wire" `Quick logon_bearer_token ]);
+    ( "[Conn] error_hook_makes_retryable",
+      [ test_case "on-error hook can mark retryable" `Quick error_hook_makes_retryable ] );
+    ( "[Conn] auth_manager_get_set",
+      [ test_case "auth manager stored on the connection" `Quick auth_manager_get_set ] );
+    ("[Conn] re_auth_force", [ test_case "force re-authenticates" `Quick re_auth_force ]);
     ("[Conn] failure_gql_code", [ test_case "FAILURE neo4j_code extracted" `Quick failure_gql_code ]);
     ( "[Conn] last_database_recorded",
       [ test_case "run records the database" `Quick last_database_recorded ] );

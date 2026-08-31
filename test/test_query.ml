@@ -12,7 +12,7 @@ let config host port =
       scheme = Addressing.Bolt;
       connection_timeout = 5.0;
       user_agent = "test-agent";
-      auth = { scheme = "basic"; principal = "neo4j"; credentials = "password" };
+      auth = Conn.basic_auth ~credentials:"password" ();
       routing_context = None;
       telemetry_disabled = false;
     }

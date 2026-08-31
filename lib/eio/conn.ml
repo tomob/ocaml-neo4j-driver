@@ -10,7 +10,7 @@ open Neodriver_core
 
 let ( let* ) = Result.bind
 
-type auth = { scheme : string; principal : string; credentials : string }
+type auth = Auth_manager.token
 
 type config = {
   host : string;
@@ -31,7 +31,8 @@ type t = {
   server_agent : string option ref;
   address : Addressing.t;
   current_auth : auth option ref;
-  on_error : (t -> Errors.t -> unit) ref;
+  auth_manager : Auth_manager.t option ref;
+  on_error : (t -> Errors.t -> Errors.t) ref;
   last_database : string option ref;
   ssr_enabled : bool ref;
   telemetry_enabled : bool ref;
@@ -45,9 +46,11 @@ let bolt_agent_product = default_user_agent
 
 (* The basic authentication token: scheme [basic] with the given principal and
    credentials. *)
-let basic_auth ?(principal = "neo4j") ?(credentials = "") () =
-  { scheme = "basic"; principal; credentials }
+let basic_auth ?(principal = "neo4j") ?(credentials = "") ?realm () =
+  Auth_manager.basic_auth ~principal ~credentials ?realm ()
 
+(* A bearer (SSO) token: only the token as credentials. *)
+let bearer_auth = Auth_manager.bearer_auth
 let capabilities_of t = Capabilities.of_version t.major t.minor
 let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth
 
@@ -72,13 +75,7 @@ let bolt_agent () =
       ("language_details", Packstream.String Sys.ocaml_version);
     ]
 
-let auth_map (auth : auth) =
-  Packstream.Map
-    [
-      ("scheme", Packstream.String auth.scheme);
-      ("principal", Packstream.String auth.principal);
-      ("credentials", Packstream.String auth.credentials);
-    ]
+let auth_map (auth : auth) = Auth_manager.to_map auth
 
 let hello_headers (config : config) major minor =
   let base = [ ("user_agent", Packstream.String config.user_agent) ] in
@@ -93,12 +90,7 @@ let hello_headers (config : config) major minor =
   in
   let auth =
     if re_auth_of major minor then []
-    else
-      [
-        ("scheme", Packstream.String config.auth.scheme);
-        ("principal", Packstream.String config.auth.principal);
-        ("credentials", Packstream.String config.auth.credentials);
-      ]
+    else match Auth_manager.to_map config.auth with Packstream.Map fields -> fields | _ -> []
   in
   Packstream.Map (base @ routing @ bolt_agent @ auth)
 
@@ -114,14 +106,23 @@ let is_failed t = State.failed !(t.state)
 let address t = t.address
 
 (* The connection reports request failures to an optional callback (installed by
-   the routing cluster to deactivate dead addresses) and logs them. *)
+   the routing cluster to deactivate dead addresses, and by the pool to handle
+   security errors) and logs them. The callback may return a modified error
+   (e.g. one marked retryable after an auth manager handled it), which is the
+   error surfaced to the caller. *)
 let set_on_error t on_error = t.on_error := on_error
+let on_error t = !(t.on_error)
 let last_database t = !(t.last_database)
 let set_last_database t database = t.last_database := database
 
 let report t error =
   Log.debug Log.io (fun m -> m "[#%04X]  _: <CONNECTION> error: %s" (id t) (Errors.to_string error));
   !(t.on_error) t error
+
+(* The auth manager behind the connection's current token (the pool installs it
+   to handle security exceptions; see [on_neo4j_error]). *)
+let set_auth_manager t manager = t.auth_manager := Some manager
+let auth_manager t = !(t.auth_manager)
 
 (* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
    V2 = Bolt 5, V3 = Bolt 6). The minor version gates Bolt 6.1-only types
@@ -149,12 +150,7 @@ let telemetry_wanted t = (capabilities_of t).supports_telemetry && !(t.telemetry
 (* Reset a connection left in the FAILED state (reporting a reset failure via
    [report]), so the next request runs on a clean connection. *)
 let ensure_ready t =
-  if State.failed !(t.state) then (
-    match reset t with
-    | Ok () -> Ok ()
-    | Error error ->
-        report t error;
-        Error error)
+  if State.failed !(t.state) then reset t |> Result.map_error (fun error -> report t error)
   else Ok ()
 
 (* Send [action] (a Bolt message that already reads its response) and update the
@@ -179,8 +175,7 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
             m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string !(t.state))
               (State.to_string State.Failed));
       t.state := State.Failed;
-      report t error;
-      Error error
+      Error (report t error)
 
 (* Like [request], but batches a TELEMETRY notification for [feature] before the
    request and reads the telemetry's SUCCESS before the request's own response
@@ -221,8 +216,7 @@ let request_telemetry t ~message ~re_auth feature action =
             m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string !(t.state))
               (State.to_string State.Failed));
       t.state := State.Failed;
-      report t error;
-      Error error
+      Error (report t error)
 
 (* Record the HELLO response metadata: the server agent, and the [ssr.enabled]
    hint that turns on server-side routing (the server then sends [rt] routing
@@ -332,7 +326,8 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       server_agent = ref None;
       address;
       current_auth = ref None;
-      on_error = ref (fun _ _ -> ());
+      auth_manager = ref None;
+      on_error = ref (fun _ error -> error);
       last_database = ref None;
       ssr_enabled = ref false;
       telemetry_enabled = ref (not config.telemetry_disabled);
@@ -474,11 +469,12 @@ let pull ?n ?qid t ~hydration =
   | Error _ as error -> error
   | Ok (records, outcome) ->
       let records = List.map (List.map (Hydration.hydrate hydration)) records in
-      (match outcome with
-      | Error error ->
-          t.state := State.Failed;
-          report t error
-      | Ok _ -> ());
+      let outcome =
+        outcome
+        |> Result.map_error (fun error ->
+            t.state := State.Failed;
+            report t error)
+      in
       Ok (records, outcome)
 
 let discard ?n ?qid t =
@@ -491,9 +487,10 @@ let discard ?n ?qid t =
   in
   if Result.is_error outcome then begin
     t.state := State.Failed;
-    report t (Result.get_error outcome)
-  end;
-  Ok outcome
+    let error = Result.get_error outcome in
+    Ok (Error (report t error))
+  end
+  else Ok outcome
 
 (* A lazily-streamed result on a connection: RUN is sent immediately, records
    are pulled in batches on demand into a FIFO queue (consumed records are
@@ -715,8 +712,7 @@ let route_procedure ?db ?imp_user t ~routing_context ~bookmarks =
           match outcome with
           | Error error ->
               t.state := State.Failed;
-              report t error;
-              Error error
+              Error (report t error)
           | Ok _ -> (
               match records with
               | [] -> Error (Errors.Service_unavailable "routing procedure returned no records")
@@ -779,9 +775,13 @@ let current_auth t = !(t.current_auth)
    the session layers pass [~telemetry] to [run]/[begin_]. *)
 
 (* Re-authenticate when [auth] differs from the current token: LOGOFF then
-   LOGON (Bolt >= 5.1). Returns whether the token changed. *)
-let re_auth t auth =
-  if !(t.current_auth) = Some auth then Ok false
+   LOGON (Bolt >= 5.1). [force] re-authenticates even for the same token
+   (user switching). Returns whether the token changed. *)
+let re_auth ?(force = false) t auth =
+  let same_auth =
+    match !(t.current_auth) with Some current -> Auth_manager.eq current auth | None -> false
+  in
+  if (not force) && same_auth then Ok false
   else if not (re_auth_of t.major t.minor) then
     Error (Errors.Service_unavailable "Re-authentication is not supported by this protocol version")
   else

@@ -7,12 +7,26 @@
    [connection_acquisition_timeout] fails with
    [Errors.Connection_acquisition_timeout].
 
+   Auth: the pool owns the driver's auth manager. New connections
+   resolve their initial token from it at connect time; a reused connection is
+   re-authenticated (LOGOFF + LOGON, Bolt >= 5.1) when the manager's token
+   differs from the one it is logged on with — or when it was marked
+   unauthenticated. On a protocol version that cannot re-authenticate the
+   connection is purged and the acquire retried (the Python driver's
+   "backwards compatible auth token refresh" path). A server security error on
+   a pooled connection is handled here: an [AuthorizationExpired] marks every
+   connection unauthenticated (they re-authenticate on their next acquire) and
+   a [Neo.ClientError.Security.*] error is offered to the manager, which may
+   mark it retryable.
+
    Address-level deactivation (closing the connections of a failed server) is
    deferred to routing (phase A7); at the connection level it is handled here:
    a connection that comes back in the [Failed] state, or whose RESET fails,
    is closed rather than reused. *)
 
 open Neodriver_core
+
+let ( let* ) = Result.bind
 
 type t = {
   connect : unit -> (Conn.t, Errors.t) result;
@@ -23,9 +37,11 @@ type t = {
   idle : (Conn.t * Mtime.t) Queue.t;
   permits : Eio.Semaphore.t;
   mutable closed : bool;
+  auth_manager : Auth_manager.t option;
+  live : Conn.t list ref;
 }
 
-let create ~pool_config ~connect clock =
+let create ~pool_config ?(auth_manager : Auth_manager.t option = None) ~connect clock =
   {
     connect;
     pool_config;
@@ -35,6 +51,8 @@ let create ~pool_config ~connect clock =
     idle = Queue.create ();
     permits = Eio.Semaphore.make pool_config.max_connection_pool_size;
     closed = false;
+    auth_manager;
+    live = ref [];
   }
 
 let now t = Eio.Time.Mono.now t.clock
@@ -92,7 +110,69 @@ let rec take_idle t =
         Conn.close conn;
         take_idle t)
 
-let acquire t =
+(* --- Auth --- *)
+
+(* Track a connection as part of the pool's live set (idle or checked out), so
+   an AuthorizationExpired can mark every one of them unauthenticated. *)
+let add_live t conn =
+  with_lock t.mutex (fun () ->
+      if not (List.exists (fun c -> c == conn) !(t.live)) then t.live := conn :: !(t.live))
+
+let remove_live t conn =
+  with_lock t.mutex (fun () -> t.live := List.filter (fun c -> c != conn) !(t.live))
+
+(* Clear the current token of every connection (AuthorizationExpired): each one
+   re-authenticates on its next acquire. *)
+let mark_all_unauthenticated t =
+  with_lock t.mutex (fun () -> List.iter Conn.mark_unauthenticated !(t.live))
+
+(* Handle a server security error reported by one of the pool's connections
+   (installed as the connection's on-error hook): an AuthorizationExpired
+   invalidates every connection (they re-authenticate on their next acquire),
+   and a [Neo.ClientError.Security.*] error is offered to the pool's auth
+   manager — a handled error is marked retryable, a provider failure replaces
+   it. Without an auth manager the error passes through unchanged. *)
+let on_neo4j_error t conn error =
+  if Errors.unauthenticates_all_connections error then begin
+    Log.debug Log.pool (fun m ->
+        m "[#%04X]  _: <POOL> mark all connections as unauthenticated" (Conn.id conn));
+    mark_all_unauthenticated t
+  end;
+  if Errors.has_security_code error then
+    match t.auth_manager with
+    | None -> error
+    | Some manager -> (
+        match Conn.current_auth conn with
+        | None -> error
+        | Some auth -> (
+            match manager.handle_security_exception auth error with
+            | Ok true -> Errors.make_retryable error
+            | Ok false -> error
+            | Error provider_error -> provider_error))
+  else error
+
+(* Re-authenticate [conn] when the manager's token differs from the one it is
+   logged on with (or when it was marked unauthenticated). Without an auth
+   manager nothing is done. A [Configuration_error] means the protocol version
+   cannot re-authenticate an existing connection (Bolt < 5.1): the caller
+   purges it (see [acquire]). *)
+let re_auth_connection t conn =
+  match t.auth_manager with
+  | None -> Ok ()
+  | Some manager ->
+      let* token = manager.get_auth () in
+      let same =
+        match Conn.current_auth conn with
+        | Some current -> Auth_manager.eq current token
+        | None -> false
+      in
+      if same then Ok ()
+      else if not (Conn.capabilities conn).supports_re_auth then
+        Error
+          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+      else Conn.re_auth conn token |> Result.map (fun _ -> ())
+
+let rec acquire t =
   if t.closed then Error (Errors.Connection_pool_error "Pool is closed")
   else
     let permit =
@@ -104,18 +184,44 @@ let acquire t =
         Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> acquisition timed out");
         Error (Errors.Connection_acquisition_timeout "Timed out waiting for a free connection")
     in
-    match permit with
-    | Error _ as error -> error
-    | Ok () -> (
-        match take_idle t with
-        | Some conn -> Ok conn
-        | None -> (
-            Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> trying to hand out new connection");
-            match t.connect () with
-            | Ok conn -> Ok conn
-            | Error _ as error ->
-                Eio.Semaphore.release t.permits;
-                error))
+    match permit with Error _ as error -> error | Ok () -> acquire_loop t
+
+(* A permit is held: hand out a connection, re-authenticating a reused one and
+   purging (and retrying) connections whose protocol cannot re-authenticate. *)
+and acquire_loop t =
+  match take_idle t with
+  | Some conn -> (
+      add_live t conn;
+      match re_auth_connection t conn with
+      | Ok () -> Ok conn
+      | Error (Errors.Configuration_error _) ->
+          Log.debug Log.pool (fun m ->
+              m "[#%04X]  _: <POOL> backwards compatible auth token refresh: purge connection"
+                (Conn.id conn));
+          remove_live t conn;
+          Conn.close conn;
+          acquire_loop t
+      | Error error ->
+          remove_live t conn;
+          Conn.close conn;
+          Eio.Semaphore.release t.permits;
+          Error error)
+  | None -> (
+      Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> trying to hand out new connection");
+      match t.connect () with
+      | Ok conn ->
+          (* New connections resolve their initial token from the manager at
+             connect time; the auth-manager and security-error hooks are
+             installed before the connection is handed out, chained after any
+             hook the cluster already installed (address deactivation). *)
+          Option.iter (fun manager -> Conn.set_auth_manager conn manager) t.auth_manager;
+          let previous = Conn.on_error conn in
+          Conn.set_on_error conn (fun conn error -> on_neo4j_error t conn (previous conn error));
+          add_live t conn;
+          Ok conn
+      | Error _ as error ->
+          Eio.Semaphore.release t.permits;
+          error)
 
 (* Hand an already-established connection to the pool as an idle connection,
    without acquiring a permit (the connection never held one). Used to recycle
@@ -124,7 +230,11 @@ let acquire t =
    When the pool is closed the connection is dropped. *)
 let put_conn t conn =
   with_lock t.mutex (fun () ->
-      if t.closed then Conn.close conn else Queue.push (conn, now t) t.idle)
+      if t.closed then Conn.close conn
+      else begin
+        if not (List.exists (fun c -> c == conn) !(t.live)) then t.live := conn :: !(t.live);
+        Queue.push (conn, now t) t.idle
+      end)
 
 (* Return [conn] to the pool. A second release of the same connection (already
    idle) is a no-op: it is not queued again and no permit is released, so the
@@ -137,6 +247,7 @@ let put_conn t conn =
 let release t conn =
   if t.closed then begin
     Conn.close conn;
+    remove_live t conn;
     Eio.Semaphore.release t.permits
   end
   else begin
@@ -168,6 +279,7 @@ let release t conn =
     | `Close ->
         Log.debug Log.pool (fun m ->
             m "[#%04X]  _: <POOL> remove connection from pool" (Conn.id conn));
+        remove_live t conn;
         Conn.close conn;
         Eio.Semaphore.release t.permits
   end
@@ -177,4 +289,5 @@ let close t =
   with_lock t.mutex (fun () ->
       t.closed <- true;
       Queue.iter (fun (conn, _) -> Conn.close conn) t.idle;
-      Queue.clear t.idle)
+      Queue.clear t.idle;
+      t.live := [])

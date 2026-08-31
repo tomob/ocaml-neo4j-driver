@@ -8,14 +8,20 @@ type t
 
 val create :
   pool_config:Config.pool_config ->
+  ?auth_manager:Auth_manager.t option ->
   connect:(unit -> (Conn.t, Errors.t) result) ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   t
-(** Create a pool. [connect] establishes a new connection on demand.
+(** Create a pool. [connect] establishes a new connection on demand (its initial token is resolved
+    from [auth_manager] — the driver passes one; [None] (default) disables auth management).
     [pool_config.max_connection_pool_size] bounds the number of connections;
     [pool_config.connection_acquisition_timeout] (seconds) bounds how long [acquire] waits for a
     free connection; [pool_config.max_connection_lifetime] (seconds) expires idle connections;
-    [pool_config.liveness_check_timeout] enables a RESET liveness check on reuse. *)
+    [pool_config.liveness_check_timeout] enables a RESET liveness check on reuse. With an auth
+    manager, a reused connection is re-authenticated when its token differs from the one the
+    connection is logged on with (or after it was marked unauthenticated); on Bolt < 5.1 the
+    connection is purged and the acquire retried. Server security errors are handled through the
+    manager and an [AuthorizationExpired] marks every connection unauthenticated. *)
 
 val in_use_count : t -> int
 (** The number of connections currently checked out of the pool (the load a routing cluster uses to

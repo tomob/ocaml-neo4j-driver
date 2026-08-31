@@ -235,8 +235,14 @@ let new_driver ctx fields =
   let custom_domain_name =
     if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
   in
-  let conn_auth =
-    Conn.{ scheme = auth.scheme; principal = auth.principal; credentials = auth.credentials }
+  let conn_auth : Conn.auth =
+    {
+      scheme = auth.scheme;
+      principal = Some auth.principal;
+      credentials = Some auth.credentials;
+      realm = None;
+      parameters = [];
+    }
   in
   let pool_config =
     let max_connection_pool_size =

@@ -33,9 +33,13 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
     }
 
 (* The routing cluster for a [neo4j://] URI: its address is the initial router
-   and routing tables are fetched from it on demand. *)
+   and routing tables are fetched from it on demand. Data and routing
+   connections resolve their initial token from [auth_manager] at connect time,
+   which is also passed to the per-address data pools for re-authentication and
+   security-error handling. *)
 let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
-    ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent ~auth net clock sw =
+    ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent
+    ~(auth_manager : Auth_manager.t) net clock sw =
   let initial = Addressing.of_host_port parsed.host parsed.port in
   (* The routing context carries the cluster's own address (like the Python
      driver, which prepends "address" at pool creation): the server uses it for
@@ -46,41 +50,56 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
      resolves hostnames among those via the domain-name resolver. Data-pool
      connections (readers/writers) do resolve addresses, since a routing table
      may list addresses a custom resolver maps to real servers. *)
-  let config addr =
+  let config auth addr =
     conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth
       ~routing_context:(Some routing_context) addr
   in
-  let connect_routing addr = Conn.connect ?domain_name_resolver net clock sw (config addr) in
-  let connect addr = Conn.connect ?resolver ?domain_name_resolver net clock sw (config addr) in
+  let with_token connect addr =
+    match auth_manager.get_auth () with
+    | Error _ as error -> error
+    | Ok auth -> connect (config auth addr)
+  in
+  let connect_routing addr = with_token (Conn.connect ?domain_name_resolver net clock sw) addr in
+  let connect addr = with_token (Conn.connect ?resolver ?domain_name_resolver net clock sw) addr in
   let cluster =
-    Cluster.create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial clock
+    Cluster.create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial
+      ~auth_manager:(Some auth_manager) clock
   in
   Ok (Cluster cluster)
 
-(* The connection pool for a direct [bolt://] URI. *)
+(* The connection pool for a direct [bolt://] URI. New connections resolve
+   their initial token from [auth_manager] at connect time, so a rotated token
+   is used by freshly created connections without a LOGOFF+LOGON. *)
 let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
-    ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent ~auth net clock sw =
-  let config =
-    conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth ~routing_context:None
-      (Addressing.of_host_port parsed.host parsed.port)
+    ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent
+    ~(auth_manager : Auth_manager.t) net clock sw =
+  let connect () =
+    let* auth = auth_manager.get_auth () in
+    let config =
+      conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth ~routing_context:None
+        (Addressing.of_host_port parsed.host parsed.port)
+    in
+    Conn.connect ?resolver ?domain_name_resolver net clock sw config
   in
-  let connect () = Conn.connect ?resolver ?domain_name_resolver net clock sw config in
-  let pool = Pool.create ~pool_config ~connect clock in
+  let pool = Pool.create ~pool_config ~connect ~auth_manager:(Some auth_manager) clock in
   Ok (Pool pool)
 
-let connect ?resolver ?domain_name_resolver ~uri ~auth ?user_agent ?connection_timeout
+let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent ?connection_timeout
     ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let connection_timeout = Option.value ~default:default_connection_timeout connection_timeout in
   let user_agent = Option.value ~default:Conn.default_user_agent user_agent in
+  (* A plain token is wrapped in a static auth manager, like the Python driver
+     ([auth_manager] lets a TestKit backend supply a rotating one). *)
+  let auth_manager = Option.value ~default:(Auth_manager.static auth) auth_manager in
   let* connection =
     match parsed.scheme with
     | Addressing.Neo4j | Addressing.Neo4j_secure | Addressing.Neo4j_self_signed ->
         make_cluster ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
-          ~user_agent ~auth net clock sw
+          ~user_agent ~auth_manager net clock sw
     | _ ->
         make_pool ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
-          ~user_agent ~auth net clock sw
+          ~user_agent ~auth_manager net clock sw
   in
   Ok { clock; connection }
 

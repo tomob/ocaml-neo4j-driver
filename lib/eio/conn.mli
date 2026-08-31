@@ -5,9 +5,10 @@
 open Neodriver_packstream
 open Neodriver_core
 
-type auth = { scheme : string; principal : string; credentials : string }
-(** Authentication token sent in HELLO (Bolt <= 5.0) or LOGON (Bolt >= 5.1). Only the [basic] scheme
-    is supported so far. *)
+type auth = Auth_manager.token
+(** Authentication token sent in HELLO (Bolt <= 5.0) or LOGON (Bolt >= 5.1): the [basic] scheme by
+    default, but [bearer] and custom schemes are supported too (absent fields are omitted on the
+    wire). *)
 
 type config = {
   host : string;
@@ -33,9 +34,12 @@ type t
 val default_user_agent : string
 (** Default [user_agent] header for HELLO. *)
 
-val basic_auth : ?principal:string -> ?credentials:string -> unit -> auth
+val basic_auth : ?principal:string -> ?credentials:string -> ?realm:string -> unit -> auth
 (** The basic authentication token ([scheme = "basic"]), with the given [principal] (default
-    [neo4j]) and [credentials] (default empty). *)
+    [neo4j]), [credentials] (default empty) and optional [realm]. *)
+
+val bearer_auth : string -> auth
+(** A bearer (SSO) token ([scheme = "bearer"]), with the token as [credentials]. *)
 
 val connect :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
@@ -76,11 +80,25 @@ val is_failed : t -> bool
 (** Whether the server answered the last request with a FAILURE: the connection is not in a clean
     state and needs a RESET before it can be reused. *)
 
-val set_on_error : t -> (t -> Errors.t -> unit) -> unit
+val set_on_error : t -> (t -> Errors.t -> Errors.t) -> unit
 (** Install a callback invoked with [t] and the error whenever a request on the connection fails:
     failed auto-RESETs and failed messages in {!run} and {!route}, and server failures surfaced by
-    {!pull} and {!discard}. The routing cluster installs it to deactivate the connection's address.
-*)
+    {!pull} and {!discard}. The callback returns the error to surface to the caller — an auth
+    manager or address-deactivation hook may return a modified error (e.g. one marked retryable).
+    The routing cluster installs it to deactivate the connection's address. *)
+
+val on_error : t -> t -> Errors.t -> Errors.t
+(** The currently installed on-error callback (the identity by default). Callers that install an
+    additional hook should compose it with the existing one (e.g. the pool chains its security-error
+    handling after the cluster's address deactivation). *)
+
+val set_auth_manager : t -> Auth_manager.t -> unit
+(** Install the auth manager behind the connection's current token. The pool installs it so the
+    [set_on_error] hook can call [handle_security_exception] when the server returns a security
+    error (see [auth_manager]). *)
+
+val auth_manager : t -> Auth_manager.t option
+(** The connection's auth manager, if one was installed. *)
 
 val last_database : t -> string option
 (** The [db] of the last {!run} on the connection, if any. *)
@@ -290,9 +308,10 @@ val capabilities : t -> Capabilities.t
 val current_auth : t -> auth option
 (** The authentication token the connection is currently logged on with, if any. *)
 
-val re_auth : t -> auth -> (bool, Errors.t) result
+val re_auth : ?force:bool -> t -> auth -> (bool, Errors.t) result
 (** Re-authenticate when [auth] differs from the current token (LOGOFF then LOGON, Bolt >= 5.1).
-    Returns whether the token changed ([false] when it is the same as the current one).
+    Returns whether the token changed ([false] when it is the same as the current one, unless
+    [force] is set — which re-authenticates unconditionally, e.g. for user switching).
     @return [Error _] for older protocol versions or on server failure. *)
 
 val mark_unauthenticated : t -> unit

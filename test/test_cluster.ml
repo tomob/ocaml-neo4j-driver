@@ -10,7 +10,7 @@ open Alcotest
 (* The cluster tests exercise the home-database cache explicitly, so they opt
    in with an unbounded TTL (the production default disables the cache). *)
 let default_pool_config = { Config.default_pool_config with home_db_cache_ttl = infinity }
-let auth () = Conn.{ scheme = "basic"; principal = "neo4j"; credentials = "password" }
+let auth () = Conn.basic_auth ~principal:"neo4j" ~credentials:"password" ()
 
 let config host port =
   Conn.
@@ -1050,6 +1050,93 @@ let force_routing_table_update_failure () =
         (Cluster.routing_table_of cluster ~database:(Some "adb") = None);
       Cluster.close cluster)
 
+(* A routed driver's data pool handles a security error through its auth
+   manager (the error becomes retryable and the token is refreshed), and a
+   reused reader re-authenticates with the rotated token. *)
+let routed_security_error_retryable () =
+  let count = ref 0 in
+  let provider () =
+    incr count;
+    Ok (Conn.basic_auth ~credentials:(Printf.sprintf "pw%d" !count) ())
+  in
+  let manager = Auth_manager.basic ~provider in
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: one ROUTE *)
+        [
+          ( (5, 4),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~db:"neo4j" [ a ] [ b ] [ b ]) ];
+            ] );
+        ];
+        (* reader B: acquired, fails with Unauthorized, re-authenticates *)
+        [
+          ( (5, 4),
+            List.nth received 1,
+            [
+              Test_mock.Success;
+              Test_mock.Success;
+              Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad creds");
+              Test_mock.Success;
+              Test_mock.Success;
+              Test_mock.Success;
+              Test_mock.Success;
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("has_more", Packstream.Bool false) ];
+            ] );
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect addr =
+        match manager.get_auth () with
+        | Ok auth ->
+            Conn.connect net clock sw { (config "127.0.0.1" (Addressing.port addr)) with auth }
+        | Error _ -> fail "get_auth"
+      in
+      let cluster =
+        Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
+          ~routing_context:[] ~initial ~auth_manager:(Some manager) clock
+      in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+      in
+      let conn =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      let hydration = Conn.hydration conn in
+      (match Conn.run conn ~hydration ~query:"RETURN 1" ~parameters:[] with
+      | Error error -> check bool "error marked retryable" true (Errors.is_retryable error)
+      | Ok _ -> fail "expected an Unauthorized failure");
+      check int "provider refreshed on Unauthorized" 2 !count;
+      Cluster.release cluster conn;
+      (* A fresh acquire on the routed driver reuses the cached table and the
+         reader (now re-authenticated with the rotated token). *)
+      let conn2 =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      let hydration = Conn.hydration conn2 in
+      (match Conn.run conn2 ~hydration ~query:"RETURN 1" ~parameters:[] with
+      | Ok _ -> ()
+      | Error e -> fail (Errors.to_string e));
+      (match Conn.pull conn2 ~hydration with
+      | Ok (_, Ok _) -> ()
+      | _ -> fail "expected a successful pull");
+      Cluster.release cluster conn2;
+      check (list int) "router wire" [ 0x01; 0x6A; 0x66 ] (tags (List.nth received 0));
+      check (list int) "reader wire"
+        [ 0x01; 0x6A; 0x10; 0x0F; 0x0F; 0x6B; 0x6A; 0x10; 0x3F ]
+        (tags (List.nth received 1));
+      Cluster.close cluster)
+
 let tests =
   [
     ( "[Cluster] acquire falls back to the next router",
@@ -1090,4 +1177,6 @@ let tests =
       [ test_case "bookmarks in the ROUTE request" `Quick route_carries_session_bookmarks ] );
     ( "[Cluster] SSR update captures the home db",
       [ test_case "update_table seeds the cache" `Quick update_table_captures_home_db ] );
+    ( "[Cluster] routed security error",
+      [ test_case "retryable + token refresh" `Quick routed_security_error_retryable ] );
   ]

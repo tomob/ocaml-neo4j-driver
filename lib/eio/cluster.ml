@@ -37,13 +37,15 @@ type t = {
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
   routing_lock : Eio.Mutex.t;
+  auth_manager : Auth_manager.t option;
 }
 
 (* How long a failed routing-table fetch is remembered, so concurrent acquires
    don't all retry immediately after a router failure. *)
 let negative_ttl = 5.0
 
-let create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial clock =
+let create ?resolver ?(auth_manager : Auth_manager.t option = None) ~pool_config ~connect
+    ~connect_routing ~routing_context ~initial clock =
   {
     pool_config;
     connect;
@@ -62,6 +64,7 @@ let create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~in
     lock = Eio.Mutex.create ();
     cond = Eio.Condition.create ();
     routing_lock = Eio.Mutex.create ();
+    auth_manager;
   }
 
 let now t = Eio.Time.Mono.now t.clock
@@ -173,11 +176,12 @@ let on_write_failure cluster ~database addr =
    on. *)
 let on_error cluster conn error =
   let addr = Conn.address conn in
-  match Errors.specific error with
+  (match Errors.specific error with
   | Errors.Not_a_leader | Errors.Forbidden_on_read_only_database ->
       on_write_failure cluster ~database:(Conn.last_database conn) addr
   | Errors.Database_unavailable -> deactivate cluster addr
-  | _ -> ( match error with Errors.Service_unavailable _ -> deactivate cluster addr | _ -> ())
+  | _ -> ( match error with Errors.Service_unavailable _ -> deactivate cluster addr | _ -> ()));
+  error
 
 (* The pool for [addr], created on demand (caller holds the lock). New
    connections get the cluster's error callback, so request failures on them
@@ -188,7 +192,7 @@ let pool_for cluster addr =
   | Some pool -> pool
   | None ->
       let pool =
-        Pool.create ~pool_config:cluster.pool_config
+        Pool.create ~pool_config:cluster.pool_config ~auth_manager:cluster.auth_manager
           ~connect:(fun () ->
             let* conn = cluster.connect addr in
             Conn.set_on_error conn (fun conn error -> on_error cluster conn error);

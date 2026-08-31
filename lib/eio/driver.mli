@@ -17,6 +17,7 @@ val connect :
   ?domain_name_resolver:(string -> (string list, Errors.t) result) ->
   uri:string ->
   auth:Conn.auth ->
+  ?auth_manager:Auth_manager.t ->
   ?user_agent:string ->
   ?connection_timeout:float ->
   ?pool_config:Config.pool_config ->
@@ -24,8 +25,10 @@ val connect :
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   Eio.Switch.t ->
   (t, Errors.t) result
-(** Build a driver for [uri] with [auth]. [resolver] replaces the address lookup for direct
-    [bolt://] drivers (each returned address is tried in turn); [user_agent] defaults to
+(** Build a driver for [uri] with [auth]. [auth_manager] (default [Auth_manager.static auth])
+    supplies the tokens: new connections authenticate with its current token and a reused connection
+    is re-authenticated when it rotates. [resolver] replaces the address lookup for direct [bolt://]
+    drivers (each returned address is tried in turn); [user_agent] defaults to
     [Conn.default_user_agent]; [connection_timeout] (seconds) defaults to 30.0 and bounds each
     connection attempt and its subsequent reads/writes. [pool_config] (defaults from
     [Config.default_pool_config]: 100 connections, 1h lifetime, 60s acquisition timeout, no liveness

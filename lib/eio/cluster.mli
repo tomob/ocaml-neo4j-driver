@@ -10,6 +10,7 @@ type t
 
 val create :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
+  ?auth_manager:Auth_manager.t option ->
   pool_config:Config.pool_config ->
   connect:(Addressing.t -> (Conn.t, Errors.t) result) ->
   connect_routing:(Addressing.t -> (Conn.t, Errors.t) result) ->
@@ -20,7 +21,9 @@ val create :
 (** Create a cluster rooted at [initial] (the URI's address). [connect] establishes a connection to
     the given address (the Driver closes over its Eio resources); routing tables are fetched from a
     router (the initial address until the first fetch) and cached per database with the
-    server-provided TTL. *)
+    server-provided TTL. [auth_manager] (default [None]) is passed to the per-address data pools, so
+    reused connections re-authenticate when its token rotates and server security errors are handled
+    (see {!Pool.create}). *)
 
 val acquire :
   t ->
