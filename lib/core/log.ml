@@ -22,6 +22,7 @@ let io = Logs.Src.create ~doc:"Neo4j Bolt connection and messages" "neodriver.io
 let pool = Logs.Src.create ~doc:"Neo4j connection pool and routing" "neodriver.pool"
 let session = Logs.Src.create ~doc:"Neo4j sessions" "neodriver.session"
 let notifications = Logs.Src.create ~doc:"Neo4j server notifications" "neodriver.notifications"
+let auth = Logs.Src.create ~doc:"Neo4j auth management" "neodriver.auth"
 
 (* The connection id of events that happen without a connection. *)
 let no_conn = 0

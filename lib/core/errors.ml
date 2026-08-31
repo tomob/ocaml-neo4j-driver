@@ -75,6 +75,12 @@ let is_retryable = function
   | Connection_acquisition_timeout _ ->
       false
 
+(* Force the retryability of a server error (the OCaml analogue of the Python
+   driver mutating [error._retryable] after an auth manager handled it). *)
+let make_retryable = function
+  | Neo4j server -> Neo4j { server with retryable = true }
+  | error -> error
+
 let unknown_code = "Neo.DatabaseError.General.UnknownError"
 
 let classification_to_string = function

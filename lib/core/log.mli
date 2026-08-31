@@ -18,6 +18,10 @@ val session : Logs.src
 val notifications : Logs.src
 (** Server notification logging (Python's [neo4j.notifications]). *)
 
+val auth : Logs.src
+(** Auth-manager logging: token refreshes and provider failures (Python's [neo4j.auth_management]).
+*)
+
 val no_conn : int
 (** The connection id used for events that happen without a connection (rendered as [#0000]). *)
 

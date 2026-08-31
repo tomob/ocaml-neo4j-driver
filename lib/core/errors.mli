@@ -60,6 +60,11 @@ type failures = { last : t; all : t list }
 val is_retryable : t -> bool
 (** Whether an error is safe to retry a transaction after. *)
 
+val make_retryable : t -> t
+(** [make_retryable error] returns [error] with its retryability forced to [true] (the OCaml
+    analogue of the Python driver marking a Neo4j error retryable once an auth manager handled it);
+    driver errors are returned unchanged. *)
+
 val of_neo4j_code : code:string -> message:string -> t
 (** Build a server error from a neo4j code and message, applying the classification and legacy
     re-write maps. *)

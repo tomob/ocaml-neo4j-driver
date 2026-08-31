@@ -35,6 +35,9 @@ module Capabilities = Neodriver_core.Capabilities
 module Routing_table = Neodriver_core.Routing_table
 (** Routing tables for [neo4j://] (routed) drivers. *)
 
+module Auth_manager = Neodriver_core.Auth_manager
+(** Authentication tokens and (later) auth managers. *)
+
 module Conn = Neodriver_eio.Conn
 (** Minimal Bolt connection (connect, authenticate, run/pull/discard, transactions). *)
 

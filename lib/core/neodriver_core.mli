@@ -29,6 +29,9 @@ module Capabilities = Capabilities
 module Routing_table = Routing_table
 (** Routing tables for [neo4j://] (routed) drivers. *)
 
+module Auth_manager = Auth_manager
+(** Authentication tokens and (later) auth managers. *)
+
 module Log = Log
 (** Logging infrastructure ([Logs] sources, connection ids, value formatting and the
     [NEO4J_LOG_LEVEL] / [NEO4J_LOG_SCOPES] environment control). *)

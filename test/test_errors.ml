@@ -38,6 +38,18 @@ let retryable () =
   check bool "pool timeout is not retryable" false
     (Errors.is_retryable (Errors.Connection_acquisition_timeout "x"))
 
+let make_retryable () =
+  let client = Errors.of_neo4j_code ~code:"Neo.ClientError.Security.Unauthorized" ~message:"" in
+  check bool "security error not retryable by default" false (Errors.is_retryable client);
+  let handled = Errors.make_retryable client in
+  check bool "make_retryable forces retryable" true (Errors.is_retryable handled);
+  check (option string) "code preserved" (Some "Neo.ClientError.Security.Unauthorized")
+    (Errors.code handled);
+  check bool "original untouched" false (Errors.is_retryable client);
+  let driver_error = Errors.Configuration_error "x" in
+  check bool "driver errors unchanged" false
+    (Errors.is_retryable (Errors.make_retryable driver_error))
+
 let rewrite () =
   let terminated =
     Errors.of_neo4j_code ~code:"Neo.TransientError.Transaction.Terminated" ~message:""
@@ -115,7 +127,10 @@ let to_string () =
 let tests =
   [
     ("[Errors] classification", [ test_case "codes" `Quick classification ]);
-    ("[Errors] retryable", [ test_case "retryability" `Quick retryable ]);
+    ( "[Errors] retryable",
+      [
+        test_case "retryability" `Quick retryable; test_case "make_retryable" `Quick make_retryable;
+      ] );
     ("[Errors] rewrite", [ test_case "rewrite map" `Quick rewrite ]);
     ("[Errors] security", [ test_case "security codes" `Quick security ]);
     ( "[Errors] fatal_discovery",

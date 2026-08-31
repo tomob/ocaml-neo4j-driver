@@ -15,6 +15,7 @@ module Values = Neodriver_core.Values
 module Hydration = Neodriver_core.Hydration
 module Capabilities = Neodriver_core.Capabilities
 module Routing_table = Neodriver_core.Routing_table
+module Auth_manager = Neodriver_core.Auth_manager
 module Conn = Neodriver_eio.Conn
 module Session = Neodriver_eio.Session
 module Tx = Neodriver_eio.Tx
