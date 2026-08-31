@@ -25,6 +25,14 @@ type message =
 let failed = function Failed -> true | _ -> false
 let ready = function Ready -> true | _ -> false
 
+let to_string = function
+  | Connected -> "Connected"
+  | Ready -> "Ready"
+  | Streaming -> "Streaming"
+  | Tx_ready_or_tx_streaming -> "Tx_ready_or_tx_streaming"
+  | Failed -> "Failed"
+  | Authentication -> "Authentication"
+
 let server_transition ?(re_auth = true) ?(has_more = false) state message =
   if has_more then state
   else

@@ -87,6 +87,8 @@ let rec take_idle t =
   | Some conn ->
       if liveness_ok t conn then Some conn
       else (
+        Log.debug Log.pool (fun m ->
+            m "[#%04X]  _: <POOL> found unhealthy connection" (Conn.id conn));
         Conn.close conn;
         take_idle t)
 
@@ -99,6 +101,7 @@ let acquire t =
             Eio.Semaphore.acquire t.permits;
             Ok ())
       with Eio.Time.Timeout ->
+        Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> acquisition timed out");
         Error (Errors.Connection_acquisition_timeout "Timed out waiting for a free connection")
     in
     match permit with
@@ -107,6 +110,7 @@ let acquire t =
         match take_idle t with
         | Some conn -> Ok conn
         | None -> (
+            Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> trying to hand out new connection");
             match t.connect () with
             | Ok conn -> Ok conn
             | Error _ as error ->
@@ -137,7 +141,13 @@ let release t conn =
   end
   else begin
     let reusable =
-      if Conn.is_failed conn then match Conn.reset conn with Ok () -> true | Error _ -> false
+      if Conn.is_failed conn then (
+        match Conn.reset conn with
+        | Ok () -> true
+        | Error _ ->
+            Log.debug Log.pool (fun m ->
+                m "[#%04X]  _: <POOL> failed to reset connection on release" (Conn.id conn));
+            false)
       else true
     in
     let outcome =
@@ -152,13 +162,18 @@ let release t conn =
     in
     match outcome with
     | `Skip -> ()
-    | `Keep -> Eio.Semaphore.release t.permits
+    | `Keep ->
+        Log.debug Log.pool (fun m -> m "[#%04X]  _: <POOL> released" (Conn.id conn));
+        Eio.Semaphore.release t.permits
     | `Close ->
+        Log.debug Log.pool (fun m ->
+            m "[#%04X]  _: <POOL> remove connection from pool" (Conn.id conn));
         Conn.close conn;
         Eio.Semaphore.release t.permits
   end
 
 let close t =
+  Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> close");
   with_lock t.mutex (fun () ->
       t.closed <- true;
       Queue.iter (fun (conn, _) -> Conn.close conn) t.idle;

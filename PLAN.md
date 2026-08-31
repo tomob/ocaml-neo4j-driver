@@ -501,6 +501,41 @@ not yet implemented).
   conformance note (119/126, 7 skipped), the corrected prerequisites (OCaml >= 5.2, dune >= 3.13)
   and the MIT license. The original reference-implementation paragraph is kept.
 
+- **Phase C7 — Logging (Python parity)**: port the Python driver's logging to
+  the OCaml driver, with a documented env-var control on top. **Done**:
+  - `Neodriver_core.Log` (re-exported as `Neodriver.Log`) wraps `Logs` with four
+    sources mirroring the Python loggers: `Log.io` (`neo4j.io`), `Log.pool`
+    (`neo4j.pool`), `Log.session` (`neo4j.session`), `Log.notifications`
+    (`neo4j.notifications`).
+  - **Connection id**: a global atomic counter (`Log.next_id`) rendered
+    `[#%04X]` (`[#0001]`, …; `[#0000]` without a connection). Eio's portable
+    API has no `getsockname`, so the Python local-port id is replaced by a
+    driver-assigned counter — documented as keeping logging working on systems
+    without file descriptors (e.g. MirageOS); the exact id is not an API
+    contract (Python disclaims its log format too).
+  - **Env control**: `NEO4J_LOG_LEVEL` (`off|error|warn|info|debug`, default
+    `off`) and `NEO4J_LOG_SCOPES` (`io,pool,session,notifications`, default
+    `all`), applied lazily at the first log call (a no-op when the level
+    variable is unset, so a user's own `Logs` config is untouched) or eagerly
+    via `Log.setup`/`Log.setup_from_env`/`Log.disable`; pure `parse_env`/
+    `level_of_string`/`scope_of_string` are unit-tested. OCaml caveat: env is
+    read from the process-start snapshot (`Sys.getenv` semantics).
+  - **Log coverage**: transport (OPEN/TIMEOUT/CANCELLED/CONNECTION FAILED/
+    SECURE/SECURE FAILURE, `<NOOP>`), handshake (MAGIC, C:/S: HANDSHAKE incl.
+    the manifest form), all Bolt messages (`C: HELLO/LOGON` with redacted
+    credentials, RUN/BEGIN/COMMIT/ROLLBACK/RESET/GOODBYE/ROUTE/PULL/DISCARD/
+    TELEMETRY; `S: SUCCESS/FAILURE/IGNORED/RECORD * n` — record data is never
+    logged), connection lifecycle (`<CLOSE>`, `<OPEN FAILED>`, `<CONNECTION>
+    error`, server-state changes), pool (`<POOL>`), routing (`<ROUTING>`,
+    `<WORKSPACE>` home-db resolution), session (retry warning + "retry
+    cancelled") and notifications (severity-mapped debug/info/warn).
+  - `Transport.t` gained an `id` field; `Conn.id`, `State.to_string` added;
+    `logs` + `logs.fmt` dependencies added to `neodriver_core`.
+  - Docs: `usage.mld`/`docs/usage.md` "Logging" section (env vars, programmatic
+    setup, `[#XXXX]` counter note, credential redaction); unit tests in
+    `test/test_log.ml`. The `neo4j.auth_management` logger has no OCaml
+    counterpart yet (no auth-manager module) — it is added with Phase A8.
+
 ---
 
 ## Risks and open decisions

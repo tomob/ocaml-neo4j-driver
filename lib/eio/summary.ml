@@ -133,6 +133,28 @@ let notification_of_status = function
           Some (Values.Map items))
   | _ -> None
 
+let log_notification = function
+  | Values.Map fields -> (
+      let severity =
+        match List.assoc_opt "severity" fields with
+        | Some (Values.String s) -> String.uppercase_ascii s
+        | _ -> ""
+      in
+      match severity with
+      | "INFORMATION" ->
+          Log.info Log.notifications (fun m ->
+              m "Received notification from DBMS server: %s" (Values.to_string (Values.Map fields)))
+      | "WARNING" ->
+          Log.warn Log.notifications (fun m ->
+              m "Received notification from DBMS server: %s" (Values.to_string (Values.Map fields)))
+      | _ ->
+          Log.debug Log.notifications (fun m ->
+              m "Received notification from DBMS server: %s" (Values.to_string (Values.Map fields)))
+      )
+  | notification ->
+      Log.debug Log.notifications (fun m ->
+          m "Received notification from DBMS server: %s" (Values.to_string notification))
+
 let of_stream stream ~query ~parameters =
   let conn = Conn.connection stream in
   let metadata = match Conn.summary stream with Some s -> s | None -> Packstream.Map [] in
@@ -153,6 +175,7 @@ let of_stream stream ~query ~parameters =
     | Some (Packstream.List statuses) -> List.map hydrate statuses
     | _ -> []
   in
+  List.iter log_notification notifications;
   let major, minor = Conn.version conn in
   (* A query type outside {r, w, rw, s} is a protocol violation: the driver
      rejects it (the TestKit invalid-query-type tests). *)

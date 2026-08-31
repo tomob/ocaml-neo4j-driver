@@ -7,6 +7,9 @@ open Neodriver_core
 type t
 (** A TCP transport with a bounded read/write timeout and Bolt chunk framing. *)
 
+val id : t -> int
+(** The connection id of this transport (rendered as "[#XXXX]" in log lines; see [Log.conn]). *)
+
 type tls_mode =
   | Plain
   | Verify of string

@@ -14,3 +14,4 @@ module Pool = Pool
 module Cluster = Cluster
 module Neo4jResult = Neo4j_result
 module Summary = Summary
+module Log = Neodriver_core.Log

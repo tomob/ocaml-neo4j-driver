@@ -42,7 +42,24 @@ let read_varint transport =
   in
   go 0 0
 
+(* A 4-byte group of the handshake proposal rendered as "0x%08X" (big-endian),
+   like the Python driver's [supported_versions] list. *)
+let hex_group bytes off =
+  let n =
+    (Bytes.get_uint8 bytes off lsl 24)
+    lor (Bytes.get_uint8 bytes (off + 1) lsl 16)
+    lor (Bytes.get_uint8 bytes (off + 2) lsl 8)
+    lor Bytes.get_uint8 bytes (off + 3)
+  in
+  Printf.sprintf "0x%08X" n
+
+(* The negotiated version rendered like the Python driver's handshake log:
+   the response bytes as a single little-endian-style number, e.g. Bolt 6.1 ->
+   "0x00000106". *)
+let version_hex major minor = Printf.sprintf "0x%06X%02X" minor major
+
 let negotiate_manifest transport =
+  let id = Transport.id transport in
   let* count = read_varint transport in
   let buf = Bytes.create 4 in
   let rec read_offerings acc = function
@@ -55,7 +72,14 @@ let negotiate_manifest transport =
         read_offerings ((major, minor, range) :: acc) (n - 1)
   in
   let* offerings = read_offerings [] count in
-  let* _capabilities = read_varint transport in
+  let* capabilities = read_varint transport in
+  Log.debug Log.io (fun m ->
+      m "[#%04X]  S: <HANDSHAKE> offerings=%d %s capabilities=0x%x" id count
+        (String.concat " "
+           (List.map
+              (fun (major, minor, range) -> Printf.sprintf "0x%02X%02X%02X" major minor range)
+              offerings))
+        capabilities);
   let chosen =
     List.find_opt
       (fun (c_major, c_minor) ->
@@ -68,6 +92,7 @@ let negotiate_manifest transport =
   match chosen with
   | None -> Error (Errors.Service_unavailable "No protocol version in common")
   | Some (major, minor) ->
+      Log.debug Log.io (fun m -> m "[#%04X]  C: <HANDSHAKE> %s 0x00" id (version_hex major minor));
       let reply =
         Bytes.of_string
           ("\x00\x00" ^ String.make 1 (Char.chr minor) ^ String.make 1 (Char.chr major))
@@ -78,11 +103,24 @@ let negotiate_manifest transport =
       Ok (major, minor)
 
 let negotiate transport =
+  let id = Transport.id transport in
+  (* The client's proposal: the magic preamble and the four version groups. *)
+  Log.debug Log.io (fun m -> m "[#%04X]  C: <MAGIC> 0x%08X" id 0x6060B017);
+  Log.debug Log.io (fun m ->
+      m "[#%04X]  C: <HANDSHAKE> %s %s %s %s" id (hex_group proposal 0) (hex_group proposal 4)
+        (hex_group proposal 8) (hex_group proposal 12));
   let* () = Transport.write transport (Bytes.cat magic proposal) in
   let response = Bytes.create 4 in
-  let* () = Transport.read_exact transport response 0 4 in
-  if response = Bytes.of_string "HTTP" then
+  let* () =
+    Transport.read_exact transport response 0 4
+    |> Result.map_error (fun error ->
+        Log.debug Log.io (fun m -> m "[#%04X]  S: <CLOSE>" id);
+        error)
+  in
+  if response = Bytes.of_string "HTTP" then begin
+    Log.debug Log.io (fun m -> m "[#%04X]  C: <CLOSE> (received b'HTTP')" id);
     Error (Errors.Service_unavailable "Endpoint looks like HTTP, not Bolt")
+  end
   else if Bytes.get_uint8 response 3 = 0xFF then begin
     let manifest_version = Bytes.get_uint8 response 2 in
     if manifest_version <> 1 then
@@ -91,10 +129,13 @@ let negotiate transport =
            (Printf.sprintf "Unsupported Bolt handshake manifest version %d" manifest_version))
     else negotiate_manifest transport
   end
-  else if response = Bytes.of_string "\x00\x00\x00\x00" then
+  else if response = Bytes.of_string "\x00\x00\x00\x00" then begin
+    Log.debug Log.io (fun m -> m "[#%04X]  S: <HANDSHAKE> 0x00000000" id);
     Error (Errors.Service_unavailable "Server rejected all protocol versions")
+  end
   else begin
     let major = Bytes.get_uint8 response 3 in
     let minor = Bytes.get_uint8 response 2 in
+    Log.debug Log.io (fun m -> m "[#%04X]  S: <HANDSHAKE> %s" id (version_hex major minor));
     Ok (major, minor)
   end

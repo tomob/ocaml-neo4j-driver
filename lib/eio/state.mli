@@ -36,3 +36,7 @@ val failed : t -> bool
 
 val ready : t -> bool
 (** Whether the server is in the [Ready] state. *)
+
+val to_string : t -> string
+(** The state name (for log lines, e.g. the Python driver's "[#XXXX] _: <CONNECTION> server state:
+    Ready > Streaming"). *)

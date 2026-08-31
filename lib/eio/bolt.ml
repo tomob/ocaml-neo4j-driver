@@ -35,13 +35,53 @@ let ignored_tag = 0x7E
    used, sent before the query. *)
 let telemetry_tag = 0x54
 
+(* The wire name of an outgoing message tag, for the "C: <NAME>" log lines
+   (like the Python driver's per-message logging). *)
+let name_of_tag = function
+  | t when t = hello_tag -> "HELLO"
+  | t when t = logon_tag -> "LOGON"
+  | t when t = logoff_tag -> "LOGOFF"
+  | t when t = reset_tag -> "RESET"
+  | t when t = goodbye_tag -> "GOODBYE"
+  | t when t = run_tag -> "RUN"
+  | t when t = begin_tag -> "BEGIN"
+  | t when t = commit_tag -> "COMMIT"
+  | t when t = rollback_tag -> "ROLLBACK"
+  | t when t = route_tag -> "ROUTE"
+  | t when t = discard_tag -> "DISCARD"
+  | t when t = pull_tag -> "PULL"
+  | t when t = record_tag -> "RECORD"
+  | t when t = success_tag -> "SUCCESS"
+  | t when t = failure_tag -> "FAILURE"
+  | t when t = ignored_tag -> "IGNORED"
+  | t when t = telemetry_tag -> "TELEMETRY"
+  | tag -> Printf.sprintf "TAG_0x%02X" tag
+
+(* The outgoing message log line: "C: <NAME> <fields>", with the HELLO/LOGON
+   credentials redacted. The value rendering runs lazily inside the log
+   closure, so it costs nothing when the io source is off. *)
+let log_client transport ~tag ~fields =
+  let id = Transport.id transport in
+  if fields = [] then Log.debug Log.io (fun m -> m "[#%04X]  C: %s" id (name_of_tag tag))
+  else
+    Log.debug Log.io (fun m ->
+        m "[#%04X]  C: %s %s" id (name_of_tag tag)
+          (if tag = hello_tag || tag = logon_tag then
+             Log.value_masked [ "credentials" ] (Packstream.List fields)
+           else Log.value (Packstream.List fields)))
+
 let send transport ~tag fields =
+  log_client transport ~tag ~fields;
   Packstream.pack (Packstream.Structure (tag, fields)) |> Transport.write_message transport
 
 let recv_fields transport =
   let* message = Transport.read_message transport in
   match Packstream.unpack message with
-  | Error error -> Error (Errors.Service_unavailable (Packstream.error_to_string error))
+  | Error error ->
+      Log.debug Log.io (fun m ->
+          m "[#%04X]  _: Failed to unpack response: %s" (Transport.id transport)
+            (Packstream.error_to_string error));
+      Error (Errors.Service_unavailable (Packstream.error_to_string error))
   | Ok (Packstream.Structure (tag, fields)) -> Ok (tag, fields)
   | Ok _ -> Error (Errors.Service_unavailable "Expected a Bolt message structure")
 
@@ -78,10 +118,19 @@ let failure_error metadata =
 let respond transport =
   let* tag, payload = recv transport in
   match tag with
-  | t when t = success_tag -> Ok (Option.value ~default:(Packstream.Map []) payload)
+  | t when t = success_tag ->
+      let metadata = Option.value ~default:(Packstream.Map []) payload in
+      Log.debug Log.io (fun m ->
+          m "[#%04X]  S: SUCCESS %s" (Transport.id transport) (Log.value metadata));
+      Ok metadata
   | t when t = failure_tag ->
-      Error (failure_error (Option.value ~default:(Packstream.Map []) payload))
-  | t when t = ignored_tag -> Error (Errors.Service_unavailable "Unexpected IGNORED response")
+      let metadata = Option.value ~default:(Packstream.Map []) payload in
+      Log.debug Log.io (fun m ->
+          m "[#%04X]  S: FAILURE %s" (Transport.id transport) (Log.value metadata));
+      Error (failure_error metadata)
+  | t when t = ignored_tag ->
+      Log.debug Log.io (fun m -> m "[#%04X]  S: IGNORED" (Transport.id transport));
+      Error (Errors.Service_unavailable "Unexpected IGNORED response")
   | tag ->
       Error (Errors.Service_unavailable (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag))
 
@@ -137,12 +186,24 @@ let rec collect_records acc transport =
   | Ok (tag, fields) -> (
       match tag with
       | t when t = record_tag ->
+          (* Never log the record data, only its shape (like the Python
+             driver's "S: RECORD * %d" with the field count). *)
+          Log.debug Log.io (fun m ->
+              m "[#%04X]  S: RECORD * %d" (Transport.id transport) (List.length fields));
           let record = match fields with [ Packstream.List values ] -> values | _ -> fields in
           collect_records (record :: acc) transport
-      | t when t = success_tag -> Ok (List.rev acc, Ok (metadata_of_fields fields))
+      | t when t = success_tag ->
+          Log.debug Log.io (fun m ->
+              m "[#%04X]  S: SUCCESS %s" (Transport.id transport)
+                (Log.value (metadata_of_fields fields)));
+          Ok (List.rev acc, Ok (metadata_of_fields fields))
       | t when t = failure_tag ->
+          Log.debug Log.io (fun m ->
+              m "[#%04X]  S: FAILURE %s" (Transport.id transport)
+                (Log.value (metadata_of_fields fields)));
           Ok (List.rev acc, Error (failure_error (metadata_of_fields fields)))
       | t when t = ignored_tag ->
+          Log.debug Log.io (fun m -> m "[#%04X]  S: IGNORED" (Transport.id transport));
           Ok (List.rev acc, Error (Errors.Service_unavailable "Unexpected IGNORED response"))
       | tag ->
           Ok

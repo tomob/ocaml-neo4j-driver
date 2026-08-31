@@ -16,12 +16,14 @@ let cancelled = function Eio.Cancel.Cancelled _ -> true | _ -> false
 type tls_mode = Plain | Verify of string | Trust_all of string
 
 type t = {
+  id : int;
   socket : [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r;
   timeout : Eio.Time.Timeout.t;
 }
 
 (* Bolt messages are sent in chunks of at most 64 KiB; the drivers use 16 KiB. *)
 let chunk_size = 16384
+let id t = t.id
 
 let sockaddrs_of_address net = function
   | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) -> (
@@ -38,26 +40,45 @@ let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
   (* One total deadline covering every TCP connect / TLS handshake attempt. *)
   let with_timeout f =
     try Eio.Time.Timeout.run_exn timeout f with
-    | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Connection timed out")
+    | Eio.Time.Timeout ->
+        Log.debug Log.io (fun m -> m "[#0000]  S: <TIMEOUT> %s" (Addressing.to_string address));
+        Error (Errors.Service_unavailable "Connection timed out")
     | exn ->
-        if cancelled exn then raise exn
+        if cancelled exn then begin
+          Log.debug Log.io (fun m -> m "[#0000]  S: <CANCELLED> %s" (Addressing.to_string address));
+          raise exn
+        end
         else
           Error
             (Errors.Service_unavailable
                (Printf.sprintf "Connection failed: %s" (Printexc.to_string exn)))
   in
-  let secure socket =
+  let secure id socket =
     let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
     match tls with
     | Plain -> Ok socket
-    | Verify host -> Tls_client.wrap { Tls_client.mode = Verify; host } socket
-    | Trust_all host -> Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
+    | Verify host ->
+        Log.debug Log.io (fun m -> m "[#%04X]  C: <SECURE> %s" id host);
+        Tls_client.wrap { Tls_client.mode = Verify; host } socket
+        |> Result.map_error (fun error ->
+            Log.debug Log.io (fun m ->
+                m "[#%04X]  S: <SECURE FAILURE> %s: %s" id host (Errors.to_string error));
+            error)
+    | Trust_all host ->
+        Log.debug Log.io (fun m -> m "[#%04X]  C: <SECURE> %s" id host);
+        Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
+        |> Result.map_error (fun error ->
+            Log.debug Log.io (fun m ->
+                m "[#%04X]  S: <SECURE FAILURE> %s: %s" id host (Errors.to_string error));
+            error)
   in
   let sockaddr_str sockaddr = Format.asprintf "%a" Eio.Net.Sockaddr.pp sockaddr in
   (* getaddrinfo_stream never returns an empty list; a failed lookup raises
      Eio.Io (Eio.Net.E _, _), which we report as an unresolvable address. *)
   match sockaddrs_of_address net address with
   | exception Eio.Io (Eio.Net.E _, _) ->
+      Log.debug Log.io (fun m ->
+          m "[#0000]  S: <ERROR> Could not resolve address %s" (Addressing.to_string address));
       Error
         (Errors.Service_unavailable
            (Printf.sprintf "Could not resolve address %s" (Addressing.to_string address)))
@@ -72,16 +93,29 @@ let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
                   (Errors.Service_unavailable
                      (Addressing.connect_failure_message ~address ~resolved:failed ~failures))
             | sockaddr :: rest -> (
+                Log.debug Log.io (fun m -> m "[#0000]  C: <OPEN> %s" (sockaddr_str sockaddr));
                 match try Ok (Eio.Net.connect ~sw net sockaddr) with exn -> Error exn with
                 | Error exn ->
-                    if cancelled exn then raise exn;
+                    if cancelled exn then begin
+                      Log.debug Log.io (fun m ->
+                          m "[#0000]  S: <CANCELLED> %s" (sockaddr_str sockaddr));
+                      raise exn
+                    end;
+                    Log.debug Log.io (fun m ->
+                        m "[#0000]  S: <CONNECTION FAILED> %s %s" (sockaddr_str sockaddr)
+                          (Printexc.to_string exn));
                     go (sockaddr_str sockaddr :: failed)
                       (Errors.Service_unavailable (Printexc.to_string exn) :: errors)
                       rest
                 | Ok socket -> (
-                    match secure socket with
-                    | Ok socket -> Ok { socket; timeout }
-                    | Error error -> go (sockaddr_str sockaddr :: failed) (error :: errors) rest))
+                    let id = Log.next_id () in
+                    match secure id socket with
+                    | Ok socket -> Ok { socket; timeout; id }
+                    | Error error ->
+                        Log.debug Log.io (fun m ->
+                            m "[#0000]  S: <CONNECTION FAILED> %s %s" (sockaddr_str sockaddr)
+                              (Errors.to_string error));
+                        go (sockaddr_str sockaddr :: failed) (error :: errors) rest))
           in
           go [] [] sockaddrs)
 
@@ -148,7 +182,11 @@ let read_message t =
     let size = Bytes.get_uint16_be size_buf 0 in
     if size = 0 then
       (* Terminator: a message with no payload is a NOOP, skip it. *)
-      if Buffer.length buffer = 0 then loop () else Ok (Buffer.to_bytes buffer)
+      if Buffer.length buffer = 0 then begin
+        Log.debug Log.io (fun m -> m "[#%04X]  S: <NOOP>" t.id);
+        loop ()
+      end
+      else Ok (Buffer.to_bytes buffer)
     else begin
       let chunk = Bytes.create size in
       let* () = read_exact t chunk 0 size in

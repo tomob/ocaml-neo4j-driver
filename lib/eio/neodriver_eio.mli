@@ -37,3 +37,7 @@ module Neo4jResult = Neo4j_result
 
 module Summary = Summary
 (** The summary of a query result (counters, plan, notifications, ...). *)
+
+module Log = Neodriver_core.Log
+(** Logging infrastructure ([Logs] sources, connection ids, value formatting and the
+    [NEO4J_LOG_LEVEL] / [NEO4J_LOG_SCOPES] environment control). *)

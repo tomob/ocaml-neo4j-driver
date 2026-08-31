@@ -25,3 +25,4 @@ module Cluster = Neodriver_eio.Cluster
 module Neo4jResult = Neodriver_eio.Neo4jResult
 module Summary = Neodriver_eio.Summary
 module Driver = Neodriver_eio.Driver
+module Log = Neodriver_eio.Log

@@ -249,7 +249,15 @@ let execute t ~mode ?metadata ?timeout work =
   let t0 = now t in
   let delay = retry_delay_generator t.config in
   let within_budget () = elapsed_s t t0 <= t.config.max_transaction_retry_time in
-  let retry () = Eio.Time.Mono.sleep t.clock (delay ()) in
+  let retry error () =
+    let delay = delay () in
+    Log.warn Log.session (fun m ->
+        m "Transaction failed and will be retried in %fs (%s)" delay (Errors.to_string error));
+    try Eio.Time.Mono.sleep t.clock delay
+    with Eio.Cancel.Cancelled _ as exn ->
+      Log.debug Log.session (fun m -> m "[#0000]  _: <SESSION> retry cancelled");
+      raise exn
+  in
   let begin_tx () =
     match begin_transaction_mode ?metadata ?timeout ~telemetry:0 t ~mode with
     | Ok tx -> Ok tx
@@ -276,7 +284,7 @@ let execute t ~mode ?metadata ?timeout work =
       t.current_tx := None;
       reconnect ();
       if Errors.is_retryable error && within_budget () then begin
-        retry ();
+        retry error ();
         attempt ()
       end
       else Error (Driver error)
@@ -286,7 +294,7 @@ let execute t ~mode ?metadata ?timeout work =
         (* Acquiring the connection failed (e.g. no address available for the
            mode): retry without running the unit of work. *)
         reconnect ();
-        retry ();
+        retry error ();
         attempt ()
     | Error _ as error -> error
     | Ok tx -> (

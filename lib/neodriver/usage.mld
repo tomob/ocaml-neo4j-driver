@@ -293,6 +293,45 @@ The pool honors [max_connection_pool_size], [connection_acquisition_timeout],
 [telemetry_disabled] are not wired yet, and [disable_auto_commit_retries] has
 no effect for now.
 
+{1 Logging}
+
+Logging mirrors the Python driver's loggers and goes through the standard
+{{:https://erratique.ch/software/logs/doc/Logs/index.html }Logs} library: the
+[Log] module exposes the sources [Log.io] (connection and Bolt message
+exchange), [Log.pool] (pool and routing), [Log.session] and [Log.notifications].
+Logging is off by default.
+
+{2 Environment variables}
+
+Set [NEO4J_LOG_LEVEL] to one of [off], [error], [warn], [info], [debug] to turn
+logging on (the default is [off], i.e. nothing is logged). [NEO4J_LOG_SCOPES]
+restricts the areas: a comma-separated list of [io], [pool], [session],
+[notifications] (default [all]). The variables are read once from the
+process-start environment (OCaml [Sys.getenv] semantics) and applied
+automatically at the first log call:
+
+{v
+NEO4J_LOG_LEVEL=debug ./my_app
+NEO4J_LOG_LEVEL=info NEO4J_LOG_SCOPES=io,pool ./my_app
+v}
+
+{2 Programmatic setup}
+
+[Neodriver.Log.setup ~level:Debug ~scopes:[Io; Pool] ()] installs a
+[Logs_fmt.reporter] (to stderr) and sets the per-source levels; [Log.disable ()]
+turns everything back off. [Log.setup_from_env ()] applies the environment
+variables eagerly. When using your own reporter, set the levels with
+[Logs.Src.set_level Log.io (Some Logs.Debug)] (the [Logs] library).
+
+Connection log lines use a "[#XXXX]" prefix, e.g.
+[{v[#0001]  C: RUN 'RETURN 1' {} {}[#0001]  S: SUCCESS {"fields": [...]}v}]
+The id is a per-connection counter, not a network identifier: Eio's portable
+API has no [getsockname], so the Python driver's local-port id is replaced by a
+driver-assigned counter — this keeps logging working on systems without file
+descriptors (e.g. MirageOS). Credentials are always redacted ("*******") in
+HELLO/LOGON log lines, and RECORD lines log only the number of records, never
+the data.
+
 {1 Not yet implemented}
 
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN

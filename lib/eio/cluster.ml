@@ -67,6 +67,15 @@ let create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~in
 let now t = Eio.Time.Mono.now t.clock
 let elapsed_s t since = Mtime.Span.to_float_ns (Mtime.span (now t) since) /. 1_000_000_000.
 
+(* A role list as a readable "[addr1, addr2]" string for the routing log lines. *)
+let addr_str_list addrs = "[" ^ String.concat ", " (List.map Addressing.to_string addrs) ^ "]"
+
+let table_str table =
+  Printf.sprintf "routers=%s readers=%s writers=%s"
+    (addr_str_list (Routing_table.routers table))
+    (addr_str_list (Routing_table.readers table))
+    (addr_str_list (Routing_table.writers table))
+
 let with_mutex mutex f =
   Eio.Mutex.lock mutex;
   Fun.protect ~finally:(fun () -> Eio.Mutex.unlock mutex) f
@@ -326,14 +335,23 @@ let fetch_table cluster ~database ~imp_user ~bookmarks last_error routers =
    a NotALeader writer removal) forces a refresh. *)
 let fresh_table cluster ~database ~mode =
   match Hashtbl.find_opt cluster.tables database with
-  | Some (table, fetched_at)
-    when elapsed_s cluster fetched_at <= float_of_int (Routing_table.ttl_seconds table) ->
+  | Some (table, fetched_at) ->
+      let expired = elapsed_s cluster fetched_at > float_of_int (Routing_table.ttl_seconds table) in
       let role_ok =
         match mode with
         | Config.Read -> Routing_table.readers table <> []
         | Config.Write -> Routing_table.writers table <> []
       in
-      if Routing_table.routers table <> [] && role_ok then Some table else None
+      let has_routers = Routing_table.routers table <> [] in
+      let fresh = (not expired) && has_routers && role_ok in
+      Log.debug Log.pool (fun m ->
+          m
+            "[#0000]  _: <ROUTING> checking table freshness: expired=%b, has_server_for_mode=%b, \
+             routers=%s => %b"
+            expired role_ok
+            (addr_str_list (Routing_table.routers table))
+            fresh);
+      if fresh then Some table else None
   | _ -> None
 
 (* A recent fetch failure for [database], if any (caller holds the lock). *)
@@ -348,6 +366,7 @@ let store_table cluster ~database table =
   Hashtbl.replace cluster.tables database (table, now cluster);
   cluster.routers <- Routing_table.routers table;
   Hashtbl.remove cluster.errors database;
+  Log.debug Log.pool (fun m -> m "[#0000]  _: <ROUTING> updated table=%s" (table_str table));
   table
 
 (* Cache the home database of the fetched table for [imp_user] and store the
@@ -490,12 +509,16 @@ let select_from_table ?(exclude = []) cluster ~mode table =
    is then cached for [imp_user]. *)
 let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
   match database with
-  | Some _ ->
+  | Some db ->
+      Log.debug Log.pool (fun m ->
+          m "[#0000]  _: <WORKSPACE> routing towards fixed database: %s" db);
       let* table = resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false in
       Ok (table, database)
   | None -> (
       match with_lock cluster (fun () -> home_db_of cluster imp_user) with
       | Some home_db ->
+          Log.debug Log.pool (fun m ->
+              m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
           let* table =
             resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
           in
@@ -504,6 +527,7 @@ let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
           (* The home database is not cached (the home-db cache is disabled or
              expired): resolve it over a fresh ROUTE rather than serving the
              cached routing table. *)
+          Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
           let* table =
             resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
           in

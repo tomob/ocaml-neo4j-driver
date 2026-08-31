@@ -105,17 +105,23 @@ let hello_headers (config : config) major minor =
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
 
+(* The connection id (from the transport's [Log.next_id]) for log lines. *)
+let id t = Transport.id t.transport
+
 (* Whether the server answered the last request with a FAILURE: the connection
    is not in a clean state and needs a RESET before it can be reused. *)
 let is_failed t = State.failed !(t.state)
 let address t = t.address
 
 (* The connection reports request failures to an optional callback (installed by
-   the routing cluster to deactivate dead addresses). *)
+   the routing cluster to deactivate dead addresses) and logs them. *)
 let set_on_error t on_error = t.on_error := on_error
 let last_database t = !(t.last_database)
 let set_last_database t database = t.last_database := database
-let report t error = !(t.on_error) t error
+
+let report t error =
+  Log.debug Log.io (fun m -> m "[#%04X]  _: <CONNECTION> error: %s" (id t) (Errors.to_string error));
+  !(t.on_error) t error
 
 (* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
    V2 = Bolt 5, V3 = Bolt 6). The minor version gates Bolt 6.1-only types
@@ -159,9 +165,19 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
   let* () = ensure_ready t in
   match action () with
   | Ok result ->
-      t.state := State.server_transition ~re_auth ~has_more:(has_more result) !(t.state) message;
+      let old = !(t.state) in
+      let new_state = State.server_transition ~re_auth ~has_more:(has_more result) old message in
+      if old <> new_state then
+        Log.debug Log.io (fun m ->
+            m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string old)
+              (State.to_string new_state));
+      t.state := new_state;
       Ok result
   | Error error ->
+      if not (State.failed !(t.state)) then
+        Log.debug Log.io (fun m ->
+            m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string !(t.state))
+              (State.to_string State.Failed));
       t.state := State.Failed;
       report t error;
       Error error
@@ -191,9 +207,19 @@ let request_telemetry t ~message ~re_auth feature action =
   in
   match outcome with
   | Ok response ->
-      t.state := State.server_transition ~re_auth ~has_more:false !(t.state) message;
+      let old = !(t.state) in
+      let new_state = State.server_transition ~re_auth ~has_more:false old message in
+      if old <> new_state then
+        Log.debug Log.io (fun m ->
+            m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string old)
+              (State.to_string new_state));
+      t.state := new_state;
       Ok response
   | Error error ->
+      if not (State.failed !(t.state)) then
+        Log.debug Log.io (fun m ->
+            m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string !(t.state))
+              (State.to_string State.Failed));
       t.state := State.Failed;
       report t error;
       Error error
@@ -312,8 +338,13 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       telemetry_enabled = ref (not config.telemetry_disabled);
     }
   in
-  let* () = authenticate conn config in
-  Ok conn
+  match authenticate conn config with
+  | Ok () -> Ok conn
+  | Error error ->
+      Log.debug Log.io (fun m ->
+          m "[#%04X]  C: <OPEN FAILED> %s" (id conn) (Errors.to_string error));
+      Transport.close transport;
+      Error error
 
 let logon t auth =
   let re_auth = re_auth_of t.major t.minor in
@@ -774,4 +805,5 @@ let close t =
      protocol versions that do not support it. *)
   if (Capabilities.of_version t.major t.minor).supports_goodbye then
     ignore (Bolt.goodbye t.transport);
+  Log.debug Log.io (fun m -> m "[#%04X]  C: <CLOSE>" (id t));
   Transport.close t.transport

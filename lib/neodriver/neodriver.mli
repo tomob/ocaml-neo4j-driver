@@ -64,3 +64,7 @@ module Summary = Neodriver_eio.Summary
 
 module Driver = Neodriver_eio.Driver
 (** Eio backend entry point ([Driver.connect]). *)
+
+module Log = Neodriver_eio.Log
+(** Logging infrastructure ([Logs] sources, connection ids, value formatting and the
+    [NEO4J_LOG_LEVEL] / [NEO4J_LOG_SCOPES] environment control). *)

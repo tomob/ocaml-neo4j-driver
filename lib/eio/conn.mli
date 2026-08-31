@@ -65,6 +65,10 @@ val address : t -> Addressing.t
 val version : t -> int * int
 (** The negotiated protocol version [(major, minor)]. *)
 
+val id : t -> int
+(** The connection id (a driver-assigned counter, rendered as "[#XXXX]" in log lines; see
+    [Log.conn]). *)
+
 val server_state : t -> State.t
 (** The tracked server protocol state. *)
 
