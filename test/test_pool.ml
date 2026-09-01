@@ -53,7 +53,8 @@ let pool_with_manager net clock sw port ?(pool_config = Config.default_pool_conf
   Pool.create ~pool_config ~connect ~auth_manager:(Some manager) clock
 
 (* Acquire, use and release a connection; the second acquire reuses it (no new
-   HELLO: the wire has RUN/PULL for the second use, not HELLO/LOGON). *)
+   HELLO: the wire has RUN/PULL for the second use, not HELLO/LOGON, and no
+   RESET — a clean connection is reused as-is, MinimalResets). *)
 let reuse () =
   let received = ref [] in
   Test_mock.with_mock
@@ -65,7 +66,6 @@ let reuse () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Records ([ [ Packstream.Int 1L ] ], false);
-           Test_mock.Success;
            Test_mock.Success;
            Test_mock.Records ([ [ Packstream.Int 2L ] ], false);
          ] ))
@@ -81,7 +81,7 @@ let reuse () =
           run_query conn "RETURN 2";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x10; 0x3F ] (message_tags received))
+      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x10; 0x3F ] (message_tags received))
 
 (* A connection that failed a query is closed on release; the next acquire
    creates a fresh one (HELLO again). *)
@@ -271,8 +271,7 @@ let session_close_once () =
 let in_use_count () =
   let received = ref [] in
   Test_mock.with_mock
-    (Test_mock.Session
-       ((5, 4), received, [ Test_mock.Success; Test_mock.Success; Test_mock.Success ]))
+    (Test_mock.Session ((5, 4), received, [ Test_mock.Success; Test_mock.Success ]))
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
       check int "fresh pool" 0 (Pool.in_use_count pool);
@@ -289,7 +288,7 @@ let in_use_count () =
       | Error e -> fail (Errors.to_string e))
 
 (* A reused connection is re-authenticated when the manager's token changed
-   (RESET liveness check, then LOGOFF + LOGON on the wire). *)
+   (LOGOFF + LOGON on the wire; no RESET — MinimalResets). *)
 let re_auth_on_token_change () =
   let received = ref [] in
   let current = ref (Conn.basic_auth ~credentials:"pw1" ()) in
@@ -302,13 +301,7 @@ let re_auth_on_token_change () =
     (Test_mock.Session
        ( (5, 4),
          received,
-         [
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Success;
-           Test_mock.Success;
-         ] ))
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
     (fun net clock sw port ->
       let pool = pool_with_manager net clock sw port manager () in
       (match Pool.acquire pool with
@@ -318,7 +311,7 @@ let re_auth_on_token_change () =
       (match Pool.acquire pool with
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      check (list int) "wire" [ 0x01; 0x6A; 0x0F; 0x6B; 0x6A ] (message_tags received))
+      check (list int) "wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received))
 
 (* An AuthorizationExpired marks every pooled connection unauthenticated: an
    idle connection not involved in the failure re-authenticates on its next
@@ -335,13 +328,7 @@ let authorization_expired_marks_all () =
         [
           ( (5, 4),
             received_a,
-            [
-              Test_mock.Success;
-              Test_mock.Success;
-              Test_mock.Success;
-              Test_mock.Success;
-              Test_mock.Success;
-            ] );
+            [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] );
         ];
         [
           ( (5, 4),
@@ -350,7 +337,6 @@ let authorization_expired_marks_all () =
               Test_mock.Success;
               Test_mock.Success;
               Test_mock.Failure ("Neo.ClientError.Security.AuthorizationExpired", "expired");
-              Test_mock.Success;
               Test_mock.Success;
               Test_mock.Success;
               Test_mock.Success;
@@ -395,10 +381,8 @@ let authorization_expired_marks_all () =
       (match Pool.acquire pool with
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      check (list int) "conn1 wire" [ 0x01; 0x6A; 0x0F; 0x6B; 0x6A ] (message_tags received_a);
-      check (list int) "conn2 wire"
-        [ 0x01; 0x6A; 0x10; 0x0F; 0x0F; 0x6B; 0x6A ]
-        (message_tags received_b))
+      check (list int) "conn1 wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received_a);
+      check (list int) "conn2 wire" [ 0x01; 0x6A; 0x10; 0x0F; 0x6B; 0x6A ] (message_tags received_b))
 
 (* A handled security error (basic manager + Unauthorized) is marked retryable
    and the manager refreshes its token. *)

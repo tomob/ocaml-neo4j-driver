@@ -12,6 +12,8 @@ open Neodriver
 open Neodriver_eio
 open Tk_errors
 
+let ( let* ) = Result.bind
+
 (* --- Connection context --- *)
 
 type 'tag ctx = {
@@ -53,11 +55,9 @@ let opt_error_id fields =
 
 (* --- Backend state --- *)
 
-type auth = { scheme : string; principal : string; credentials : string }
-
 type driver = {
   uri_string : string;
-  auth : auth;
+  auth : Conn.auth;
   user_agent : string;
   connection_timeout : float;
   max_transaction_retry_time : float;
@@ -74,6 +74,7 @@ let transactions : (int, int * Tx.t) Hashtbl.t = Hashtbl.create 16
 let results : (int, result) Hashtbl.t = Hashtbl.create 16
 let custom_resolutions : (int, string list) Hashtbl.t = Hashtbl.create 16
 let errors : (int, Errors.t) Hashtbl.t = Hashtbl.create 16
+let auth_managers : (int, Auth_manager.t) Hashtbl.t = Hashtbl.create 16
 let next_id = ref 0
 
 let new_id () =
@@ -100,16 +101,200 @@ let get_transaction id =
   | Some (session_id, tx) -> (session_id, tx)
   | None -> raise (Backend_error "unknown transaction")
 
+(* --- Auth tokens and managers (phase A8) --- *)
+
+(* The auth token managers created by NewAuthTokenManager /
+   NewBasicAuthTokenManager / NewBearerAuthTokenManager, keyed by id (the
+   shared id space). NewDriver's authTokenManagerId refers to one of them. *)
+
+(* Seconds on a consistent scale (an arbitrary epoch) for the bearer managers'
+   expiry checks. *)
+let now_seconds clock () =
+  Int64.to_float (Mtime.to_uint64_ns (Eio.Time.Mono.now clock)) /. 1_000_000_000.
+
+let rec value_of_json = function
+  | `Null -> Packstream.Null
+  | `Bool b -> Packstream.Bool b
+  | `Int n -> Packstream.Int (Int64.of_int n)
+  | `Intlit s -> (
+      match Int64.of_string_opt s with Some n -> Packstream.Int n | None -> Packstream.String s)
+  | `Float f -> Packstream.Float f
+  | `String s -> Packstream.String s
+  | `List items -> Packstream.List (List.map value_of_json items)
+  | `Assoc fields -> Packstream.Map (List.map (fun (k, v) -> (k, value_of_json v)) fields)
+
+let rec value_json = function
+  | Packstream.Null -> `Null
+  | Packstream.Bool b -> `Bool b
+  | Packstream.Int n -> `Intlit (Int64.to_string n)
+  | Packstream.Float f -> `Float f
+  | Packstream.String s -> `String s
+  | Packstream.Bytes b -> `String (Bytes.to_string b)
+  | Packstream.List items -> `List (List.map value_json items)
+  | Packstream.Map fields -> `Assoc (List.map (fun (k, v) -> (k, value_json v)) fields)
+  | Packstream.Uuid uuid -> `String uuid
+  | Packstream.Structure (tag, fields) ->
+      `Assoc [ ("tag", `Int tag); ("fields", `List (List.map value_json fields)) ]
+
+(* Parse an AuthorizationToken ({"name": "AuthorizationToken", "data": {...}})
+   into a driver token. *)
+let token_of_json = function
+  | `Assoc token_fields -> (
+      match List.assoc_opt "data" token_fields with
+      | Some (`Assoc data) -> (
+          let scheme = string "scheme" data in
+          let principal = opt_string "principal" data in
+          let credentials = opt_string "credentials" data in
+          let realm = opt_string "realm" data in
+          let parameters =
+            match List.assoc_opt "parameters" data with
+            | Some (`Assoc fields) -> List.map (fun (k, v) -> (k, value_of_json v)) fields
+            | _ -> []
+          in
+          match scheme with
+          | "basic" ->
+              Ok
+                (Conn.basic_auth
+                   ~principal:(Option.value ~default:"neo4j" principal)
+                   ~credentials:(Option.value ~default:"" credentials)
+                   ?realm ())
+          | "bearer" -> Ok (Conn.bearer_auth (Option.value ~default:"" credentials))
+          | "kerberos" ->
+              Ok
+                (Auth_manager.custom_auth ~principal:""
+                   ~credentials:(Option.value ~default:"" credentials)
+                   "kerberos")
+          | scheme ->
+              Ok (Auth_manager.custom_auth ?principal ?credentials ?realm ~parameters scheme))
+      | _ -> Error (Errors.Configuration_error "authorizationToken has no data"))
+  | _ -> Error (Errors.Configuration_error "bad authorizationToken")
+
+(* Serialise a token as an AuthorizationToken for the harness. *)
+let token_json (token : Auth_manager.token) =
+  let data =
+    ("scheme", `String token.scheme)
+    :: (match token.principal with Some p -> [ ("principal", `String p) ] | None -> [])
+    @ (match token.credentials with Some c -> [ ("credentials", `String c) ] | None -> [])
+    @ (match token.realm with Some r -> [ ("realm", `String r) ] | None -> [])
+    @
+    if token.parameters = [] then []
+    else [ ("parameters", `Assoc (List.map (fun (k, v) -> (k, value_json v)) token.parameters)) ]
+  in
+  `Assoc [ ("name", `String "AuthorizationToken"); ("data", `Assoc data) ]
+
+(* Whether a requestId JSON value equals [key] (an int or a numeric string). *)
+let request_id_eq key = function
+  | Some (`Int n) -> n = key
+  | Some (`Intlit s) -> ( match int_of_string_opt s with Some n -> n = key | None -> false)
+  | _ -> false
+
+(* Push a request to the harness and read the follow-up Completed request (like
+   the resolver): the exchange is synchronous. Returns the Completed's [data]
+   fields, or [None] when the harness closed. *)
+let read_completed ctx name data =
+  ctx.send name data;
+  match ctx.read () with
+  | None -> None
+  | Some json -> (
+      match Yojson.Safe.from_string json with
+      | `Assoc fields -> (
+          match List.assoc_opt "data" fields with Some (`Assoc data) -> Some data | _ -> None)
+      | _ -> None)
+
+(* The token of a Completed auth token supply whose requestId matches [key]. *)
+let completed_token key data =
+  if request_id_eq key (List.assoc_opt "requestId" data) then
+    match List.assoc_opt "auth" data with
+    | Some auth -> token_of_json auth
+    | None -> raise (Backend_error "bad completed auth token")
+  else raise (Backend_error "bad requestId in completed auth token")
+
+(* The get_auth of a custom NewAuthTokenManager: push
+   AuthTokenManagerGetAuthRequest and await AuthTokenManagerGetAuthCompleted. *)
+let auth_manager_get_auth ctx id () =
+  let key = new_id () in
+  match
+    read_completed ctx "AuthTokenManagerGetAuthRequest"
+      (`Assoc [ ("id", `Int key); ("authTokenManagerId", `Int id) ])
+  with
+  | Some data -> completed_token key data
+  | None -> Error (Errors.Service_unavailable "harness closed during auth token supply")
+
+(* The handle_security_exception of a custom manager: push
+   AuthTokenManagerHandleSecurityExceptionRequest and await the Completed. *)
+let auth_manager_handle_security_exception ctx id auth error =
+  let key = new_id () in
+  let error_code = match Errors.code error with Some code -> code | None -> "" in
+  match
+    read_completed ctx "AuthTokenManagerHandleSecurityExceptionRequest"
+      (`Assoc
+         [
+           ("id", `Int key);
+           ("authTokenManagerId", `Int id);
+           ("auth", token_json auth);
+           ("errorCode", `String error_code);
+         ])
+  with
+  | Some data when request_id_eq key (List.assoc_opt "requestId" data) -> (
+      match List.assoc_opt "handled" data with
+      | Some (`Bool handled) -> Ok handled
+      | _ -> raise (Backend_error "bad security exception completed"))
+  | Some _ -> raise (Backend_error "bad requestId in security exception completed")
+  | None -> Error (Errors.Service_unavailable "harness closed during security exception")
+
+(* The token provider of a NewBasicAuthTokenManager: push
+   BasicAuthTokenProviderRequest and await BasicAuthTokenProviderCompleted. *)
+let basic_auth_token_provider ctx id () =
+  let key = new_id () in
+  match
+    read_completed ctx "BasicAuthTokenProviderRequest"
+      (`Assoc [ ("id", `Int key); ("basicAuthTokenManagerId", `Int id) ])
+  with
+  | Some data -> completed_token key data
+  | None -> Error (Errors.Service_unavailable "harness closed during basic auth token supply")
+
+(* The token provider of a NewBearerAuthTokenManager: push
+   BearerAuthTokenProviderRequest and await BearerAuthTokenProviderCompleted
+   (an AuthTokenAndExpiration with the token and its validity in ms). *)
+let bearer_auth_token_provider ctx id () =
+  let key = new_id () in
+  match
+    read_completed ctx "BearerAuthTokenProviderRequest"
+      (`Assoc [ ("id", `Int key); ("bearerAuthTokenManagerId", `Int id) ])
+  with
+  | Some data when request_id_eq key (List.assoc_opt "requestId" data) -> (
+      match List.assoc_opt "auth" data with
+      | Some (`Assoc wrapper) -> (
+          match List.assoc_opt "data" wrapper with
+          | Some (`Assoc inner) -> (
+              match List.assoc_opt "auth" inner with
+              | Some auth ->
+                  let* token = token_of_json auth in
+                  let expires_in_ms =
+                    match List.assoc_opt "expiresInMs" inner with
+                    | Some (`Int ms) -> Some (float_of_int ms /. 1000.0)
+                    | Some (`Intlit s) -> (
+                        match float_of_string_opt s with
+                        | Some f -> Some (f /. 1000.0)
+                        | None -> None)
+                    | _ -> None
+                  in
+                  let expires_at =
+                    Option.map (fun seconds -> now_seconds ctx.clock () +. seconds) expires_in_ms
+                  in
+                  Ok { Auth_manager.token; expires_at }
+              | _ -> raise (Backend_error "bad AuthTokenAndExpiration auth"))
+          | _ -> raise (Backend_error "bad AuthTokenAndExpiration"))
+      | _ -> raise (Backend_error "bad BearerAuthTokenProviderCompleted"))
+  | Some _ -> raise (Backend_error "bad requestId in bearer completed")
+  | None -> Error (Errors.Service_unavailable "harness closed during bearer auth token supply")
+
 let auth_of fields =
   match List.assoc_opt "authorizationToken" fields with
-  | Some (`Assoc token) -> (
-      match List.assoc_opt "data" token with
-      | Some (`Assoc data) ->
-          let scheme = string "scheme" data in
-          if scheme <> "basic" then
-            raise (Backend_error (Printf.sprintf "unsupported auth scheme %S" scheme));
-          { scheme; principal = string "principal" data; credentials = string "credentials" data }
-      | _ -> raise (Backend_error "authorizationToken has no data"))
+  | Some token -> (
+      match token_of_json token with
+      | Ok auth -> auth
+      | Error error -> raise (Backend_error (Errors.to_string error)))
   | _ -> raise (Backend_error "authorizationToken is required")
 
 (* Ask the harness to resolve an address (custom resolver) and return the
@@ -195,6 +380,13 @@ let session_conn (session : session) =
   | Ok conn -> conn
   | Error error -> raise (Driver_error error)
 
+(* The connection of the session's in-flight explicit transaction, without
+   re-authentication (the transaction owns it). *)
+let session_conn_for_tx (session : session) =
+  match Session.tx_conn session.session with
+  | Ok conn -> conn
+  | Error error -> raise (Driver_error error)
+
 (* Close the session's open transaction (if any) and its connection. *)
 let close_session_conns (session : session) = Session.close session.session
 
@@ -208,7 +400,24 @@ let get_features _fields =
 let new_driver ctx fields =
   let uri_string = string "uri" fields in
   let user_agent = Option.value ~default:Conn.default_user_agent (opt_string "userAgent" fields) in
-  let auth = auth_of fields in
+  (* A driver may authenticate with a fixed token (authorizationToken) or with
+     an auth token manager (authTokenManagerId); the two are mutually
+     exclusive. *)
+  let auth, auth_manager =
+    match List.assoc_opt "authTokenManagerId" fields with
+    | Some (`Int id) -> (
+        match Hashtbl.find_opt auth_managers id with
+        | Some manager -> (Conn.basic_auth (), Some manager)
+        | None -> raise (Backend_error "unknown auth token manager"))
+    | Some (`Intlit s) -> (
+        match int_of_string_opt s with
+        | Some id -> (
+            match Hashtbl.find_opt auth_managers id with
+            | Some manager -> (Conn.basic_auth (), Some manager)
+            | None -> raise (Backend_error "unknown auth token manager"))
+        | None -> raise (Backend_error "bad authTokenManagerId"))
+    | _ -> (auth_of fields, None)
+  in
   let resolver_registered =
     match List.assoc_opt "resolverRegistered" fields with Some (`Bool b) -> b | _ -> false
   in
@@ -235,15 +444,6 @@ let new_driver ctx fields =
   let custom_domain_name =
     if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
   in
-  let conn_auth : Conn.auth =
-    {
-      scheme = auth.scheme;
-      principal = Some auth.principal;
-      credentials = Some auth.credentials;
-      realm = None;
-      parameters = [];
-    }
-  in
   let pool_config =
     let max_connection_pool_size =
       match List.assoc_opt "maxConnectionPoolSize" fields with
@@ -269,8 +469,8 @@ let new_driver ctx fields =
     | Error error -> raise (Driver_error error)
   in
   match
-    Driver.connect ?resolver:custom ?domain_name_resolver:custom_domain_name ~uri:uri_string
-      ~auth:conn_auth ~user_agent ~connection_timeout ~pool_config ctx.net ctx.clock ctx.sw
+    Driver.connect ?resolver:custom ?domain_name_resolver:custom_domain_name ~uri:uri_string ~auth
+      ?auth_manager ~user_agent ~connection_timeout ~pool_config ctx.net ctx.clock ctx.sw
   with
   | Error error -> raise (Driver_error error)
   | Ok driver ->
@@ -295,6 +495,44 @@ let driver_close fields =
   (match Hashtbl.find_opt drivers id with Some driver -> Driver.close driver.driver | None -> ());
   Hashtbl.remove drivers id;
   ("Driver", `Assoc [ ("id", `Int id) ])
+
+(* A custom NewAuthTokenManager: get_auth and handle_security_exception both
+   round-trip to the harness. *)
+let new_auth_token_manager ctx _fields =
+  let id = new_id () in
+  let manager : Auth_manager.t =
+    {
+      get_auth = auth_manager_get_auth ctx id;
+      handle_security_exception = auth_manager_handle_security_exception ctx id;
+    }
+  in
+  Hashtbl.add auth_managers id manager;
+  ("AuthTokenManager", `Assoc [ ("id", `Int id) ])
+
+(* NewBasicAuthTokenManager: a basic manager whose provider asks the harness for
+   the fresh password (refreshed on Unauthorized). *)
+let new_basic_auth_token_manager ctx _fields =
+  let id = new_id () in
+  let manager = Auth_manager.basic ~provider:(basic_auth_token_provider ctx id) in
+  Hashtbl.add auth_managers id manager;
+  ("BasicAuthTokenManager", `Assoc [ ("id", `Int id) ])
+
+(* NewBearerAuthTokenManager: a bearer manager whose provider asks the harness
+   for a fresh token and its validity. *)
+let new_bearer_auth_token_manager ctx _fields =
+  let id = new_id () in
+  let manager =
+    Auth_manager.bearer ~now:(now_seconds ctx.clock) ~provider:(bearer_auth_token_provider ctx id)
+  in
+  Hashtbl.add auth_managers id manager;
+  ("BearerAuthTokenManager", `Assoc [ ("id", `Int id) ])
+
+(* AuthTokenManagerClose: drop the manager (also covers the basic / bearer
+   variants) and echo the id. *)
+let auth_token_manager_close fields =
+  let id = int "id" fields in
+  Hashtbl.remove auth_managers id;
+  ("AuthTokenManager", `Assoc [ ("id", `Int id) ])
 
 let new_session fields =
   let driver_id = int "driverId" fields in
@@ -459,7 +697,7 @@ let tx_failed session_id = end_transaction session_id None
 let transaction_run _ctx fields =
   let session_id, tx = get_transaction (int "txId" fields) in
   let session = get_session session_id in
-  let conn = session_conn session in
+  let conn = session_conn_for_tx session in
   let cypher = string "cypher" fields in
   let parameters = decode_params fields in
   let hydration = Conn.hydration conn in
@@ -497,14 +735,16 @@ let transaction_rollback _ctx fields =
       end_transaction session_id None;
       ("Transaction", `Assoc [ ("id", `Int id) ])
 
+(* Closing a transaction is best-effort (like the Python driver's [close]):
+   a connection already terminated by the server (e.g. the stub's [S: <EXIT>]
+   after a FAILURE) makes the rollback fail with "Connection closed"; the
+   transaction is closed anyway. *)
 let transaction_close _ctx fields =
   let id = int "txId" fields in
   let session_id, tx = get_transaction id in
-  match Tx.close tx with
-  | Error error -> raise (Driver_error error)
-  | Ok () ->
-      end_transaction session_id None;
-      ("Transaction", `Assoc [ ("id", `Int id) ])
+  (match Tx.close tx with Ok () -> () | Error _ -> ());
+  end_transaction session_id None;
+  ("Transaction", `Assoc [ ("id", `Int id) ])
 
 let session_last_bookmarks fields =
   let session = get_session (int "sessionId" fields) in
@@ -902,6 +1142,10 @@ let handle ctx name data =
   | "GetFeatures" -> Some (get_features fields)
   | "NewDriver" -> Some (new_driver ctx fields)
   | "DriverClose" -> Some (driver_close fields)
+  | "NewAuthTokenManager" -> Some (new_auth_token_manager ctx fields)
+  | "NewBasicAuthTokenManager" -> Some (new_basic_auth_token_manager ctx fields)
+  | "NewBearerAuthTokenManager" -> Some (new_bearer_auth_token_manager ctx fields)
+  | "AuthTokenManagerClose" -> Some (auth_token_manager_close fields)
   | "NewSession" -> Some (new_session fields)
   | "SessionClose" -> Some (session_close fields)
   | "VerifyConnectivity" -> Some (verify_connectivity fields)

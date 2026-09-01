@@ -218,20 +218,51 @@ let home_db_of cluster imp_user =
 let set_home_db cluster imp_user database =
   Hashtbl.replace cluster.home_dbs imp_user (database, now cluster)
 
+(* Re-authenticate the routing connection when the manager's token differs from
+   the one it is logged on with (or when it was marked unauthenticated), like a
+   pooled connection's acquire re-auth. Without an auth manager nothing is
+   done. A [Configuration_error] means the protocol version cannot
+   re-authenticate an existing connection (Bolt < 5.1): the caller drops it and
+   recreates it with the fresh token. *)
+let re_auth_routing cluster conn =
+  match cluster.auth_manager with
+  | None -> Ok ()
+  | Some manager ->
+      let* token = manager.get_auth () in
+      let same =
+        match Conn.current_auth conn with
+        | Some current -> Auth_manager.eq current token
+        | None -> false
+      in
+      if same then Ok ()
+      else if not (Conn.capabilities conn).supports_re_auth then
+        Error
+          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+      else Conn.re_auth conn token |> Result.map (fun _ -> ())
+
 (* The persistent routing connection for [addr]: ROUTE requests reuse it (the
-   server expects several ROUTEs on one connection), created on first use and
-   dropped (closed) when the address is deactivated. Guarded by [routing_lock]. *)
-let routing_conn cluster addr =
+   server expects several ROUTEs on one connection), created on first use,
+   re-authenticated when the manager's token rotated, and dropped (closed)
+   when the address is deactivated. Guarded by [routing_lock]. *)
+let rec routing_conn cluster addr =
   let key = Addressing.to_string addr in
   match Hashtbl.find_opt cluster.routing key with
-  | Some conn -> Ok conn
-  | None -> (
-      match cluster.connect_routing addr with
-      | Error error -> Error error
-      | Ok conn ->
-          Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
-          Hashtbl.add cluster.routing key conn;
-          Ok conn)
+  | Some conn -> (
+      match re_auth_routing cluster conn with
+      | Ok () -> Ok conn
+      | Error (Errors.Configuration_error _) ->
+          (* The protocol cannot re-authenticate an existing connection (Bolt
+             < 5.1): drop it and recreate it, which authenticates with the
+             current token. *)
+          Hashtbl.remove cluster.routing key;
+          Conn.close conn;
+          routing_conn cluster addr
+      | Error _ as error -> error)
+  | None ->
+      let* conn = cluster.connect_routing addr in
+      Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
+      Hashtbl.add cluster.routing key conn;
+      Ok conn
 
 (* Whether [addr] appears among the readers or writers of [table] (i.e. the
    server doubles as a data node). *)

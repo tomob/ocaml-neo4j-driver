@@ -70,9 +70,11 @@ let over_lifetime t created_at =
   let age = Mtime.span (now t) created_at in
   Mtime.Span.to_float_ns age >= t.pool_config.max_connection_lifetime *. 1_000_000_000.
 
-(* Liveness-check an idle connection: send a RESET (bounded by the configured
-   timeout when set), like the Python driver which resets a connection lazily
-   when it is reused. On failure the connection is closed. *)
+(* Liveness-check an idle connection on reuse: only when a
+   [liveness_check_timeout] is configured, probe it with a RESET (bounded by
+   the timeout), like the Python driver. Without a timeout no probe is sent: a
+   clean connection is reused as-is (MinimalResets). On failure the connection
+   is closed. *)
 let liveness_ok t conn =
   match t.pool_config.liveness_check_timeout with
   | Some timeout -> (
@@ -81,7 +83,7 @@ let liveness_ok t conn =
             Conn.reset conn)
         |> Stdlib.Result.is_ok
       with _ -> false)
-  | None -> Result.is_ok (Conn.reset conn)
+  | None -> true
 
 (* Pop a reusable connection off the idle queue, closing any that are over
    their lifetime or fail the liveness check. *)
@@ -131,8 +133,11 @@ let mark_all_unauthenticated t =
    invalidates every connection (they re-authenticate on their next acquire),
    and a [Neo.ClientError.Security.*] error is offered to the pool's auth
    manager — a handled error is marked retryable, a provider failure replaces
-   it. Without an auth manager the error passes through unchanged. *)
+   it. Without an auth manager the error passes through unchanged. The token
+   used when the server rejected the request is captured before the
+   AuthorizationExpired mark clears the connections' current tokens. *)
 let on_neo4j_error t conn error =
+  let failed_auth = Conn.current_auth conn in
   if Errors.unauthenticates_all_connections error then begin
     Log.debug Log.pool (fun m ->
         m "[#%04X]  _: <POOL> mark all connections as unauthenticated" (Conn.id conn));
@@ -142,7 +147,7 @@ let on_neo4j_error t conn error =
     match t.auth_manager with
     | None -> error
     | Some manager -> (
-        match Conn.current_auth conn with
+        match failed_auth with
         | None -> error
         | Some auth -> (
             match manager.handle_security_exception auth error with

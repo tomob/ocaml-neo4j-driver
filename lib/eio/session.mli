@@ -66,7 +66,12 @@ val create :
     bounds the transaction retry budget and backoff. *)
 
 val conn : t -> (Conn.t, Errors.t) result
-(** The session's connection, connecting on first use. *)
+(** The session's connection, connecting on first use. A held connection whose auth changed (a
+    rotation or an AuthorizationExpired mark) is re-authenticated before it is returned. *)
+
+val tx_conn : t -> (Conn.t, Errors.t) result
+(** The connection of the session's in-flight explicit transaction, without re-authentication (the
+    transaction owns it; the re-auth is the caller's, at BEGIN time). *)
 
 val run :
   ?timeout:float ->

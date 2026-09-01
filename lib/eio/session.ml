@@ -80,17 +80,66 @@ let drain_auto_result t =
   (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
   t.auto_result := None
 
+(* Re-authenticate a connection the session already holds when the auth
+   manager's token differs from the one it is logged on with — either because
+   it was marked unauthenticated (an AuthorizationExpired cleared its token) or
+   because the token rotated (a handled security error refreshed the manager).
+   A [Configuration_error] means the protocol version cannot re-authenticate
+   (Bolt < 5.1): the caller drops the connection and reconnects (the pool's
+   "backwards compatible" purge). *)
+let re_auth_connection conn =
+  match Conn.auth_manager conn with
+  | None -> Ok conn
+  | Some manager ->
+      let* token = manager.get_auth () in
+      let same =
+        match Conn.current_auth conn with
+        | Some current -> Auth_manager.eq current token
+        | None -> false
+      in
+      if same then Ok conn
+      else if not (Conn.capabilities conn).supports_re_auth then
+        Error
+          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+      else Conn.re_auth conn token |> Result.map (fun _ -> conn)
+
+(* Drop [conn] from the session (closing it via the release callback). *)
+let drop_conn t conn =
+  t.conn := None;
+  t.release conn
+
 (* The session's connection for [mode], connecting on first use. A cached
    connection acquired for a different access mode (e.g. a read managed
    transaction on a write-mode session) is returned to the pool and re-acquired
-   for [mode]. *)
+   for [mode]. A cached connection left in the FAILED state by an earlier
+   operation is reset before reuse; a reset failure (the server terminated the
+   connection, e.g. the stub's [S: <EXIT>] after a FAILURE) drops it so the
+   next operation reconnects. A held connection whose auth changed is
+   re-authenticated (see [re_auth_connection]); new connections resolve their
+   token at connect time. *)
 let rec conn_for_mode (t : t) ~mode =
   match !(t.conn) with
-  | Some (conn, cached_mode) when cached_mode = mode -> Ok conn
+  | Some (conn, cached_mode) when cached_mode = mode ->
+      let recover () =
+        match re_auth_connection conn with
+        | Ok conn -> Ok conn
+        | Error (Errors.Configuration_error _) ->
+            (* A protocol that cannot re-authenticate an existing connection
+               (Bolt < 5.1): drop it and reconnect with the current token. *)
+            drop_conn t conn;
+            conn_for_mode t ~mode
+        | Error _ as error -> error
+      in
+      if Conn.is_failed conn then (
+        match Conn.reset conn with
+        | Ok () -> recover ()
+        | Error _ ->
+            drop_conn t conn;
+            conn_for_mode t ~mode)
+      else recover ()
   | Some (conn, _) ->
       drain_auto_result t;
-      t.conn := None;
-      t.release conn;
+      drop_conn t conn;
       conn_for_mode t ~mode
   | None -> (
       match t.connect ~mode ~database:!(t.database) ~bookmarks:!(t.bookmarks) with
@@ -107,6 +156,20 @@ let rec conn_for_mode (t : t) ~mode =
    connection whatever mode it was acquired for: a transaction in flight owns
    it, and callers must not yank it away by asking for a different mode. *)
 let conn t =
+  match !(t.conn) with
+  | Some (conn, _) -> (
+      match re_auth_connection conn with
+      | Ok conn -> Ok conn
+      | Error (Errors.Configuration_error _) ->
+          drop_conn t conn;
+          conn_for_mode t ~mode:t.config.access_mode
+      | Error _ as error -> error)
+  | None -> conn_for_mode t ~mode:t.config.access_mode
+
+(* The connection of the session's in-flight explicit transaction: the cached
+   connection, used without re-authentication (the transaction was begun on it;
+   re-auth is the caller's, at BEGIN time). *)
+let tx_conn t =
   match !(t.conn) with
   | Some (conn, _) -> Ok conn
   | None -> conn_for_mode t ~mode:t.config.access_mode
@@ -165,8 +228,14 @@ let run ?timeout ?metadata t ~query ~parameters =
         | Ok run_metadata -> Ok run_metadata
         | Error _ as error ->
             (* Recover the connection after a FAILURE (the Python driver resets
-               it; the stub scripts expect the RESET). *)
-            ignore (Conn.reset conn);
+               it; the stub scripts expect the RESET). A reset failure means
+               the server terminated the connection: drop it so the next
+               operation reconnects instead of reusing a dead socket. *)
+            (match Conn.reset conn with
+            | Ok () -> ()
+            | Error _ ->
+                t.conn := None;
+                t.release conn);
             error
       in
       (* Server-side routing: when the server advertised [ssr.enabled] and

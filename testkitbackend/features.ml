@@ -43,4 +43,8 @@ let features : string list =
     (* GetRoutingTable *)
     "Backend:RTForceUpdate";
     (* ForcedRoutingTableUpdate *)
+    (* Auth token managers (phase A8): NewAuthTokenManager /
+       NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
+       authTokenManagerId. *)
+    "Feature:Auth:Managed";
   ]

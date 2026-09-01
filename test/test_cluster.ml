@@ -228,13 +228,9 @@ let least_loaded_reader_selection () =
               Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b; c ] [ b ]) ];
             ] );
         ];
-        (* reader B: one connection per acquire. The RESET of the first
-           release is answered by the mock's closed flow, so the pool closes
-           the connection instead of reusing it. *)
-        [
-          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
-          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
-        ];
+        (* reader B: the first and last acquires (the released connection is
+           reused as-is, MinimalResets — no RESET and no new HELLO). *)
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
         (* reader C: the middle acquire only *)
         [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
       ])
@@ -1089,7 +1085,6 @@ let routed_security_error_retryable () =
               Test_mock.Success;
               Test_mock.Success;
               Test_mock.Success;
-              Test_mock.Success;
               Test_mock.Success_meta [ ("has_more", Packstream.Bool false) ];
             ] );
         ];
@@ -1133,7 +1128,7 @@ let routed_security_error_retryable () =
       Cluster.release cluster conn2;
       check (list int) "router wire" [ 0x01; 0x6A; 0x66 ] (tags (List.nth received 0));
       check (list int) "reader wire"
-        [ 0x01; 0x6A; 0x10; 0x0F; 0x0F; 0x6B; 0x6A; 0x10; 0x3F ]
+        [ 0x01; 0x6A; 0x10; 0x0F; 0x6B; 0x6A; 0x10; 0x3F ]
         (tags (List.nth received 1));
       Cluster.close cluster)
 
