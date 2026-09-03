@@ -32,7 +32,6 @@
   (uri (>= 4.0))
   (timedesc (>= 3.0))
   (logs (>= 0.7))
-  (logs.fmt (>= 0.7))
   (alcotest :with-test)))
 
 (package
