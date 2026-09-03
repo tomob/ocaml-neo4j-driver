@@ -461,7 +461,13 @@ let fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth routers
       let outcome =
         match result with
         | Ok table ->
-            if database = None then cache_home_table_locked cluster ~imp_user table;
+            let database =
+              match database with
+              | Some _ -> database
+              | None ->
+                  cache_home_table_locked cluster ~imp_user table;
+                  Routing_table.database table
+            in
             Ok (store_table cluster ~database table)
         | Error error ->
             Hashtbl.replace cluster.errors database (error, now cluster);
