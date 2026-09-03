@@ -230,15 +230,17 @@ let run ?timeout ?metadata t ~query ~parameters =
         with
         | Ok run_metadata -> Ok run_metadata
         | Error _ as error ->
-            (* Recover the connection after a FAILURE (the Python driver resets
-               it; the stub scripts expect the RESET). A reset failure means
-               the server terminated the connection: drop it so the next
-               operation reconnects instead of reusing a dead socket. *)
-            (match Conn.reset conn with
-            | Ok () -> ()
-            | Error _ ->
-                t.conn := None;
-                t.release conn);
+            (* A server FAILURE already recovered the connection with an eager
+               RESET (Conn.recover_after_failure); a connection still in the
+               FAILED state was not (a connection-level failure) — recover it
+               here, dropping it when the server terminated the connection so
+               the next operation reconnects instead of reusing a dead socket. *)
+            (if Conn.is_failed conn then
+               match Conn.reset conn with
+               | Ok () -> ()
+               | Error _ ->
+                   t.conn := None;
+                   t.release conn);
             error
       in
       (* Server-side routing: when the server advertised [ssr.enabled] and

@@ -114,20 +114,30 @@ val route :
 *)
 
 val pull :
+  ?extra:Packstream.value ->
   Transport.t ->
-  extra:Packstream.value ->
   (Packstream.value list list * (Packstream.value, Errors.t) result, Errors.t) result
-(** Send a PULL message with the [extra] map (e.g. [n], [qid]) and read the result: all RECORD
-    messages up to the terminal message. Returns the records delivered so far and the terminal
-    outcome — [Ok summary] on SUCCESS, [Error _] on a server FAILURE/IGNORED (the records delivered
-    before the failure are kept, so a mid-stream error can be surfaced after buffering). *)
+(** Send a PULL message and read the result: all RECORD messages up to the terminal message. [extra]
+    carries the [n]/[qid] map on Bolt 4+; on Bolt 3 the PULL_ALL message takes no fields, so [extra]
+    is omitted. Returns the records delivered so far and the terminal outcome — [Ok summary] on
+    SUCCESS, [Error _] on a server FAILURE/IGNORED (the records delivered before the failure are
+    kept, so a mid-stream error can be surfaced after buffering). *)
 
 val discard :
+  ?extra:Packstream.value ->
   Transport.t ->
-  extra:Packstream.value ->
   (Packstream.value list list * (Packstream.value, Errors.t) result, Errors.t) result
-(** Send a DISCARD message with the [extra] map and read the result (same shape as [pull], though
-    records are normally empty). *)
+(** Send a DISCARD message and read the result (same shape as [pull], though records are normally
+    empty). On Bolt 3 the DISCARD_ALL message takes no fields, so [extra] is omitted. *)
 
 val metadata_has_more : Packstream.value -> bool
 (** Whether a summary metadata map carries [has_more] = true. *)
+
+val collect_records :
+  Packstream.value list list ->
+  Transport.t ->
+  (Packstream.value list list * (Packstream.value, Errors.t) result, Errors.t) result
+(** Read the RECORD messages of an already-sent PULL/DISCARD up to its summary: the records
+    accumulated in [acc] (each record is its list of field values, in reverse order) plus the
+    terminal outcome. Used when the request was sent without waiting for its response (e.g. a
+    pipelined routing-procedure fetch). *)

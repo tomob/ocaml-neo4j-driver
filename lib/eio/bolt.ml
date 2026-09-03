@@ -212,12 +212,14 @@ let rec collect_records acc transport =
                 (Errors.Service_unavailable
                    (Printf.sprintf "Unexpected Bolt message tag 0x%02x" tag)) ))
 
-let pull transport ~extra =
-  let* () = send transport ~tag:pull_tag [ extra ] in
+let pull ?extra transport =
+  let fields = match extra with Some extra -> [ extra ] | None -> [] in
+  let* () = send transport ~tag:pull_tag fields in
   collect_records [] transport
 
-let discard transport ~extra =
-  let* () = send transport ~tag:discard_tag [ extra ] in
+let discard ?extra transport =
+  let fields = match extra with Some extra -> [ extra ] | None -> [] in
+  let* () = send transport ~tag:discard_tag fields in
   collect_records [] transport
 
 let metadata_bool key = function

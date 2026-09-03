@@ -482,13 +482,17 @@ let pull_extra ?(n = -1) ?qid () =
 
 let outcome_has_more = function Ok summary -> Bolt.metadata_has_more summary | Error _ -> false
 
+(* The PULL/DISCARD payload: Bolt 4+ carries the [n]/[qid] map; Bolt 3's
+   PULL_ALL/DISCARD_ALL take no fields. *)
+let pull_payload t ?n ?qid () = if t.major = 3 then None else Some (pull_extra ?n ?qid ())
+
 let pull ?n ?qid t ~hydration =
   let re_auth = re_auth_of t.major t.minor in
   match
     request
       ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Pull ~re_auth
-      (fun () -> Bolt.pull t.transport ~extra:(pull_extra ?n ?qid ()))
+      (fun () -> Bolt.pull ?extra:(pull_payload t ?n ?qid ()) t.transport)
   with
   | Error _ as error -> error
   | Ok (records, outcome) ->
@@ -509,7 +513,7 @@ let discard ?n ?qid t =
     request
       ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Discard ~re_auth
-      (fun () -> Bolt.discard t.transport ~extra:(pull_extra ?n ?qid ()))
+      (fun () -> Bolt.discard ?extra:(pull_payload t ?n ?qid ()) t.transport)
   in
   if Result.is_error outcome then begin
     t.state := State.Failed;
@@ -709,7 +713,7 @@ let rec zip_fields keys values =
    [Routing_table.parse] works unchanged. [imp_user] (no procedure supports it)
    and a [database] on Bolt 3 (no multi-db) are [Configuration_error]. *)
 let route_procedure ?db ?imp_user t ~routing_context ~bookmarks =
-  let major, minor = version t in
+  let major, _ = version t in
   match imp_user with
   | Some _ ->
       Error
@@ -725,34 +729,53 @@ let route_procedure ?db ?imp_user t ~routing_context ~bookmarks =
           let query, parameters, extra =
             routing_procedure_request db ~routing_context ~bookmarks ~major
           in
-          let re_auth = re_auth_of major minor in
-          let* run_metadata =
-            request t ~message:State.Run ~re_auth (fun () ->
-                Bolt.run t.transport ~query ~parameters ~extra)
-            |> Result.map run_metadata_of
+          (* The routing-procedure scripts (and the Python driver) pipeline the
+             RUN and the PULL: the TestKit stub answers only once both messages
+             have arrived, so both are sent before any response is read. *)
+          let* () = ensure_ready t in
+          let* () =
+            Bolt.send t.transport ~tag:Bolt.run_tag [ Packstream.String query; parameters; extra ]
           in
-          let* records, outcome =
-            request
-              ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
-              t ~message:State.Pull ~re_auth
-              (fun () -> Bolt.pull t.transport ~extra:(pull_extra ()))
+          let* () =
+            Bolt.send t.transport ~tag:Bolt.pull_tag
+              (match pull_payload t () with Some extra -> [ extra ] | None -> [])
           in
-          match outcome with
+          let finish run_metadata records = function
+            | Error error ->
+                t.state := State.Failed;
+                let error = report t error in
+                recover_after_failure t error;
+                Error error
+            | Ok _ -> (
+                match records with
+                | [] -> Error (Errors.Service_unavailable "routing procedure returned no records")
+                | record :: _ -> (
+                    match zip_fields run_metadata.fields record with
+                    | Some fields ->
+                        t.state := State.Ready;
+                        Ok (Packstream.Map fields)
+                    | None ->
+                        Error
+                          (Errors.Service_unavailable
+                             "routing procedure returned mismatched fields and record")))
+          in
+          match Bolt.respond t.transport with
           | Error error ->
+              (* The RUN failed: the pipelined PULL is answered with an IGNORED
+                 (or another FAILURE) that must be drained before the state is
+                 updated and the connection recovered with a RESET. *)
+              ignore (Bolt.respond t.transport);
               t.state := State.Failed;
               let error = report t error in
               recover_after_failure t error;
               Error error
-          | Ok _ -> (
-              match records with
-              | [] -> Error (Errors.Service_unavailable "routing procedure returned no records")
-              | record :: _ -> (
-                  match zip_fields run_metadata.fields record with
-                  | Some fields -> Ok (Packstream.Map fields)
-                  | None ->
-                      Error
-                        (Errors.Service_unavailable
-                           "routing procedure returned mismatched fields and record")))))
+          | Ok run_response -> (
+              let run_metadata = run_metadata_of run_response in
+              match Bolt.collect_records [] t.transport with
+              | Error error ->
+                  t.state := State.Failed;
+                  Error (report t error)
+              | Ok (records, outcome) -> finish run_metadata records outcome)))
 
 (* Fetch the routing table of [db] (the default database when [None]) over the
    ROUTE message (Bolt 4.3+). *)

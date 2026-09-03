@@ -7,6 +7,9 @@
 let features : string list =
   [
     (* Bolt protocol versions the driver supports. *)
+    "Feature:Bolt:3.0";
+    "Feature:Bolt:4.2";
+    "Feature:Bolt:4.3";
     "Feature:Bolt:4.4";
     "Feature:Bolt:5.0";
     "Feature:Bolt:5.1";
@@ -38,6 +41,10 @@ let features : string list =
     (* A clean connection is released without a RESET (reset happens lazily on
        reuse, or to recover a FAILED connection on release). *)
     "Optimization:MinimalResets";
+    (* On a Neo.ClientError.Security.AuthorizationExpired no connection is
+       reused for anything but finishing a started job: the driver marks every
+       connection unauthenticated and re-establishes auth on its next use. *)
+    "AuthorizationExpiredTreatment";
     (* Test-support commands for the stub routing suite. *)
     "Backend:RTFetch";
     (* GetRoutingTable *)
@@ -48,6 +55,11 @@ let features : string list =
        authTokenManagerId. *)
     "Feature:Auth:Managed";
     "Feature:Auth:Bearer";
+    (* Auth token schemes carried verbatim in the HELLO/LOGON auth map:
+       custom (scheme + principal + credentials + realm + parameters) and
+       Kerberos (scheme + credentials). *)
+    "Feature:Auth:Custom";
+    "Feature:Auth:Kerberos";
     (* Session-level auth (user switching): NewSession with authorizationToken,
        CheckSessionAuthSupport. *)
     "Feature:API:Session:AuthConfig";

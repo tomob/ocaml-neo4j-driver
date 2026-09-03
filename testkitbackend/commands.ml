@@ -1130,10 +1130,13 @@ let get_routing_table fields =
             ("writers", `List []);
           ] )
   | Some table ->
+      (* A procedure-fetched table (Bolt 3/4.0-4.2) carries no database: report
+         the requested one then, like the reference backends. *)
+      let db = match Routing_table.database table with Some db -> Some db | None -> database in
       ( "RoutingTable",
         `Assoc
           [
-            ("database", db_json (Routing_table.database table));
+            ("database", db_json db);
             ("ttl", `Int (Routing_table.ttl_seconds table));
             ("routers", addresses (Routing_table.routers table));
             ("readers", addresses (Routing_table.readers table));

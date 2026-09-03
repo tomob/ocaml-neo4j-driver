@@ -570,17 +570,24 @@ let resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth =
               ~session_auth
           in
           Ok (table, Some home_db)
-      | None ->
+      | None -> (
           (* The home database is not cached (the home-db cache is disabled or
-             expired): resolve it over a fresh ROUTE rather than serving the
-             cached routing table. *)
-          Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
-          let* table =
-            resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
-              ~session_auth
-          in
-          cache_home_table cluster ~imp_user table;
-          Ok (table, Routing_table.database table))
+             expired). A fresh routing table for the default database is reused
+             as-is — its [db] (the home database when the server reports one) is
+             cached for later — and only a missing/expired table is resolved
+             over a fresh ROUTE. *)
+          match with_lock cluster (fun () -> fresh_table cluster ~database:None ~mode) with
+          | Some table ->
+              cache_home_table cluster ~imp_user table;
+              Ok (table, Routing_table.database table)
+          | None ->
+              Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
+              let* table =
+                resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
+                  ~session_auth
+              in
+              cache_home_table cluster ~imp_user table;
+              Ok (table, Routing_table.database table)))
 
 (* Result of trying to acquire a connection from a table: [Role_empty] is the
    table itself having no address for the role (an acquire may refetch once —
