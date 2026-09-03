@@ -548,6 +548,19 @@ let check_session_auth_support fields =
   in
   ("SessionAuthSupport", `Assoc [ ("id", `Int id); ("available", `Bool available) ])
 
+(* VerifyAuthentication: whether the server accepts the given token (a read
+   connection for the system database is opened with it). An authentication
+   error answers [false]; other errors (incl. a missing re-authentication
+   support on Bolt < 5.1) are surfaced as a DriverError. *)
+let verify_authentication fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  let auth = auth_of fields in
+  match Driver.verify_authentication driver.driver ~auth with
+  | Ok authenticated ->
+      ("DriverIsAuthenticated", `Assoc [ ("id", `Int id); ("authenticated", `Bool authenticated) ])
+  | Error error -> raise (Driver_error error)
+
 let new_session fields =
   let driver_id = int "driverId" fields in
   let driver = get_driver driver_id in
@@ -1199,6 +1212,7 @@ let handle ctx name data =
   | "NewSession" -> Some (new_session fields)
   | "SessionClose" -> Some (session_close fields)
   | "VerifyConnectivity" -> Some (verify_connectivity fields)
+  | "VerifyAuthentication" -> Some (verify_authentication fields)
   | "GetServerInfo" -> Some (get_server_info fields)
   | "CheckMultiDBSupport" -> Some (check_multi_db_support fields)
   | "SessionRun" -> Some (session_run ctx fields)

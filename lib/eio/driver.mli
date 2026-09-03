@@ -57,6 +57,13 @@ val supports_session_auth : t -> (bool, Errors.t) result
 (** Whether the server supports re-authentication (Bolt >= 5.1), i.e. session-level auth (user
     switching): connects (see {!acquire}) and checks the negotiated protocol. *)
 
+val verify_authentication : t -> auth:Conn.auth -> (bool, Errors.t) result
+(** Verify [auth] against the server, like the Python driver's [verify_authentication]: a read
+    connection for the [system] database is opened with [auth] (re-authenticating a reused
+    connection). Returns [Ok true] when the server accepts it; [Ok false] when it rejects it with an
+    authentication error (CredentialsExpired, Forbidden, TokenExpired or Unauthorized); any other
+    error (including the missing re-authentication support of Bolt < 5.1) propagates. *)
+
 val close : t -> unit
 (** Close the driver's pool/cluster: idle connections are closed and further [acquire]/[session]
     operations fail. Connections still in use by open sessions are closed (not returned to the pool)

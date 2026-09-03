@@ -53,6 +53,9 @@ let features : string list =
     (* The backend can mock the system time (FakeTimeInstall / FakeTimeTick /
        FakeTimeUninstall), used to test time-dependent behaviour. *)
     "Backend:MockTime";
+    (* The driver's verify_authentication API (a read connection is opened with
+       the given token; authentication errors answer false, others propagate). *)
+    "Feature:API:Driver.VerifyAuthentication";
     (* Auth token managers (phase A8): NewAuthTokenManager /
        NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
        authTokenManagerId. *)

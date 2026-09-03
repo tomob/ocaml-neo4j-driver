@@ -162,6 +162,40 @@ let supports_session_auth t =
   release t conn;
   Ok supported
 
+(* Authentication errors meaning the supplied token is simply not valid: the
+   Python driver's verify_authentication returns [false] for them (and raises
+   for any other error). *)
+let invalid_auth_codes =
+  [
+    "Neo.ClientError.Security.CredentialsExpired";
+    "Neo.ClientError.Security.Forbidden";
+    "Neo.ClientError.Security.TokenExpired";
+    "Neo.ClientError.Security.Unauthorized";
+  ]
+
+(* Verify [auth] like the Python driver: open (or re-authenticate) a read
+   connection for the [system] database with [auth] and check it is accepted.
+   Requires a server that supports re-authentication (Bolt >= 5.1). *)
+let verify_authentication t ~auth =
+  let attempt =
+    match t.connection with
+    | Cluster cluster ->
+        Result.map fst
+          (Cluster.acquire cluster ~mode:Config.Read ~database:(Some "system") ~imp_user:None
+             ~bookmarks:[] ~session_auth:(Some auth) ~force_liveness:false)
+    | Pool pool -> Pool.acquire ~session_auth:(Some auth) ~force_liveness:false pool
+  in
+  match attempt with
+  | Error (Errors.Neo4j { code; _ }) when List.mem code invalid_auth_codes -> Ok false
+  | Error error -> Error error
+  | Ok conn ->
+      let supported = (Conn.capabilities conn).supports_re_auth in
+      release t conn;
+      if not supported then
+        Error
+          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+      else Ok true
+
 let close t =
   match t.connection with Cluster cluster -> Cluster.close cluster | Pool pool -> Pool.close pool
 
