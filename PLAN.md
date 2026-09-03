@@ -266,12 +266,57 @@ its [+s]/[+ssc] variants) drivers now route:
   multi-db/leader-switch scenarios); `scripts/testkit_stub.sh` (no arguments runs every
   `tests.stub.*` suite, or pass modules explicitly) is the harness for iterating on them.
 
+### Phase A8 — Auth management (the bookmark half stays deferred)
+
+The auth-manager half of Phase A8 is **done** (commits "Add auth token type and auth managers",
+"Wire auth managers into connections, pool and cluster", "Support TestKit auth token managers",
+"Support session-level auth (user switching)" + the refactor of the re-auth comparison into
+`Conn.same_auth`). It was validated with the `tests.stub.authorization.*` stub suites (all green —
+`test_authorization`, `test_auth_token_manager` 16/16, `test_basic_auth_manager`,
+`test_bearer_auth_manager`, `test_user_switching` 10/10).
+
+- **Tokens & managers (`lib/core/auth_manager.ml`)** — the generalized token
+  (`scheme`/`principal`/`credentials`/`realm`/`parameters`, optional fields omitted on the wire;
+  `Conn.auth` aliases it) with `basic_auth`/`bearer_auth`/`custom_auth` and `ExpiringAuth`
+  (`expires_in`/`has_expired`). The manager interface `get_auth`/`handle_security_exception` plus
+  `static`, `basic` (refresh on `Unauthorized`) and `bearer` (refresh on `TokenExpired`/
+  `Unauthorized` and after `expires_at`) over a lock-cached `ExpiringAuth`, logging refreshes and
+  provider failures (`Log.auth`). `Errors.make_retryable` mirrors Python mutating
+  `error._retryable`.
+- **Pool & connections** — `Pool.acquire ~session_auth` re-authenticates a reused connection to the
+  manager's current token (or the session token); new connections open with it. The pool's
+  `on_neo4j_error` hook (chained after any cluster hook via `Conn.on_error`) marks every connection
+  unauthenticated on `AuthorizationExpired` and offers a `Neo.ClientError.Security.*` error to the
+  connection's own auth manager — a handled error is made retryable; a session-auth connection
+  carries a static manager over its token, so the driver's manager is not consulted (Python parity).
+  On Bolt < 5.1 the driver-auth path purges the connection and retries the acquire; session auth is
+  surfaced as a `Configuration_error`.
+- **Routing cluster** — the session auth threads through `Cluster.acquire`/`resolve_for`/the fetch
+  path to `routing_conn`, which re-authenticates the routing connection (and opens it with the
+  session token) before each ROUTE; per-address data pools behave as above.
+- **Session-level auth (user switching)** — `Session.config.auth` replaces the driver auth for the
+  session; held connections are re-authenticated on a rotation or an `AuthorizationExpired` mark,
+  dead connections (the server's `S: <EXIT>` after a FAILURE) are dropped, and `tx_conn` uses a
+  transaction's connection without re-auth (re-auth is the caller's, at BEGIN time, like Python's
+  `_connect`). `Driver.supports_session_auth` backs the TestKit `CheckSessionAuthSupport`.
+- **TestKit backend** — `NewDriver.authTokenManagerId`, `NewAuthTokenManager` /
+  `NewBasicAuthTokenManager` / `NewBearerAuthTokenManager` / `AuthTokenManagerClose` (custom
+  managers round-trip `get_auth`/`handle_security_exception` to the harness), `NewSession`
+  `authorizationToken`, `Feature:Auth:Managed` + `Feature:API:Session:AuthConfig` +
+  `Feature:API:Driver.SupportsSessionAuth`; the harness's `test_authorization.py` gained the
+  `ocaml` error-type mappings. `transaction_close` is best-effort (a server-terminated connection
+  does not fail the close).
+- **Driver conformance fixes surfaced by the suites** — the pool no longer RESETs idle connections
+  on reuse when no liveness timeout is configured (MinimalResets parity); `Session.run` drops a
+  connection whose recovery RESET fails; `on_neo4j_error` captures the failing token before the
+  mark clears it; `Liveness: MockTime`/`Feature:Backend:MockTime` (fake-time providers) remains
+  deferred, so the mock-time tests stay skipped.
+
 **Deferred (follow-ups):**
 
-### Phase A8 — Bookmarks and auth management
+### Phase A8 — Bookmarks (remaining)
 
 - `bookmarks.ml` (immutable set + union), `last_bookmarks`, `bookmark_manager` (supplier/consumer) with a default implementation.
-- **Auth managers**: `static/basic/bearer` with refresh on `Unauthorized`/`TokenExpired` + `ExpiringAuth`; `handle_security_exception` via `on_neo4j_error` on the pool; `_unauthenticates_all_connections`.
 
 ### Phase A9 — High-level API
 
@@ -533,8 +578,8 @@ not yet implemented).
     `logs` + `logs.fmt` dependencies added to `neodriver_core`.
   - Docs: `usage.mld`/`docs/usage.md` "Logging" section (env vars, programmatic
     setup, `[#XXXX]` counter note, credential redaction); unit tests in
-    `test/test_log.ml`. The `neo4j.auth_management` logger has no OCaml
-    counterpart yet (no auth-manager module) — it is added with Phase A8.
+    `test/test_log.ml`. The `neo4j.auth_management` logger maps to the
+    `Log.auth` source (`auth` scope of `NEO4J_LOG_SCOPES`), added with Phase A8.
 
 ---
 

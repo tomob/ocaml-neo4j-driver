@@ -36,7 +36,8 @@ let log_scope_testable =
       | Log.Io -> Format.pp_print_string ppf "io"
       | Log.Pool -> Format.pp_print_string ppf "pool"
       | Log.Session -> Format.pp_print_string ppf "session"
-      | Log.Notifications -> Format.pp_print_string ppf "notifications")
+      | Log.Notifications -> Format.pp_print_string ppf "notifications"
+      | Log.Auth -> Format.pp_print_string ppf "auth")
     ( = )
 
 let logs_level_testable =
@@ -137,6 +138,7 @@ let env_parsing () =
   check (Alcotest.option log_level_testable) "debug" (Some Log.Debug) (Log.level_of_string "debug");
   check (Alcotest.option log_level_testable) "garbage" None (Log.level_of_string "bogus");
   check (Alcotest.option log_scope_testable) "io" (Some Log.Io) (Log.scope_of_string "io");
+  check (Alcotest.option log_scope_testable) "auth" (Some Log.Auth) (Log.scope_of_string "auth");
   check (Alcotest.option log_scope_testable) "garbage" None (Log.scope_of_string "bogus");
   let absent_level, absent_scopes = Log.parse_env ~level:None ~scopes:None in
   check log_level_testable "absent level = Off" Log.Off absent_level;
@@ -241,9 +243,9 @@ let pool_logs () =
         Test_mock.with_mock
           (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success ]))
           (fun net clock sw port ->
-            let connect () = Conn.connect net clock sw (config "127.0.0.1" port) in
+            let connect _session_auth = Conn.connect net clock sw (config "127.0.0.1" port) in
             let pool = Pool.create ~pool_config:Config.default_pool_config ~connect clock in
-            (match Pool.acquire pool with
+            (match Pool.acquire ~session_auth:None ~force_liveness:false pool with
             | Ok conn -> Pool.release pool conn
             | Error error -> fail (Errors.to_string error));
             Pool.close pool))

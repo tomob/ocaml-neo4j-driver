@@ -36,10 +36,12 @@ let conn id = Printf.sprintf "[#%04X]" id
 (* --- Env-var control --- *)
 
 type level = Off | Error | Warn | Info | Debug
-type scope = Io | Pool | Session | Notifications
+type scope = Io | Pool | Session | Notifications | Auth
 
-let all_scopes = [ Io; Pool; Session; Notifications ]
-let srcs = [ (Io, io); (Pool, pool); (Session, session); (Notifications, notifications) ]
+let all_scopes = [ Io; Pool; Session; Notifications; Auth ]
+
+let srcs =
+  [ (Io, io); (Pool, pool); (Session, session); (Notifications, notifications); (Auth, auth) ]
 
 let level_of_string = function
   | "off" -> Some Off
@@ -54,6 +56,7 @@ let scope_of_string = function
   | "pool" -> Some Pool
   | "session" -> Some Session
   | "notifications" -> Some Notifications
+  | "auth" -> Some Auth
   | _ -> None
 
 (* The Logs level for a non-[Off] [level] ([Off] never reaches this: it is

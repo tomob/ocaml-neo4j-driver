@@ -26,14 +26,17 @@ type config = {
   impersonated_user : string option;
   fetch_size : int option;
   bookmarks : string list;
+  auth : Auth_manager.token option;
   max_transaction_retry_time : float;
   initial_retry_delay : float;
   retry_delay_multiplier : float;
   retry_delay_jitter_factor : float;
 }
-(** Session settings. [bookmarks] seeds the session's bookmarks. The retry parameters mirror the
-    Python driver defaults ([max_transaction_retry_time] is configurable via the TestKit driver
-    request). *)
+(** Session settings. [bookmarks] seeds the session's bookmarks. [auth] is the session's own auth
+    token (user switching): [None] (default) uses the driver's auth manager, [Some token] replaces
+    it for this session (the connection is opened with — or re-authenticated to — that token). The
+    retry parameters mirror the Python driver defaults ([max_transaction_retry_time] is configurable
+    via the TestKit driver request). *)
 
 val default_config : config
 (** Session configuration with the driver defaults: write access, no database or impersonation, and
@@ -49,21 +52,23 @@ val create :
     (mode:Config.access_mode ->
     database:string option ->
     bookmarks:string list ->
+    auth:Auth_manager.token option ->
     (Conn.t * string option, Errors.t) result) ->
   ?release:(Conn.t -> unit) ->
   ?on_rt:(string option -> Packstream.value -> unit) ->
   unit ->
   t
 (** Create a session. [connect] establishes the session's connection on first use with the session's
-    [access_mode], [database] and current [bookmarks] (a routed driver selects the address from its
-    routing table — the bookmarks go into the ROUTE request — and returns the [Conn.t] together with
-    the effective database actually used: the resolved home database for a default-database routed
-    session, otherwise the requested database). The session uses that effective database for
-    RUN/BEGIN from then on. [release] returns the connection on [close] (default [Conn.close]; a
-    pool provides [Pool.release]). [on_rt] receives the [rt] routing tables the server returns in
-    auto-commit RUN responses when server-side routing is enabled, keyed by the session's effective
-    database (the routing cluster installs it to update its tables); it defaults to a no-op. [clock]
-    bounds the transaction retry budget and backoff. *)
+    [access_mode], [database], current [bookmarks] and [auth] (the session's own auth token, or
+    [None] to use the driver's — a routed driver selects the address from its routing table — the
+    bookmarks go into the ROUTE request — and returns the [Conn.t] together with the effective
+    database actually used: the resolved home database for a default-database routed session,
+    otherwise the requested database). The session uses that effective database for RUN/BEGIN from
+    then on. [release] returns the connection on [close] (default [Conn.close]; a pool provides
+    [Pool.release]). [on_rt] receives the [rt] routing tables the server returns in auto-commit RUN
+    responses when server-side routing is enabled, keyed by the session's effective database (the
+    routing cluster installs it to update its tables); it defaults to a no-op. [clock] bounds the
+    transaction retry budget and backoff. *)
 
 val conn : t -> (Conn.t, Errors.t) result
 (** The session's connection, connecting on first use. A held connection whose auth changed (a

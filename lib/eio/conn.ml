@@ -770,6 +770,13 @@ let ssr_enabled t = !(t.ssr_enabled)
 let capabilities t = capabilities_of t
 let current_auth t = !(t.current_auth)
 
+(* Whether the connection is logged on with [token]: its current token equals
+   [token], or it carries none (it was marked unauthenticated, e.g. by an
+   AuthorizationExpired). The re-auth paths use this to skip a redundant
+   LOGOFF+LOGON when the token did not change. *)
+let same_auth t token =
+  match !(t.current_auth) with Some current -> Auth_manager.eq current token | None -> false
+
 (* The TELEMETRY notification for a feature is batched with the next request
    by [request] (which consumes its SUCCESS before the request's response);
    the session layers pass [~telemetry] to [run]/[begin_]. *)
@@ -778,10 +785,7 @@ let current_auth t = !(t.current_auth)
    LOGON (Bolt >= 5.1). [force] re-authenticates even for the same token
    (user switching). Returns whether the token changed. *)
 let re_auth ?(force = false) t auth =
-  let same_auth =
-    match !(t.current_auth) with Some current -> Auth_manager.eq current auth | None -> false
-  in
-  if (not force) && same_auth then Ok false
+  if (not force) && same_auth t auth then Ok false
   else if not (re_auth_of t.major t.minor) then
     Error (Errors.Service_unavailable "Re-authentication is not supported by this protocol version")
   else

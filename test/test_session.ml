@@ -31,7 +31,7 @@ let message_tags received = List.map (fun bytes -> fst (unpack_message bytes)) (
 
 (* A session whose connection connects to the mock server at [port]. *)
 let session net clock sw port =
-  let connect ~mode:_ ~database:_ ~bookmarks:_ =
+  let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
     match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
     | Ok conn -> Ok (conn, None)
     | Error error -> Error error
@@ -211,7 +211,7 @@ let run_captures_bookmark () =
 let negative_timeout () =
   Eio_main.run (fun env ->
       let clock = Eio.Stdenv.mono_clock env in
-      let connect ~mode:_ ~database:_ ~bookmarks:_ = fail "connect must not be called" in
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ = fail "connect must not be called" in
       let session = Session.create Session.default_config ~clock ~connect () in
       (match Session.begin_transaction ~timeout:(-1.0) session with
       | Error (Errors.Configuration_error _) -> ()
@@ -257,7 +257,7 @@ let run_fetch_streams () =
            Test_mock.Records ([ [ Packstream.Int (Int64.of_int 5) ] ], false);
          ] ))
     (fun net clock sw port ->
-      let connect ~mode:_ ~database:_ ~bookmarks:_ =
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
         match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
         | Ok conn -> Ok (conn, None)
         | Error error -> Error error
@@ -314,7 +314,7 @@ let run_uses_effective_database () =
     (Test_mock.Session
        ((5, 4), received, [ Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false) ]))
     (fun net clock sw port ->
-      let connect ~mode:_ ~database:_ ~bookmarks:_ =
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
         match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
         | Ok conn -> Ok (conn, Some "homedb")
         | Error error -> Error error

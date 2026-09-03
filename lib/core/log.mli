@@ -60,7 +60,7 @@ val error : Logs.src -> 'a Logs.log
 (** {1:env Environment control}
 
     - [NEO4J_LOG_LEVEL]: [off|error|warn|info|debug] (default [off]);
-    - [NEO4J_LOG_SCOPES]: comma-separated [io,pool,session,notifications] (default [all]).
+    - [NEO4J_LOG_SCOPES]: comma-separated [io,pool,session,notifications,auth] (default [all]).
 
     The environment is read once from the process-start snapshot (OCaml [Sys.getenv] semantics):
     runtime changes are picked up only through an explicit {!setup} call. When [NEO4J_LOG_LEVEL] is
@@ -77,16 +77,17 @@ type scope =
   | Io
   | Pool
   | Session
-  | Notifications  (** The log areas understood by [NEO4J_LOG_SCOPES] and {!setup}. *)
+  | Notifications
+  | Auth  (** The log areas understood by [NEO4J_LOG_SCOPES] and {!setup}. *)
 
 val all_scopes : scope list
-(** Every scope ([Io; Pool; Session; Notifications]). *)
+(** Every scope ([Io; Pool; Session; Notifications; Auth]). *)
 
 val level_of_string : string -> level option
 (** [level_of_string s] parses [off|error|warn|info|debug]. *)
 
 val scope_of_string : string -> scope option
-(** [scope_of_string s] parses [io|pool|session|notifications]. *)
+(** [scope_of_string s] parses [io|pool|session|notifications|auth]. *)
 
 val parse_env : level:string option -> scopes:string option -> level * scope list
 (** [parse_env ~level ~scopes] interprets the raw environment values: an absent or garbage level is

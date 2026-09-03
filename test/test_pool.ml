@@ -38,17 +38,21 @@ let run_query conn query =
 
 (* A pool whose connections come from the mock server at [port]. *)
 let pool net clock sw port ?(pool_config = Config.default_pool_config) () =
-  let connect () = Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) in
+  let connect _session_auth = Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) in
   Pool.create ~pool_config ~connect clock
 
 (* A pool whose connections resolve their token from [manager] at connect time,
    with the manager wired in (like the Driver). *)
 let pool_with_manager net clock sw port ?(pool_config = Config.default_pool_config)
     (manager : Auth_manager.t) () =
-  let connect () =
-    match manager.get_auth () with
-    | Ok auth -> Conn.connect net clock sw { (config "127.0.0.1" port Addressing.Bolt) with auth }
-    | Error _ -> fail "get_auth"
+  let connect session_auth =
+    match (session_auth : Auth_manager.token option) with
+    | Some auth -> Conn.connect net clock sw { (config "127.0.0.1" port Addressing.Bolt) with auth }
+    | None -> (
+        match manager.get_auth () with
+        | Ok auth ->
+            Conn.connect net clock sw { (config "127.0.0.1" port Addressing.Bolt) with auth }
+        | Error _ -> fail "get_auth")
   in
   Pool.create ~pool_config ~connect ~auth_manager:(Some manager) clock
 
@@ -71,12 +75,12 @@ let reuse () =
          ] ))
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 1";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 2";
           Pool.release pool conn
@@ -107,7 +111,7 @@ let defunct_not_reused () =
     ]
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           let hydration = Conn.hydration conn in
           (match Conn.run conn ~hydration ~query:"NOT CYPHER" ~parameters:[] with
@@ -115,7 +119,7 @@ let defunct_not_reused () =
           | Error _ -> ());
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 1";
           Pool.release pool conn
@@ -148,12 +152,12 @@ let lifetime_expired () =
     (fun net clock sw port ->
       let pool_config = { Config.default_pool_config with max_connection_lifetime = 0.0 } in
       let pool = pool net clock sw port ~pool_config () in
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 1";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 2";
           Pool.release pool conn
@@ -181,12 +185,12 @@ let liveness_check () =
     (fun net clock sw port ->
       let pool_config = { Config.default_pool_config with liveness_check_timeout = Some 0.5 } in
       let pool = pool net clock sw port ~pool_config () in
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 1";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 2";
           Pool.release pool conn
@@ -207,11 +211,11 @@ let acquisition_timeout () =
         }
       in
       let pool = pool net clock sw port ~pool_config () in
-      match Pool.acquire pool with
+      match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Error e -> fail (Errors.to_string e)
       | Ok _ -> (
           (* The first connection is still held, so the pool (size 1) is full. *)
-          match Pool.acquire pool with
+          match Pool.acquire ~force_liveness:false ~session_auth:None pool with
           | Error (Errors.Connection_acquisition_timeout _) -> ()
           | Ok _ -> fail "expected an acquisition timeout"
           | Error _ -> fail "expected Connection_acquisition_timeout"))
@@ -225,10 +229,12 @@ let closed_pool () =
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
       let conn =
-        match Pool.acquire pool with Ok conn -> conn | Error e -> fail (Errors.to_string e)
+        match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+        | Ok conn -> conn
+        | Error e -> fail (Errors.to_string e)
       in
       Pool.close pool;
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Error (Errors.Connection_pool_error _) -> ()
       | Ok _ -> fail "acquire on a closed pool should fail"
       | Error _ -> fail "expected Connection_pool_error");
@@ -253,8 +259,10 @@ let session_close_once () =
       let pool = pool net clock sw port () in
       let session =
         Session.create Session.default_config ~clock
-          ~connect:(fun ~mode:_ ~database:_ ~bookmarks:_ ->
-            match Pool.acquire pool with Ok conn -> Ok (conn, None) | Error error -> Error error)
+          ~connect:(fun ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ ->
+            match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+            | Ok conn -> Ok (conn, None)
+            | Error error -> Error error)
           ~release:(fun conn -> Pool.release pool conn)
           ()
       in
@@ -275,13 +283,13 @@ let in_use_count () =
     (fun net clock sw port ->
       let pool = pool net clock sw port () in
       check int "fresh pool" 0 (Pool.in_use_count pool);
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           check int "held connection" 1 (Pool.in_use_count pool);
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check int "released" 0 (Pool.in_use_count pool);
-      match Pool.acquire pool with
+      match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           check int "reused connection" 1 (Pool.in_use_count pool);
           Pool.release pool conn
@@ -304,11 +312,11 @@ let re_auth_on_token_change () =
          [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
     (fun net clock sw port ->
       let pool = pool_with_manager net clock sw port manager () in
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       current := Conn.basic_auth ~credentials:"pw2" ();
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check (list int) "wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received))
@@ -348,7 +356,7 @@ let authorization_expired_marks_all () =
       let server_b = List.nth ports 1 in
       (* Connections alternate between the two servers: conn1 on A, conn2 on B. *)
       let counter = ref 0 in
-      let connect () =
+      let connect _session_auth =
         let port = if !counter = 0 then server_a else server_b in
         incr counter;
         match manager.get_auth () with
@@ -361,8 +369,16 @@ let authorization_expired_marks_all () =
           clock
       in
       (* Both connections are held while conn2's query fails. *)
-      let conn1 = match Pool.acquire pool with Ok c -> c | Error e -> fail (Errors.to_string e) in
-      let conn2 = match Pool.acquire pool with Ok c -> c | Error e -> fail (Errors.to_string e) in
+      let conn1 =
+        match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+        | Ok c -> c
+        | Error e -> fail (Errors.to_string e)
+      in
+      let conn2 =
+        match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+        | Ok c -> c
+        | Error e -> fail (Errors.to_string e)
+      in
       let hydration = Conn.hydration conn2 in
       (match Conn.run conn2 ~hydration ~query:"RETURN 1" ~parameters:[] with
       | Ok _ -> fail "expected an AuthorizationExpired"
@@ -375,10 +391,10 @@ let authorization_expired_marks_all () =
       Pool.release pool conn1;
       Pool.release pool conn2;
       (* Re-acquiring both re-authenticates them (RESET, LOGOFF + LOGON each). *)
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire pool with
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check (list int) "conn1 wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received_a);
@@ -405,13 +421,54 @@ let security_error_makes_retryable () =
          ] ))
     (fun net clock sw port ->
       let pool = pool_with_manager net clock sw port manager () in
-      let conn = match Pool.acquire pool with Ok c -> c | Error e -> fail (Errors.to_string e) in
+      let conn =
+        match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+        | Ok c -> c
+        | Error e -> fail (Errors.to_string e)
+      in
       let hydration = Conn.hydration conn in
       (match Conn.run conn ~hydration ~query:"RETURN 1" ~parameters:[] with
       | Error error -> check bool "error marked retryable" true (Errors.is_retryable error)
       | Ok _ -> fail "expected an Unauthorized failure");
       check int "provider refreshed on Unauthorized" 2 !count;
       Pool.release pool conn)
+
+(* Session-level auth (user switching): a new connection opens with the session
+   token, a reused one re-authenticates to a changed token (LOGOFF + LOGON), a
+   same-token acquire is a no-op, and no session auth falls back to the
+   driver's auth manager token. *)
+let session_auth_user_switching () =
+  let received = ref [] in
+  let manager = Auth_manager.static (Conn.basic_auth ()) in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let pool = pool_with_manager net clock sw port manager () in
+      let u1 = Some (Conn.basic_auth ~principal:"u1" ()) in
+      let u2 = Some (Conn.basic_auth ~principal:"u2" ()) in
+      (match Pool.acquire ~force_liveness:false ~session_auth:u1 pool with
+      | Ok conn -> Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      (match Pool.acquire ~force_liveness:false ~session_auth:u2 pool with
+      | Ok conn -> Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      (match Pool.acquire ~force_liveness:false ~session_auth:u2 pool with
+      | Ok conn -> Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+      | Ok conn -> Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      check (list int) "wire" [ 0x01; 0x6A; 0x6B; 0x6A; 0x6B; 0x6A ] (message_tags received))
 
 let tests =
   [
@@ -431,4 +488,6 @@ let tests =
     ( "[Pool] security error retryable",
       [ test_case "handled security error marked retryable" `Quick security_error_makes_retryable ]
     );
+    ( "[Pool] session auth",
+      [ test_case "user switching re-authenticates" `Quick session_auth_user_switching ] );
   ]

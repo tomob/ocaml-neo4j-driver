@@ -14,6 +14,7 @@ type config = {
   impersonated_user : string option;
   fetch_size : int option;
   bookmarks : string list;
+  auth : Auth_manager.token option;
   max_transaction_retry_time : float;
   initial_retry_delay : float;
   retry_delay_multiplier : float;
@@ -27,6 +28,7 @@ let default_config =
     impersonated_user = None;
     fetch_size = None;
     bookmarks = [];
+    auth = None;
     max_transaction_retry_time = 30.0;
     initial_retry_delay = 1.0;
     retry_delay_multiplier = 2.0;
@@ -46,6 +48,7 @@ type t = {
     mode:Config.access_mode ->
     database:string option ->
     bookmarks:string list ->
+    auth:Auth_manager.token option ->
     (Conn.t * string option, Errors.t) result;
   release : Conn.t -> unit;
   on_rt : string option -> Packstream.value -> unit;
@@ -80,28 +83,28 @@ let drain_auto_result t =
   (match !(t.auto_result) with Some previous -> Conn.drain_stream previous | None -> ());
   t.auto_result := None
 
-(* Re-authenticate a connection the session already holds when the auth
-   manager's token differs from the one it is logged on with — either because
-   it was marked unauthenticated (an AuthorizationExpired cleared its token) or
-   because the token rotated (a handled security error refreshed the manager).
-   A [Configuration_error] means the protocol version cannot re-authenticate
-   (Bolt < 5.1): the caller drops the connection and reconnects (the pool's
-   "backwards compatible" purge). *)
-let re_auth_connection conn =
-  match Conn.auth_manager conn with
-  | None -> Ok conn
-  | Some manager ->
-      let* token = manager.get_auth () in
-      let same =
-        match Conn.current_auth conn with
-        | Some current -> Auth_manager.eq current token
-        | None -> false
-      in
-      if same then Ok conn
-      else if not (Conn.capabilities conn).supports_re_auth then
-        Error
-          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
-      else Conn.re_auth conn token |> Result.map (fun _ -> conn)
+(* Re-authenticate a connection the session already holds when its auth differs
+   from the one it is logged on with — either because the session has its own
+   auth token and it was cleared (an AuthorizationExpired) or because the
+   driver's auth manager rotated. A [Configuration_error] means the protocol
+   version cannot re-authenticate (Bolt < 5.1): the caller drops the connection
+   and reconnects (the pool's "backwards compatible" purge). *)
+let re_auth_connection t conn =
+  let re_auth_to token =
+    if Conn.same_auth conn token then Ok conn
+    else if not (Conn.capabilities conn).supports_re_auth then
+      Error
+        (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+    else Conn.re_auth conn token |> Result.map (fun _ -> conn)
+  in
+  match t.config.auth with
+  | Some token -> re_auth_to token
+  | None -> (
+      match Conn.auth_manager conn with
+      | None -> Ok conn
+      | Some manager ->
+          let* token = manager.get_auth () in
+          re_auth_to token)
 
 (* Drop [conn] from the session (closing it via the release callback). *)
 let drop_conn t conn =
@@ -121,7 +124,7 @@ let rec conn_for_mode (t : t) ~mode =
   match !(t.conn) with
   | Some (conn, cached_mode) when cached_mode = mode ->
       let recover () =
-        match re_auth_connection conn with
+        match re_auth_connection t conn with
         | Ok conn -> Ok conn
         | Error (Errors.Configuration_error _) ->
             (* A protocol that cannot re-authenticate an existing connection
@@ -141,16 +144,16 @@ let rec conn_for_mode (t : t) ~mode =
       drain_auto_result t;
       drop_conn t conn;
       conn_for_mode t ~mode
-  | None -> (
-      match t.connect ~mode ~database:!(t.database) ~bookmarks:!(t.bookmarks) with
-      | Error _ as error -> error
-      | Ok (conn, effective) ->
-          (* The connection may resolve the session's database (a routed
+  | None ->
+      let* conn, effective =
+        t.connect ~mode ~database:!(t.database) ~bookmarks:!(t.bookmarks) ~auth:t.config.auth
+      in
+      (* The connection may resolve the session's database (a routed
              default-database session learns its home database here); the
              effective database is used for RUN/BEGIN from now on. *)
-          t.database := effective;
-          t.conn := Some (conn, mode);
-          Ok conn)
+      t.database := effective;
+      t.conn := Some (conn, mode);
+      Ok conn
 
 (* The session's current connection (session access mode). Returns the cached
    connection whatever mode it was acquired for: a transaction in flight owns
@@ -158,7 +161,7 @@ let rec conn_for_mode (t : t) ~mode =
 let conn t =
   match !(t.conn) with
   | Some (conn, _) -> (
-      match re_auth_connection conn with
+      match re_auth_connection t conn with
       | Ok conn -> Ok conn
       | Error (Errors.Configuration_error _) ->
           drop_conn t conn;

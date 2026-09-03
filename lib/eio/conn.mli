@@ -308,6 +308,11 @@ val capabilities : t -> Capabilities.t
 val current_auth : t -> auth option
 (** The authentication token the connection is currently logged on with, if any. *)
 
+val same_auth : t -> auth -> bool
+(** Whether the connection is logged on with [token]: its current token equals [token], or it
+    carries none (it was marked unauthenticated, e.g. by an AuthorizationExpired). The re-auth paths
+    use this to skip a redundant LOGOFF+LOGON when the token did not change. *)
+
 val re_auth : ?force:bool -> t -> auth -> (bool, Errors.t) result
 (** Re-authenticate when [auth] differs from the current token (LOGOFF then LOGON, Bolt >= 5.1).
     Returns whether the token changed ([false] when it is the same as the current one, unless

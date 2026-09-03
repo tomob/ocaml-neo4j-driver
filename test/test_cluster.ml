@@ -88,13 +88,16 @@ let concurrent_acquires_single_fetch () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let c1 = ref None and c2 = ref None in
       Eio.Fiber.both
@@ -129,13 +132,16 @@ let failed_fetch_negative_cache () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       (match acquire () with Ok _ -> fail "expected the first acquire to fail" | Error _ -> ());
       (match acquire () with Ok _ -> fail "expected the second acquire to fail" | Error _ -> ());
@@ -175,13 +181,16 @@ let per_role_least_loaded () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire mode =
-        Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[]
+        Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[] ~session_auth:None
+          ~force_liveness:false
       in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
@@ -236,13 +245,16 @@ let least_loaded_reader_selection () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
@@ -305,13 +317,16 @@ let acquire_falls_back_to_next_router () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
@@ -362,13 +377,16 @@ let deactivate_on_database_unavailable () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
@@ -424,13 +442,16 @@ let remove_writer_on_not_a_leader () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Write ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let port conn = Addressing.port (Conn.address conn) in
       let c1 =
@@ -473,7 +494,7 @@ let acquire_retries_after_dead_reader () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr =
+      let connect ~session_auth:_ addr =
         if Addressing.port addr = 1 then Error (Errors.Service_unavailable "server down")
         else Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
       in
@@ -483,6 +504,7 @@ let acquire_retries_after_dead_reader () =
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -518,13 +540,16 @@ let routing_via_procedure_bolt42 () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -563,13 +588,16 @@ let update_table_replaces_table () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let c1 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
@@ -628,7 +656,9 @@ let session_rt_updates_routing_table () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
@@ -636,8 +666,9 @@ let session_rt_updates_routing_table () =
       let session_config = { Session.default_config with access_mode = Config.Read } in
       let session =
         Session.create session_config ~clock
-          ~connect:(fun ~mode ~database ~bookmarks ->
-            Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks)
+          ~connect:(fun ~mode ~database ~bookmarks ~auth:_ ->
+            Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks ~session_auth:None
+              ~force_liveness:false)
           ~on_rt:(fun database rt -> Cluster.update_table cluster ~database ~imp_user:None rt)
           ()
       in
@@ -648,6 +679,7 @@ let session_rt_updates_routing_table () =
       let c2 =
         match
           Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+            ~session_auth:None ~force_liveness:false
         with
         | Ok (conn, _) -> conn
         | Error e -> fail (Errors.to_string e)
@@ -704,13 +736,16 @@ let home_db_resolves_and_caches () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let c1 =
         match acquire () with
@@ -759,7 +794,9 @@ let home_db_ttl_expires () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let pool_config =
         match Config.make_pool_config ~home_db_cache_ttl:0.0 () with
         | Ok pool_config -> pool_config
@@ -771,6 +808,7 @@ let home_db_ttl_expires () =
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let c1 =
         match acquire () with
@@ -818,7 +856,9 @@ let home_db_per_imp_user () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
@@ -826,7 +866,7 @@ let home_db_per_imp_user () =
       let c1 =
         match
           Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "a")
-            ~bookmarks:[]
+            ~bookmarks:[] ~session_auth:None ~force_liveness:false
         with
         | Ok (conn, effective) ->
             check (option string) "user a's home database" (Some "homedb-a") effective;
@@ -836,7 +876,7 @@ let home_db_per_imp_user () =
       let c2 =
         match
           Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "b")
-            ~bookmarks:[]
+            ~bookmarks:[] ~session_auth:None ~force_liveness:false
         with
         | Ok (conn, effective) ->
             check (option string) "user b's home database" (Some "homedb-b") effective;
@@ -870,13 +910,16 @@ let route_carries_imp_user () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
       (match
          Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") ~bookmarks:[]
+           ~session_auth:None ~force_liveness:false
        with
       | Ok (conn, _) ->
           let extra = route_extra (List.nth received 0) in
@@ -916,7 +959,9 @@ let route_carries_session_bookmarks () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
@@ -924,8 +969,9 @@ let route_carries_session_bookmarks () =
       let session_config = { Session.default_config with bookmarks = [ "bm1"; "bm2" ] } in
       let session =
         Session.create session_config ~clock
-          ~connect:(fun ~mode ~database ~bookmarks ->
-            Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks)
+          ~connect:(fun ~mode ~database ~bookmarks ~auth:_ ->
+            Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks ~session_auth:None
+              ~force_liveness:false)
           ()
       in
       (match Session.run session ~query:"RETURN 1" ~parameters:[] with
@@ -946,7 +992,9 @@ let update_table_captures_home_db () =
     (fun net clock sw port ->
       let addr = "127.0.0.1:" ^ string_of_int port in
       let initial = Addressing.IPv4 ("127.0.0.1", port) in
-      let connect a = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port a)) in
+      let connect ~session_auth:_ a =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port a))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
@@ -955,6 +1003,7 @@ let update_table_captures_home_db () =
         (rt ~db:"homedb" [ addr ] [ addr ] [ addr ]);
       (match
          Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") ~bookmarks:[]
+           ~session_auth:None ~force_liveness:false
        with
       | Ok (conn, effective) ->
           check (option string) "effective database from SSR table" (Some "homedb") effective;
@@ -985,7 +1034,9 @@ let routing_table_of_returns_cached () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
@@ -1006,7 +1057,7 @@ let routing_table_of_returns_cached () =
       let c1 =
         match
           Cluster.acquire cluster ~mode:Config.Read ~database:(Some "adb") ~imp_user:None
-            ~bookmarks:[]
+            ~bookmarks:[] ~session_auth:None ~force_liveness:false
         with
         | Ok (conn, _) -> conn
         | Error e -> fail (Errors.to_string e)
@@ -1034,7 +1085,9 @@ let force_routing_table_update_failure () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr = Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr)) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
@@ -1091,7 +1144,7 @@ let routed_security_error_retryable () =
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
-      let connect addr =
+      let connect ~session_auth:_ addr =
         match manager.get_auth () with
         | Ok auth ->
             Conn.connect net clock sw { (config "127.0.0.1" (Addressing.port addr)) with auth }
@@ -1103,6 +1156,7 @@ let routed_security_error_retryable () =
       in
       let acquire () =
         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
       in
       let conn =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)

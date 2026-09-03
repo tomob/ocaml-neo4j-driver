@@ -12,18 +12,20 @@ val create :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
   ?auth_manager:Auth_manager.t option ->
   pool_config:Config.pool_config ->
-  connect:(Addressing.t -> (Conn.t, Errors.t) result) ->
-  connect_routing:(Addressing.t -> (Conn.t, Errors.t) result) ->
+  connect:(session_auth:Auth_manager.token option -> Addressing.t -> (Conn.t, Errors.t) result) ->
+  connect_routing:
+    (session_auth:Auth_manager.token option -> Addressing.t -> (Conn.t, Errors.t) result) ->
   routing_context:(string * string) list ->
   initial:Addressing.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   t
 (** Create a cluster rooted at [initial] (the URI's address). [connect] establishes a connection to
-    the given address (the Driver closes over its Eio resources); routing tables are fetched from a
-    router (the initial address until the first fetch) and cached per database with the
-    server-provided TTL. [auth_manager] (default [None]) is passed to the per-address data pools, so
-    reused connections re-authenticate when its token rotates and server security errors are handled
-    (see {!Pool.create}). *)
+    the given address for a session (the Driver closes over its Eio resources; a session's own auth
+    token is passed as [session_auth], see {!acquire}); routing tables are fetched from a router
+    (the initial address until the first fetch) and cached per database with the server-provided
+    TTL. [auth_manager] (default [None]) is passed to the per-address data pools, so reused
+    connections re-authenticate when its token rotates and server security errors are handled (see
+    {!Pool.create}). *)
 
 val acquire :
   t ->
@@ -31,18 +33,23 @@ val acquire :
   database:string option ->
   imp_user:string option ->
   bookmarks:string list ->
+  session_auth:Auth_manager.token option ->
+  force_liveness:bool ->
   (Conn.t * string option, Errors.t) result
 (** Get a connection for [mode] and [database]: the routing table (refreshed when stale) selects the
     least-loaded address (fewest in-use connections) among the matching role (readers for [Read],
     writers for [Write]) and a per-address pool serves the connection. [imp_user] (the session's
     impersonated user, [None] for the driver's own user) is sent with the ROUTE request (Bolt 4.4+)
     and keys the home-db cache; [bookmarks] are sent with the ROUTE request too (the session's
-    bookmarks, or [] for a plain resolution). The effective database is also returned: for a fixed
-    [database] it is that database; for the default database ([None]) it is the server's home
-    database — resolved from the ROUTE response's [db] field and cached per [imp_user]
-    ([Some home_db] thereafter), or taken from the cache when fresh. When the selected server is
-    unreachable ([Service_unavailable]) it is deactivated and the next address is tried, bounded by
-    the pool's [connection_acquisition_timeout]. *)
+    bookmarks, or [] for a plain resolution). [session_auth] (user switching) opens the connection
+    with that token and re-authenticates a reused one (and the routing connection) to it; [None]
+    uses the driver's auth manager. Session-level auth requires re-authentication support (Bolt >=
+    5.1). The effective database is also returned: for a fixed [database] it is that database; for
+    the default database ([None]) it is the server's home database — resolved from the ROUTE
+    response's [db] field and cached per [imp_user] ([Some home_db] thereafter), or taken from the
+    cache when fresh. When the selected server is unreachable ([Service_unavailable]) it is
+    deactivated and the next address is tried, bounded by the pool's
+    [connection_acquisition_timeout]. *)
 
 val deactivate : t -> Addressing.t -> unit
 (** Remove [addr] from every routing table and close its pool: future acquires skip it until a

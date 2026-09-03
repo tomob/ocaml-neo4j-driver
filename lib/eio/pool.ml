@@ -29,7 +29,7 @@ open Neodriver_core
 let ( let* ) = Result.bind
 
 type t = {
-  connect : unit -> (Conn.t, Errors.t) result;
+  connect : Auth_manager.token option -> (Conn.t, Errors.t) result;
   pool_config : Config.pool_config;
   acquisition_timeout : float;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
@@ -70,24 +70,26 @@ let over_lifetime t created_at =
   let age = Mtime.span (now t) created_at in
   Mtime.Span.to_float_ns age >= t.pool_config.max_connection_lifetime *. 1_000_000_000.
 
-(* Liveness-check an idle connection on reuse: only when a
-   [liveness_check_timeout] is configured, probe it with a RESET (bounded by
-   the timeout), like the Python driver. Without a timeout no probe is sent: a
-   clean connection is reused as-is (MinimalResets). On failure the connection
-   is closed. *)
-let liveness_ok t conn =
-  match t.pool_config.liveness_check_timeout with
-  | Some timeout -> (
+(* Liveness-check an idle connection on reuse: with [force] (a one-shot
+   driver-level acquire such as GetServerInfo, which must see a clean
+   connection — the Python driver passes [liveness_check_timeout = 0] there) or
+   a configured [liveness_check_timeout], probe it with a RESET (bounded by the
+   timeout when one is configured); otherwise a clean connection is reused
+   as-is (MinimalResets). On failure the connection is closed. *)
+let liveness_ok t ~force conn =
+  match (force, t.pool_config.liveness_check_timeout) with
+  | true, _ -> Stdlib.Result.is_ok (Conn.reset conn)
+  | false, Some timeout -> (
       try
         Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds t.clock timeout) (fun () ->
             Conn.reset conn)
         |> Stdlib.Result.is_ok
       with _ -> false)
-  | None -> true
+  | false, None -> true
 
 (* Pop a reusable connection off the idle queue, closing any that are over
    their lifetime or fail the liveness check. *)
-let rec take_idle t =
+let rec take_idle t ~force_liveness =
   let reusable =
     with_lock t.mutex (fun () ->
         let rec go () =
@@ -105,12 +107,12 @@ let rec take_idle t =
   match reusable with
   | None -> None
   | Some conn ->
-      if liveness_ok t conn then Some conn
+      if liveness_ok t ~force:force_liveness conn then Some conn
       else (
         Log.debug Log.pool (fun m ->
             m "[#%04X]  _: <POOL> found unhealthy connection" (Conn.id conn));
         Conn.close conn;
-        take_idle t)
+        take_idle t ~force_liveness)
 
 (* --- Auth --- *)
 
@@ -131,8 +133,10 @@ let mark_all_unauthenticated t =
 (* Handle a server security error reported by one of the pool's connections
    (installed as the connection's on-error hook): an AuthorizationExpired
    invalidates every connection (they re-authenticate on their next acquire),
-   and a [Neo.ClientError.Security.*] error is offered to the pool's auth
-   manager — a handled error is marked retryable, a provider failure replaces
+   and a [Neo.ClientError.Security.*] error is offered to the connection's own
+   auth manager — the pool's for driver auth, a static manager over the session
+   token for a session-auth connection (which never handles, like the Python
+   driver). A handled error is marked retryable, a provider failure replaces
    it. Without an auth manager the error passes through unchanged. The token
    used when the server rejected the request is captured before the
    AuthorizationExpired mark clears the connections' current tokens. *)
@@ -144,7 +148,7 @@ let on_neo4j_error t conn error =
     mark_all_unauthenticated t
   end;
   if Errors.has_security_code error then
-    match t.auth_manager with
+    match Conn.auth_manager conn with
     | None -> error
     | Some manager -> (
         match failed_auth with
@@ -156,31 +160,97 @@ let on_neo4j_error t conn error =
             | Error provider_error -> provider_error))
   else error
 
-(* Re-authenticate [conn] when the manager's token differs from the one it is
-   logged on with (or when it was marked unauthenticated). Without an auth
-   manager nothing is done. A [Configuration_error] means the protocol version
-   cannot re-authenticate an existing connection (Bolt < 5.1): the caller
-   purges it (see [acquire]). *)
-let re_auth_connection t conn =
-  match t.auth_manager with
-  | None -> Ok ()
-  | Some manager ->
-      let* token = manager.get_auth () in
-      let same =
-        match Conn.current_auth conn with
-        | Some current -> Auth_manager.eq current token
-        | None -> false
-      in
-      if same then Ok ()
-      else if not (Conn.capabilities conn).supports_re_auth then
-        Error
-          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
-      else Conn.re_auth conn token |> Result.map (fun _ -> ())
+(* Re-authenticate [conn] to [token] when it differs from the one it is logged
+   on with (or when it was marked unauthenticated). A [Configuration_error]
+   means the protocol version cannot re-authenticate an existing connection
+   (Bolt < 5.1). *)
+let re_auth_to token conn =
+  if Conn.same_auth conn token then Ok ()
+  else if not (Conn.capabilities conn).supports_re_auth then
+    Error (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+  else Conn.re_auth conn token |> Result.map (fun _ -> ())
 
-let rec acquire t =
+(* Re-authenticate [conn] on acquire: with a session token [session_auth] it is
+   re-authenticated to it; without one the pool's auth manager's current token
+   is used. Without an auth manager and without a session token nothing is
+   done. *)
+let re_auth t conn session_auth =
+  match session_auth with
+  | Some token -> re_auth_to token conn
+  | None -> (
+      match t.auth_manager with
+      | None -> Ok ()
+      | Some manager ->
+          let* token = manager.get_auth () in
+          re_auth_to token conn)
+
+(* Install the connection's auth manager: the pool's for driver auth; a static
+   manager over the session token for a session-auth connection, so security
+   errors are not offered to the driver's manager (like the Python driver,
+   which sets the connection's auth_manager to the session's static manager via
+   [re_auth]). *)
+let set_conn_auth_manager t session_auth conn =
+  match session_auth with
+  | Some token -> Conn.set_auth_manager conn (Auth_manager.static token)
+  | None -> Option.iter (fun manager -> Conn.set_auth_manager conn manager) t.auth_manager
+
+(* A permit is held: hand out a connection, re-authenticating a reused one and
+   purging (and retrying) connections whose protocol cannot re-authenticate —
+   the latter only for the driver's own auth: a session-level auth unsupported
+   by the protocol is surfaced instead. *)
+let rec acquire_loop t session_auth force_liveness =
+  match take_idle t ~force_liveness with
+  | Some conn -> (
+      add_live t conn;
+      match re_auth t conn session_auth with
+      | Ok () ->
+          set_conn_auth_manager t session_auth conn;
+          Ok conn
+      | Error (Errors.Configuration_error _) when session_auth = None ->
+          Log.debug Log.pool (fun m ->
+              m "[#%04X]  _: <POOL> backwards compatible auth token refresh: purge connection"
+                (Conn.id conn));
+          remove_live t conn;
+          Conn.close conn;
+          acquire_loop t session_auth force_liveness
+      | Error error ->
+          remove_live t conn;
+          Conn.close conn;
+          Eio.Semaphore.release t.permits;
+          Error error)
+  | None -> (
+      Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> trying to hand out new connection");
+      match t.connect session_auth with
+      | Ok conn -> (
+          (* New connections are opened with the session token when provided,
+             otherwise with the manager's current token; the auth-manager and
+             security-error hooks are installed before the connection is handed
+             out, chained after any hook the cluster already installed (address
+             deactivation). *)
+          set_conn_auth_manager t session_auth conn;
+          let previous = Conn.on_error conn in
+          Conn.set_on_error conn (fun conn error -> on_neo4j_error t conn (previous conn error));
+          add_live t conn;
+          match session_auth with
+          | Some _ when not (Conn.capabilities conn).supports_re_auth ->
+              (* Session-level auth requires re-authentication support (Bolt >=
+                 5.1): the connection was opened with the session token but
+                 future switches are impossible. *)
+              remove_live t conn;
+              Conn.close conn;
+              Eio.Semaphore.release t.permits;
+              Error
+                (Errors.Configuration_error
+                   "Re-authentication is not supported by this protocol version")
+          | _ -> Ok conn)
+      | Error _ as error ->
+          Eio.Semaphore.release t.permits;
+          error)
+
+let acquire ~session_auth ~force_liveness t =
   if t.closed then Error (Errors.Connection_pool_error "Pool is closed")
   else
-    let permit =
+    let* () =
       try
         Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds t.clock t.acquisition_timeout) (fun () ->
             Eio.Semaphore.acquire t.permits;
@@ -189,44 +259,7 @@ let rec acquire t =
         Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> acquisition timed out");
         Error (Errors.Connection_acquisition_timeout "Timed out waiting for a free connection")
     in
-    match permit with Error _ as error -> error | Ok () -> acquire_loop t
-
-(* A permit is held: hand out a connection, re-authenticating a reused one and
-   purging (and retrying) connections whose protocol cannot re-authenticate. *)
-and acquire_loop t =
-  match take_idle t with
-  | Some conn -> (
-      add_live t conn;
-      match re_auth_connection t conn with
-      | Ok () -> Ok conn
-      | Error (Errors.Configuration_error _) ->
-          Log.debug Log.pool (fun m ->
-              m "[#%04X]  _: <POOL> backwards compatible auth token refresh: purge connection"
-                (Conn.id conn));
-          remove_live t conn;
-          Conn.close conn;
-          acquire_loop t
-      | Error error ->
-          remove_live t conn;
-          Conn.close conn;
-          Eio.Semaphore.release t.permits;
-          Error error)
-  | None -> (
-      Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> trying to hand out new connection");
-      match t.connect () with
-      | Ok conn ->
-          (* New connections resolve their initial token from the manager at
-             connect time; the auth-manager and security-error hooks are
-             installed before the connection is handed out, chained after any
-             hook the cluster already installed (address deactivation). *)
-          Option.iter (fun manager -> Conn.set_auth_manager conn manager) t.auth_manager;
-          let previous = Conn.on_error conn in
-          Conn.set_on_error conn (fun conn error -> on_neo4j_error t conn (previous conn error));
-          add_live t conn;
-          Ok conn
-      | Error _ as error ->
-          Eio.Semaphore.release t.permits;
-          error)
+    acquire_loop t session_auth force_liveness
 
 (* Hand an already-established connection to the pool as an idle connection,
    without acquiring a permit (the connection never held one). Used to recycle

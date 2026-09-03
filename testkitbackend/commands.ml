@@ -534,6 +534,19 @@ let auth_token_manager_close fields =
   Hashtbl.remove auth_managers id;
   ("AuthTokenManager", `Assoc [ ("id", `Int id) ])
 
+(* CheckSessionAuthSupport: whether the server supports re-authentication
+   (Bolt >= 5.1), i.e. session-level auth (user switching). A driver connection
+   is made and the negotiated protocol checked. *)
+let check_session_auth_support fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  let available =
+    match Driver.supports_session_auth driver.driver with
+    | Ok available -> available
+    | Error _ -> false
+  in
+  ("SessionAuthSupport", `Assoc [ ("id", `Int id); ("available", `Bool available) ])
+
 let new_session fields =
   let driver_id = int "driverId" fields in
   let driver = get_driver driver_id in
@@ -551,6 +564,16 @@ let new_session fields =
         List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) bookmarks
     | _ -> []
   in
+  (* A session may carry its own auth token (user switching, Bolt >= 5.1): it is
+     used instead of the driver's auth for this session's connections. *)
+  let auth =
+    match List.assoc_opt "authorizationToken" fields with
+    | Some token -> (
+        match token_of_json token with
+        | Ok auth -> Some auth
+        | Error error -> raise (Backend_error (Errors.to_string error)))
+    | _ -> None
+  in
   let config =
     Session.
       {
@@ -559,6 +582,7 @@ let new_session fields =
         impersonated_user;
         fetch_size;
         bookmarks;
+        auth;
         max_transaction_retry_time = driver.max_transaction_retry_time;
         initial_retry_delay = 1.0;
         retry_delay_multiplier = 2.0;
@@ -1146,6 +1170,7 @@ let handle ctx name data =
   | "NewBasicAuthTokenManager" -> Some (new_basic_auth_token_manager ctx fields)
   | "NewBearerAuthTokenManager" -> Some (new_bearer_auth_token_manager ctx fields)
   | "AuthTokenManagerClose" -> Some (auth_token_manager_close fields)
+  | "CheckSessionAuthSupport" -> Some (check_session_auth_support fields)
   | "NewSession" -> Some (new_session fields)
   | "SessionClose" -> Some (session_close fields)
   | "VerifyConnectivity" -> Some (verify_connectivity fields)

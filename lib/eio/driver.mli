@@ -53,6 +53,10 @@ val acquire : ?mode:Config.access_mode -> t -> (Conn.t, Errors.t) result
 val release : t -> Conn.t -> unit
 (** Return a connection acquired with [acquire] to the pool (or cluster). *)
 
+val supports_session_auth : t -> (bool, Errors.t) result
+(** Whether the server supports re-authentication (Bolt >= 5.1), i.e. session-level auth (user
+    switching): connects (see {!acquire}) and checks the negotiated protocol. *)
+
 val close : t -> unit
 (** Close the driver's pool/cluster: idle connections are closed and further [acquire]/[session]
     operations fail. Connections still in use by open sessions are closed (not returned to the pool)

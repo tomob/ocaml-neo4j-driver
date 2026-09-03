@@ -155,10 +155,33 @@ match Session.execute session ~mode:Config.Write work with
 
 ## Authentication
 
-Only `basic`. For Bolt >= 5.1 the token is sent via a separate LOGON message
-after HELLO; older versions inline it in HELLO. `Conn.re_auth conn auth`
-re-authenticates when the token changes, and `Conn.logon`/`Conn.logoff` manage
-the authenticated state directly.
+Basic, bearer and custom tokens are supported. `Conn.basic_auth ?principal
+?credentials ?realm ()` is the common case; `Conn.bearer_auth token` sends only
+`scheme` and `credentials`; `Auth_manager.custom_auth ...` adds arbitrary
+schemes, a `realm` and extra `parameters`. For Bolt >= 5.1 the token is sent
+via a separate LOGON message after HELLO; older versions inline it in HELLO.
+`Conn.re_auth conn auth` re-authenticates when the token changes,
+`Conn.mark_unauthenticated` clears the current token (it is re-authenticated on
+the next use), and `Conn.logon`/`Conn.logoff` manage the authenticated state
+directly.
+
+### Auth managers
+
+`Driver.connect` takes a plain `~auth` token (wrapped in a static manager), or
+an optional `?auth_manager` — an `Auth_manager.t` that supplies the current
+token. `Auth_manager.basic ~provider` rotates the password on
+`Neo.ClientError.Security.Unauthorized`; `Auth_manager.bearer ~now ~provider`
+additionally refreshes a token past its `expires_at` and on
+`TokenExpired`. New connections open with the manager's current token and a
+reused one is re-authenticated (LOGOFF + LOGON) when it rotates; an
+`AuthorizationExpired` marks every connection of the pool for re-authentication.
+
+### Session-level auth (user switching)
+
+A session may carry its own auth token — `Session.config.auth` (`Some token`
+replaces the driver's auth for that session, user switching). The connection is
+opened with the token and re-authenticated to a changed one; this requires
+re-authentication support (Bolt >= 5.1).
 
 ## Value types
 
@@ -308,15 +331,16 @@ no effect for now.
 Logging mirrors the Python driver's loggers and goes through the standard
 [Logs](https://erratique.ch/software/logs/doc/Logs/index.html) library: the
 `Log` module exposes the sources `Log.io` (connection and Bolt message
-exchange), `Log.pool` (pool and routing), `Log.session` and
-`Log.notifications`. Logging is off by default.
+exchange), `Log.pool` (pool and routing), `Log.session`,
+`Log.notifications` and `Log.auth` (auth-manager token refreshes and provider
+failures). Logging is off by default.
 
 ### Environment variables
 
 Set `NEO4J_LOG_LEVEL` to one of `off`, `error`, `warn`, `info`, `debug` to turn
 logging on (the default is `off`, i.e. nothing is logged). `NEO4J_LOG_SCOPES`
 restricts the areas: a comma-separated list of `io`, `pool`, `session`,
-`notifications` (default `all`). The variables are read once from the
+`notifications`, `auth` (default `all`). The variables are read once from the
 process-start environment (OCaml `Sys.getenv` semantics) and applied
 automatically at the first log call:
 

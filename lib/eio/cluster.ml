@@ -21,8 +21,9 @@ let ( let* ) = Result.bind
 
 type t = {
   pool_config : Config.pool_config;
-  connect : Addressing.t -> (Conn.t, Errors.t) result;
-  connect_routing : Addressing.t -> (Conn.t, Errors.t) result;
+  connect : session_auth:Auth_manager.token option -> Addressing.t -> (Conn.t, Errors.t) result;
+  connect_routing :
+    session_auth:Auth_manager.token option -> Addressing.t -> (Conn.t, Errors.t) result;
   resolver : (Addressing.t -> (Addressing.t list, Errors.t) result) option;
   routing_context : (string * string) list;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
@@ -193,8 +194,8 @@ let pool_for cluster addr =
   | None ->
       let pool =
         Pool.create ~pool_config:cluster.pool_config ~auth_manager:cluster.auth_manager
-          ~connect:(fun () ->
-            let* conn = cluster.connect addr in
+          ~connect:(fun session_auth ->
+            let* conn = cluster.connect ~session_auth addr in
             Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
             Ok conn)
           cluster.clock
@@ -220,35 +221,37 @@ let set_home_db cluster imp_user database =
 
 (* Re-authenticate the routing connection when the manager's token differs from
    the one it is logged on with (or when it was marked unauthenticated), like a
-   pooled connection's acquire re-auth. Without an auth manager nothing is
-   done. A [Configuration_error] means the protocol version cannot
-   re-authenticate an existing connection (Bolt < 5.1): the caller drops it and
-   recreates it with the fresh token. *)
-let re_auth_routing cluster conn =
-  match cluster.auth_manager with
-  | None -> Ok ()
-  | Some manager ->
-      let* token = manager.get_auth () in
-      let same =
-        match Conn.current_auth conn with
-        | Some current -> Auth_manager.eq current token
-        | None -> false
-      in
-      if same then Ok ()
-      else if not (Conn.capabilities conn).supports_re_auth then
-        Error
-          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
-      else Conn.re_auth conn token |> Result.map (fun _ -> ())
+   pooled connection's acquire re-auth. With a session auth token it is
+   re-authenticated to it; without one the cluster's auth manager's current
+   token is used (nothing happens without a manager). A [Configuration_error]
+   means the protocol version cannot re-authenticate an existing connection
+   (Bolt < 5.1): the caller drops it and recreates it with the fresh token. *)
+let re_auth_to token conn =
+  if Conn.same_auth conn token then Ok ()
+  else if not (Conn.capabilities conn).supports_re_auth then
+    Error (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
+  else Conn.re_auth conn token |> Result.map (fun _ -> ())
+
+let re_auth_routing cluster ~session_auth conn =
+  match session_auth with
+  | Some token -> re_auth_to token conn
+  | None -> (
+      match cluster.auth_manager with
+      | None -> Ok ()
+      | Some manager ->
+          let* token = manager.get_auth () in
+          re_auth_to token conn)
 
 (* The persistent routing connection for [addr]: ROUTE requests reuse it (the
-   server expects several ROUTEs on one connection), created on first use,
-   re-authenticated when the manager's token rotated, and dropped (closed)
-   when the address is deactivated. Guarded by [routing_lock]. *)
-let rec routing_conn cluster addr =
+   server expects several ROUTEs on one connection), created on first use (with
+   the session token when provided), re-authenticated when the token rotated,
+   and dropped (closed) when the address is deactivated. Guarded by
+   [routing_lock]. *)
+let rec routing_conn cluster ~session_auth addr =
   let key = Addressing.to_string addr in
   match Hashtbl.find_opt cluster.routing key with
   | Some conn -> (
-      match re_auth_routing cluster conn with
+      match re_auth_routing cluster ~session_auth conn with
       | Ok () -> Ok conn
       | Error (Errors.Configuration_error _) ->
           (* The protocol cannot re-authenticate an existing connection (Bolt
@@ -256,10 +259,10 @@ let rec routing_conn cluster addr =
              current token. *)
           Hashtbl.remove cluster.routing key;
           Conn.close conn;
-          routing_conn cluster addr
+          routing_conn cluster ~session_auth addr
       | Error _ as error -> error)
   | None ->
-      let* conn = cluster.connect_routing addr in
+      let* conn = cluster.connect_routing ~session_auth addr in
       Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
       Hashtbl.add cluster.routing key conn;
       Ok conn
@@ -326,7 +329,8 @@ let classify ~retried = function
    (usually the caller's own bookmarks, or [] for a plain resolution). ROUTEs
    are serialized on [routing_lock] so concurrent fetches never share a
    connection. *)
-let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error retried = function
+let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks ~session_auth last_error retried =
+  function
   | [] -> (
       match last_error with
       | Some error -> Error error
@@ -335,9 +339,10 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error ret
       (* Continue with the next router, remembering [error] as the fallback
          failure for the caller. *)
       let continue error retried routers =
-        fetch_table_locked cluster ~database ~imp_user ~bookmarks (Some error) retried routers
+        fetch_table_locked cluster ~database ~imp_user ~bookmarks ~session_auth (Some error) retried
+          routers
       in
-      match routing_conn cluster addr with
+      match routing_conn cluster ~session_auth addr with
       | Error error when Errors.is_fatal_during_discovery error -> Error error
       | Error error ->
           deactivate cluster addr;
@@ -360,9 +365,10 @@ let rec fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error ret
               deactivate cluster addr;
               continue error true (addr :: rest)))
 
-let fetch_table cluster ~database ~imp_user ~bookmarks last_error routers =
+let fetch_table cluster ~database ~imp_user ~bookmarks ~session_auth last_error routers =
   with_routing_lock cluster (fun () ->
-      fetch_table_locked cluster ~database ~imp_user ~bookmarks last_error false routers)
+      fetch_table_locked cluster ~database ~imp_user ~bookmarks ~session_auth last_error false
+        routers)
 
 (* The fresh cached table for [database], if any (caller holds the lock). A
    table is fresh only when its TTL has not elapsed AND it still lists routers
@@ -440,9 +446,9 @@ let update_table cluster ~database ~imp_user rt =
    returned in the [rt] here, inside the same lock section. Cancellation (e.g.
    the caller's acquisition timeout) still clears the marker and wakes the
    waiters. *)
-let fetch_and_store cluster ~database ~imp_user ~bookmarks routers =
+let fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth routers =
   let result =
-    try fetch_table cluster ~database ~imp_user ~bookmarks None routers
+    try fetch_table cluster ~database ~imp_user ~bookmarks ~session_auth None routers
     with exn ->
       (* Cancellation (or an unexpected error) during the fetch: still clear
          the single-flight marker and wake the waiters, then re-raise. *)
@@ -477,7 +483,7 @@ let fetch_and_store cluster ~database ~imp_user ~bookmarks routers =
    the fresh-table cache is skipped, so the ROUTE is always issued: like the
    Python driver without the home-database-cache optimisation, a default-
    database acquire re-resolves the home database every time. *)
-let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~(force : bool) =
+let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~(force : bool) ~session_auth =
   let decision =
     with_lock cluster (fun () ->
         match if force then None else fresh_table cluster ~database ~mode with
@@ -506,10 +512,13 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~(force : boo
         begin match with_lock cluster (fun () -> home_db_of cluster imp_user) with
         | Some home_db ->
             resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
-        | None -> resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:true
+              ~session_auth
+        | None ->
+            resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:true ~session_auth
         end
-      else resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false
-  | `Fetch -> fetch_and_store cluster ~database ~imp_user ~bookmarks (fetch_routers cluster)
+      else resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false ~session_auth
+  | `Fetch ->
+      fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth (fetch_routers cluster)
 
 (* Load of an address: in-use connections of its pool, or 0 if no pool exists
    yet (pools are created lazily for the chosen address only). *)
@@ -542,12 +551,14 @@ let select_from_table ?(exclude = []) cluster ~mode table =
    default database is resolved to the server's home database — from the cache
    when fresh (no ROUTE), otherwise from the ROUTE response's [db] field, which
    is then cached for [imp_user]. *)
-let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
+let resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth =
   match database with
   | Some db ->
       Log.debug Log.pool (fun m ->
           m "[#0000]  _: <WORKSPACE> routing towards fixed database: %s" db);
-      let* table = resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false in
+      let* table =
+        resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false ~session_auth
+      in
       Ok (table, database)
   | None -> (
       match with_lock cluster (fun () -> home_db_of cluster imp_user) with
@@ -556,6 +567,7 @@ let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
               m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
           let* table =
             resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
+              ~session_auth
           in
           Ok (table, Some home_db)
       | None ->
@@ -565,6 +577,7 @@ let resolve_for cluster ~database ~mode ~imp_user ~bookmarks =
           Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
           let* table =
             resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
+              ~session_auth
           in
           cache_home_table cluster ~imp_user table;
           Ok (table, Routing_table.database table))
@@ -580,18 +593,19 @@ type acquire_outcome = Acquired of Conn.t * string option | Role_empty | Failed 
    least-loaded one of the same table is tried (no refetch — a fresh fetch
    would re-list the failed server). [tried] lists the addresses already
    skipped for this table. *)
-let rec acquire_from_table cluster ~mode ~effective table tried =
+let rec acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness table tried =
   match select_from_table ~exclude:tried cluster ~mode table with
   | Ok (addr, pool) -> (
-      match Pool.acquire pool with
+      match Pool.acquire ~session_auth ~force_liveness pool with
       | Ok conn -> Acquired (conn, effective)
       | Error (Errors.Service_unavailable _) ->
           deactivate cluster addr;
-          acquire_from_table cluster ~mode ~effective table (Addressing.to_string addr :: tried)
+          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness table
+            (Addressing.to_string addr :: tried)
       | Error error -> Failed error)
   | Error error -> if tried = [] then Role_empty else Failed error
 
-let acquire cluster ~mode ~database ~imp_user ~bookmarks =
+let acquire cluster ~mode ~database ~imp_user ~bookmarks ~session_auth ~force_liveness =
   with_acquisition_timeout cluster ~on_timeout:"Timed out acquiring a connection" (fun () ->
       (* An acquire may drop and refetch a table whose role is empty (the
          router may have been updated), but only a bounded number of times, so
@@ -602,8 +616,12 @@ let acquire cluster ~mode ~database ~imp_user ~bookmarks =
          the same table tried within [acquire_from_table]. *)
       let max_refetches = 1 in
       let rec attempt refetches =
-        let* table, effective = resolve_for cluster ~database ~mode ~imp_user ~bookmarks in
-        match acquire_from_table cluster ~mode ~effective table [] with
+        let* table, effective =
+          resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth
+        in
+        match
+          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness table []
+        with
         | Acquired (conn, effective) -> Ok (conn, effective)
         | Role_empty when refetches < max_refetches ->
             with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
@@ -634,7 +652,8 @@ let routing_table_of cluster ~database =
 let force_routing_table_update cluster ~database ~bookmarks =
   with_acquisition_timeout cluster ~on_timeout:"Timed out updating the routing table" (fun () ->
       match
-        fetch_table cluster ~database ~imp_user:None ~bookmarks None (fetch_routers cluster)
+        fetch_table cluster ~database ~imp_user:None ~bookmarks ~session_auth:None None
+          (fetch_routers cluster)
       with
       | Ok table ->
           ignore (with_lock cluster (fun () -> store_table cluster ~database table));

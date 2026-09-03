@@ -34,9 +34,9 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
 
 (* The routing cluster for a [neo4j://] URI: its address is the initial router
    and routing tables are fetched from it on demand. Data and routing
-   connections resolve their initial token from [auth_manager] at connect time,
-   which is also passed to the per-address data pools for re-authentication and
-   security-error handling. *)
+   connections open with a session auth token when one is provided, otherwise
+   with the manager's current token; the manager is also passed to the
+   per-address data pools for re-authentication and security-error handling. *)
 let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent
     ~(auth_manager : Auth_manager.t) net clock sw =
@@ -54,27 +54,35 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth
       ~routing_context:(Some routing_context) addr
   in
-  let with_token connect addr =
-    match auth_manager.get_auth () with
-    | Error _ as error -> error
-    | Ok auth -> connect (config auth addr)
+  let with_token ~session_auth connect addr =
+    let* auth =
+      match session_auth with Some token -> Ok token | None -> auth_manager.get_auth ()
+    in
+    connect (config auth addr)
   in
-  let connect_routing addr = with_token (Conn.connect ?domain_name_resolver net clock sw) addr in
-  let connect addr = with_token (Conn.connect ?resolver ?domain_name_resolver net clock sw) addr in
+  let connect_routing ~session_auth addr =
+    with_token ~session_auth (Conn.connect ?domain_name_resolver net clock sw) addr
+  in
+  let connect ~session_auth addr =
+    with_token ~session_auth (Conn.connect ?resolver ?domain_name_resolver net clock sw) addr
+  in
   let cluster =
     Cluster.create ?resolver ~pool_config ~connect ~connect_routing ~routing_context ~initial
       ~auth_manager:(Some auth_manager) clock
   in
   Ok (Cluster cluster)
 
-(* The connection pool for a direct [bolt://] URI. New connections resolve
-   their initial token from [auth_manager] at connect time, so a rotated token
-   is used by freshly created connections without a LOGOFF+LOGON. *)
+(* The connection pool for a direct [bolt://] URI. New connections open with a
+   session auth token when one is provided, otherwise with the manager's
+   current token, so a rotated (or switched) token is used by freshly created
+   connections without a LOGOFF+LOGON. *)
 let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent
     ~(auth_manager : Auth_manager.t) net clock sw =
-  let connect () =
-    let* auth = auth_manager.get_auth () in
+  let connect session_auth =
+    let* auth =
+      match session_auth with Some token -> Ok token | None -> auth_manager.get_auth ()
+    in
     let config =
       conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth ~routing_context:None
         (Addressing.of_host_port parsed.host parsed.port)
@@ -105,11 +113,15 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
 
 let session ?config t =
   let config = Option.value ~default:Session.default_config config in
-  let connect ~mode ~database ~bookmarks =
+  let connect ~mode ~database ~bookmarks ~auth =
     match t.connection with
     | Cluster cluster ->
         Cluster.acquire cluster ~mode ~database ~imp_user:config.impersonated_user ~bookmarks
-    | Pool pool -> Result.map (fun conn -> (conn, database)) (Pool.acquire pool)
+          ~session_auth:auth ~force_liveness:false
+    | Pool pool ->
+        Result.map
+          (fun conn -> (conn, database))
+          (Pool.acquire ~session_auth:auth ~force_liveness:false pool)
   in
   let release conn =
     match t.connection with
@@ -131,13 +143,24 @@ let session ?config t =
 let acquire ?(mode = Config.Write) t =
   match t.connection with
   | Cluster cluster ->
-      Result.map fst (Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[])
-  | Pool pool -> Pool.acquire pool
+      Result.map fst
+        (Cluster.acquire cluster ~mode ~database:None ~imp_user:None ~bookmarks:[]
+           ~session_auth:None ~force_liveness:true)
+  | Pool pool -> Pool.acquire ~session_auth:None ~force_liveness:true pool
 
 let release t conn =
   match t.connection with
   | Cluster cluster -> Cluster.release cluster conn
   | Pool pool -> Pool.release pool conn
+
+(* Whether the server the driver connects to supports re-authentication (Bolt
+   >= 5.1), i.e. session-level auth (user switching): connect and check the
+   negotiated protocol. Test-support API for the TestKit CheckSessionAuthSupport. *)
+let supports_session_auth t =
+  let* conn = acquire t in
+  let supported = (Conn.capabilities conn).supports_re_auth in
+  release t conn;
+  Ok supported
 
 let close t =
   match t.connection with Cluster cluster -> Cluster.close cluster | Pool pool -> Pool.close pool
