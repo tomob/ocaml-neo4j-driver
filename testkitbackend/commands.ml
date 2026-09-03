@@ -19,6 +19,7 @@ let ( let* ) = Result.bind
 type 'tag ctx = {
   net : [ `Network | `Platform of 'tag ] Eio.Resource.t;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
+  mock : Fake_time.state;
   sw : Eio.Switch.t;
   send : string -> Yojson.Safe.t -> unit;
   read : unit -> string option;
@@ -1159,6 +1160,24 @@ let forced_routing_table_update fields =
   | Ok () -> ("Driver", `Assoc [ ("id", `Int id) ])
   | Error error -> raise (Driver_error error)
 
+(* --- Mock time (Backend:MockTime) --- *)
+
+let fake_time_ack () = ("FakeTimeAck", `Assoc [])
+
+(* Freeze the backend's clock; the driver now sees a time that only advances on
+   FakeTimeTick (used for token-expiry, connection-lifetime and liveness tests). *)
+let fake_time_install ctx =
+  Fake_time.install ctx.mock;
+  fake_time_ack ()
+
+let fake_time_tick ctx fields =
+  Fake_time.tick ctx.mock (int "incrementMs" fields);
+  fake_time_ack ()
+
+let fake_time_uninstall ctx =
+  Fake_time.uninstall ctx.mock;
+  fake_time_ack ()
+
 let handle ctx name data =
   let fields =
     match data with `Assoc fields -> fields | _ -> raise (Backend_error "data is not an object")
@@ -1167,6 +1186,9 @@ let handle ctx name data =
   | "StartTest" -> Some (start_test fields)
   | "StartSubTest" -> Some (start_test fields)
   | "GetFeatures" -> Some (get_features fields)
+  | "FakeTimeInstall" -> Some (fake_time_install ctx)
+  | "FakeTimeTick" -> Some (fake_time_tick ctx fields)
+  | "FakeTimeUninstall" -> Some (fake_time_uninstall ctx)
   | "NewDriver" -> Some (new_driver ctx fields)
   | "DriverClose" -> Some (driver_close fields)
   | "NewAuthTokenManager" -> Some (new_auth_token_manager ctx fields)

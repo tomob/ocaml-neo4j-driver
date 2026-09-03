@@ -50,6 +50,9 @@ let features : string list =
     (* GetRoutingTable *)
     "Backend:RTForceUpdate";
     (* ForcedRoutingTableUpdate *)
+    (* The backend can mock the system time (FakeTimeInstall / FakeTimeTick /
+       FakeTimeUninstall), used to test time-dependent behaviour. *)
+    "Backend:MockTime";
     (* Auth token managers (phase A8): NewAuthTokenManager /
        NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
        authTokenManagerId. *)

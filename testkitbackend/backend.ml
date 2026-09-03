@@ -23,6 +23,7 @@ let write_response flow (name, data) =
    and [send] share the same line reader so handlers can push messages and
    consume the follow-up requests (e.g. custom resolution). *)
 let handle_connection net clock sw flow =
+  let mock, clock = Fake_time.create clock in
   let reader = Eio.Buf_read.of_flow ~max_size:max_request_size flow in
   let lines = Eio.Buf_read.lines reader in
   let state = ref lines in
@@ -47,6 +48,7 @@ let handle_connection net clock sw flow =
       {
         net;
         clock;
+        mock;
         sw;
         send = (fun name data -> write_response flow (name, data));
         read = read_one_request;
