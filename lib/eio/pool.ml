@@ -161,22 +161,25 @@ let on_neo4j_error t conn error =
   else error
 
 (* Re-authenticate [conn] to [token] when it differs from the one it is logged
-   on with (or when it was marked unauthenticated). A [Configuration_error]
-   means the protocol version cannot re-authenticate an existing connection
-   (Bolt < 5.1). *)
-let re_auth_to token conn =
-  if Conn.same_auth conn token then Ok ()
+   on with (or when it was marked unauthenticated). With [force] it re-authenticates
+   even when the token is unchanged (the Python driver's verify_authentication
+   forces a LOGOFF/LOGON so the server re-checks the credentials). A
+   [Configuration_error] means the protocol version cannot re-authenticate an
+   existing connection (Bolt < 5.1). *)
+let re_auth_to ?(force = false) token conn =
+  if (not force) && Conn.same_auth conn token then Ok ()
   else if not (Conn.capabilities conn).supports_re_auth then
     Error (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
-  else Conn.re_auth conn token |> Result.map (fun _ -> ())
+  else Conn.re_auth ~force conn token |> Result.map (fun _ -> ())
 
 (* Re-authenticate [conn] on acquire: with a session token [session_auth] it is
    re-authenticated to it; without one the pool's auth manager's current token
    is used. Without an auth manager and without a session token nothing is
-   done. *)
-let re_auth t conn session_auth =
+   done. [force] re-authenticates a reused connection even with an unchanged
+   token (see [re_auth_to]). *)
+let re_auth t conn session_auth ~force =
   match session_auth with
-  | Some token -> re_auth_to token conn
+  | Some token -> re_auth_to ~force token conn
   | None -> (
       match t.auth_manager with
       | None -> Ok ()
@@ -198,11 +201,11 @@ let set_conn_auth_manager t session_auth conn =
    purging (and retrying) connections whose protocol cannot re-authenticate —
    the latter only for the driver's own auth: a session-level auth unsupported
    by the protocol is surfaced instead. *)
-let rec acquire_loop t session_auth force_liveness =
+let rec acquire_loop t session_auth ~force_liveness ~force_auth =
   match take_idle t ~force_liveness with
   | Some conn -> (
       add_live t conn;
-      match re_auth t conn session_auth with
+      match re_auth t conn session_auth ~force:force_auth with
       | Ok () ->
           set_conn_auth_manager t session_auth conn;
           Ok conn
@@ -212,7 +215,7 @@ let rec acquire_loop t session_auth force_liveness =
                 (Conn.id conn));
           remove_live t conn;
           Conn.close conn;
-          acquire_loop t session_auth force_liveness
+          acquire_loop t session_auth ~force_liveness ~force_auth
       | Error error ->
           remove_live t conn;
           Conn.close conn;
@@ -247,7 +250,7 @@ let rec acquire_loop t session_auth force_liveness =
           Eio.Semaphore.release t.permits;
           error)
 
-let acquire ~session_auth ~force_liveness t =
+let acquire ?(force_auth = false) ~session_auth ~force_liveness t =
   if t.closed then Error (Errors.Connection_pool_error "Pool is closed")
   else
     let* () =
@@ -259,7 +262,7 @@ let acquire ~session_auth ~force_liveness t =
         Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> acquisition timed out");
         Error (Errors.Connection_acquisition_timeout "Timed out waiting for a free connection")
     in
-    acquire_loop t session_auth force_liveness
+    acquire_loop t session_auth ~force_liveness ~force_auth
 
 (* Hand an already-established connection to the pool as an idle connection,
    without acquiring a permit (the connection never held one). Used to recycle

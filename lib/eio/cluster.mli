@@ -28,6 +28,7 @@ val create :
     {!Pool.create}). *)
 
 val acquire :
+  ?force_auth:bool ->
   t ->
   mode:Config.access_mode ->
   database:string option ->

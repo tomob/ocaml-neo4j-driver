@@ -173,7 +173,7 @@ let invalid_auth_codes =
     "Neo.ClientError.Security.Unauthorized";
   ]
 
-(* Verify [auth] like the Python driver: open (or re-authenticate) a read
+(* Verify [auth] like the Python driver: open (or force re-authenticate) a read
    connection for the [system] database with [auth] and check it is accepted.
    Requires a server that supports re-authentication (Bolt >= 5.1). *)
 let verify_authentication t ~auth =
@@ -181,9 +181,10 @@ let verify_authentication t ~auth =
     match t.connection with
     | Cluster cluster ->
         Result.map fst
-          (Cluster.acquire cluster ~mode:Config.Read ~database:(Some "system") ~imp_user:None
-             ~bookmarks:[] ~session_auth:(Some auth) ~force_liveness:false)
-    | Pool pool -> Pool.acquire ~session_auth:(Some auth) ~force_liveness:false pool
+          (Cluster.acquire ~force_auth:true cluster ~mode:Config.Read ~database:(Some "system")
+             ~imp_user:None ~bookmarks:[] ~session_auth:(Some auth) ~force_liveness:false)
+    | Pool pool ->
+        Pool.acquire ~force_auth:true ~session_auth:(Some auth) ~force_liveness:false pool
   in
   match attempt with
   | Error (Errors.Neo4j { code; _ }) when List.mem code invalid_auth_codes -> Ok false

@@ -606,19 +606,22 @@ type acquire_outcome = Acquired of Conn.t * string option | Role_empty | Failed 
    least-loaded one of the same table is tried (no refetch — a fresh fetch
    would re-list the failed server). [tried] lists the addresses already
    skipped for this table. *)
-let rec acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness table tried =
+let rec acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness ~force_auth table
+    tried =
   match select_from_table ~exclude:tried cluster ~mode table with
   | Ok (addr, pool) -> (
-      match Pool.acquire ~session_auth ~force_liveness pool with
+      match Pool.acquire ~session_auth ~force_auth ~force_liveness pool with
       | Ok conn -> Acquired (conn, effective)
       | Error (Errors.Service_unavailable _) ->
           deactivate cluster addr;
-          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness table
+          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness ~force_auth
+            table
             (Addressing.to_string addr :: tried)
       | Error error -> Failed error)
   | Error error -> if tried = [] then Role_empty else Failed error
 
-let acquire cluster ~mode ~database ~imp_user ~bookmarks ~session_auth ~force_liveness =
+let acquire ?(force_auth = false) cluster ~mode ~database ~imp_user ~bookmarks ~session_auth
+    ~force_liveness =
   with_acquisition_timeout cluster ~on_timeout:"Timed out acquiring a connection" (fun () ->
       (* An acquire may drop and refetch a table whose role is empty (the
          router may have been updated), but only a bounded number of times, so
@@ -633,7 +636,8 @@ let acquire cluster ~mode ~database ~imp_user ~bookmarks ~session_auth ~force_li
           resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth
         in
         match
-          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness table []
+          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness ~force_auth
+            table []
         with
         | Acquired (conn, effective) -> Ok (conn, effective)
         | Role_empty when refetches < max_refetches ->
