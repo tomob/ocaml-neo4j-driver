@@ -47,6 +47,7 @@ let features : string list =
        NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
        authTokenManagerId. *)
     "Feature:Auth:Managed";
+    "Feature:Auth:Bearer";
     (* Session-level auth (user switching): NewSession with authorizationToken,
        CheckSessionAuthSupport. *)
     "Feature:API:Session:AuthConfig";

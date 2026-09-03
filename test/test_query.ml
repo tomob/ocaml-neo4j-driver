@@ -169,7 +169,9 @@ let qid_in_extra () =
       check (option int) "n" (Some (-1)) (int_of_map map "n");
       Conn.close conn)
 
-(* A failing RUN enters Failed; the next request auto-resets first. *)
+(* A failing RUN auto-resets the connection right away (like the Python
+   driver's Response.on_failure): the state is Ready again immediately, so a
+   follow-up request needs no extra RESET. *)
 let run_failure_reset () =
   let received = ref [] in
   let responses =
@@ -184,7 +186,7 @@ let run_failure_reset () =
       let hydration = Conn.hydration conn in
       (match Conn.run conn ~hydration ~query:"BAD" ~parameters:[] with
       | Ok _ -> fail "bad query should fail"
-      | Error _ -> check_state conn "Failed");
+      | Error _ -> check_state conn "Ready");
       (match Conn.discard conn with
       | Ok _ -> check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));

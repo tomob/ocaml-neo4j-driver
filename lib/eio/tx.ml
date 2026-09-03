@@ -87,15 +87,28 @@ let commit t =
       t.state <- Closed;
       Ok bookmark
 
+(* Roll back [t], like the Python driver's Transaction._rollback:
+   - a transaction a server FAILURE already terminated ([Failed]) needs no
+     ROLLBACK message — Conn's eager RESET ([Conn.recover_after_failure])
+     already cleared the connection (or the server dropped it);
+   - otherwise the pending results are drained and a ROLLBACK is sent; a server
+     FAILURE answering it still surfaces, while a connection-level failure is
+     best-effort (nothing could have been committed).
+   The transaction is closed on every path, mirroring Python's [finally]. *)
 let rollback t =
   if closed t then Error closed_error
+  else if failed t then begin
+    t.state <- Closed;
+    Ok ()
+  end
   else begin
-    if not (failed t) then drain_pending t;
-    match Conn.rollback t.conn with
-    | Error _ as error -> error
-    | Ok () ->
-        t.state <- Closed;
-        Ok ()
+    drain_pending t;
+    let outcome = Conn.rollback t.conn in
+    t.state <- Closed;
+    match outcome with
+    | Ok () -> Ok ()
+    | Error (Errors.Neo4j _ as error) -> Error error
+    | Error _ -> Ok ()
   end
 
 let close t = match t.state with Closed -> Ok () | Open | Failed -> rollback t

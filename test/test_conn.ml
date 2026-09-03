@@ -473,8 +473,9 @@ let state_logoff_logon () =
           | Error error -> fail (Errors.to_string error));
           Conn.close conn)
 
-(* A FAILURE moves the server to Failed; the next request issues a RESET first
-   (the wire order is HELLO, LOGON, LOGON, RESET, LOGOFF). *)
+(* A FAILURE moves the server to Failed and the connection auto-resets right
+   away (like the Python driver's Response.on_failure): the state is Ready again
+   immediately. The wire order is HELLO, LOGON, LOGON, RESET, LOGOFF. *)
 let auto_reset_after_failure () =
   let received = ref [] in
   Test_mock.with_mock
@@ -495,7 +496,7 @@ let auto_reset_after_failure () =
       | Ok conn ->
           (match Conn.logon conn (auth ~credentials:"wrong" ()) with
           | Ok () -> fail "bad re-auth should fail"
-          | Error _ -> check_state conn "Failed");
+          | Error _ -> check_state conn "Ready");
           (match Conn.logoff conn with
           | Error error -> fail (Errors.to_string error)
           | Ok () ->

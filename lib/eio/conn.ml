@@ -153,6 +153,26 @@ let ensure_ready t =
   if State.failed !(t.state) then reset t |> Result.map_error (fun error -> report t error)
   else Ok ()
 
+(* Recover a connection after a server FAILURE, like the Python driver's
+   [Response.on_failure]: the RESET is sent eagerly instead of being deferred to
+   the next request, so the connection is immediately reusable. Only FAILURE
+   responses (an [Errors.Neo4j]) trigger it — IGNORED and transport errors do
+   not (matching Python's [on_failure] vs [on_ignored]). When the server already
+   dropped the connection (e.g. a stub script's [S: <EXIT>] right after the
+   FAILURE), the RESET fails; the error is swallowed — the original FAILURE is
+   what surfaces, and the connection stays in the FAILED state so the pool
+   discards it on release. *)
+let recover_after_failure t error =
+  match error with
+  | Errors.Neo4j _ -> (
+      match reset t with
+      | Ok () -> ()
+      | Error reset_error ->
+          Log.debug Log.io (fun m ->
+              m "[#%04X]  _: <CONNECTION> RESET after FAILURE failed: %s" (id t)
+                (Errors.to_string reset_error)))
+  | _ -> ()
+
 (* Send [action] (a Bolt message that already reads its response) and update the
    server state. If the server is in the FAILED state, a RESET is sent first.
    [has_more result] decides whether the state stays in STREAMING after the
@@ -175,7 +195,9 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
             m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string !(t.state))
               (State.to_string State.Failed));
       t.state := State.Failed;
-      Error (report t error)
+      let error = report t error in
+      recover_after_failure t error;
+      Error error
 
 (* Like [request], but batches a TELEMETRY notification for [feature] before the
    request and reads the telemetry's SUCCESS before the request's own response
@@ -216,7 +238,9 @@ let request_telemetry t ~message ~re_auth feature action =
             m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id t) (State.to_string !(t.state))
               (State.to_string State.Failed));
       t.state := State.Failed;
-      Error (report t error)
+      let error = report t error in
+      recover_after_failure t error;
+      Error error
 
 (* Record the HELLO response metadata: the server agent, and the [ssr.enabled]
    hint that turns on server-side routing (the server then sends [rt] routing
@@ -473,7 +497,9 @@ let pull ?n ?qid t ~hydration =
         outcome
         |> Result.map_error (fun error ->
             t.state := State.Failed;
-            report t error)
+            let error = report t error in
+            recover_after_failure t error;
+            error)
       in
       Ok (records, outcome)
 
@@ -488,7 +514,9 @@ let discard ?n ?qid t =
   if Result.is_error outcome then begin
     t.state := State.Failed;
     let error = Result.get_error outcome in
-    Ok (Error (report t error))
+    let error = report t error in
+    recover_after_failure t error;
+    Ok (Error error)
   end
   else Ok outcome
 
@@ -712,7 +740,9 @@ let route_procedure ?db ?imp_user t ~routing_context ~bookmarks =
           match outcome with
           | Error error ->
               t.state := State.Failed;
-              Error (report t error)
+              let error = report t error in
+              recover_after_failure t error;
+              Error error
           | Ok _ -> (
               match records with
               | [] -> Error (Errors.Service_unavailable "routing procedure returned no records")

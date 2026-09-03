@@ -40,7 +40,10 @@ val commit : t -> (string option, Errors.t) result
 (** Send COMMIT, applying the transaction's writes, and return the [bookmark] from the response. *)
 
 val rollback : t -> (unit, Errors.t) result
-(** Send ROLLBACK, discarding the transaction's writes (a RESET on a [Failed] connection). *)
+(** Send ROLLBACK, discarding the transaction's writes. A transaction a server FAILURE already
+    terminated needs no ROLLBACK (Conn resets the connection eagerly on a FAILURE); a
+    connection-level failure during ROLLBACK is best-effort, only a server FAILURE answering the
+    ROLLBACK surfaces. *)
 
 val close : t -> (unit, Errors.t) result
 (** Close the transaction, rolling back if it is still open. *)
