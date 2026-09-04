@@ -18,12 +18,22 @@ type tls_mode = Plain | Verify of string | Trust_all of string
 type t = {
   id : int;
   socket : [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r;
-  timeout : Eio.Time.Timeout.t;
+  mutable timeout : Eio.Time.Timeout.t;
 }
 
 (* Bolt messages are sent in chunks of at most 64 KiB; the drivers use 16 KiB. *)
 let chunk_size = 16384
 let id t = t.id
+
+(* Replace the timeout bounding reads (and writes) on the connection: the
+   server advertises a receive timeout through the [connection.recv_timeout_seconds]
+   HELLO hint, overriding the driver-configured default for that connection. *)
+let set_read_timeout t timeout = t.timeout <- timeout
+
+(* A read that ran out of time means the connection is defunct (like the Python
+   driver, which closes a connection whose receive timed out): close the socket
+   so the pool drops it and the next operation reconnects. *)
+let close_after_timeout t = try Eio.Resource.close t.socket with _ -> ()
 
 let sockaddrs_of_address net = function
   | Addressing.IPv4 (host, port) | Addressing.IPv6 (host, port, _, _) -> (
@@ -133,7 +143,9 @@ let read_exact t buf off len =
     Bytes.blit (Cstruct.to_bytes buffer) 0 buf off len;
     Ok ()
   with
-  | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Read timed out")
+  | Eio.Time.Timeout ->
+      close_after_timeout t;
+      Error (Errors.Service_unavailable "Read timed out")
   | End_of_file -> Error (Errors.Service_unavailable "Connection closed")
   | exn ->
       (* A socket-level failure (e.g. a peer resetting the connection mid-read)

@@ -10,6 +10,11 @@ type t
 val id : t -> int
 (** The connection id of this transport (rendered as "[#XXXX]" in log lines; see [Log.conn]). *)
 
+val set_read_timeout : t -> Eio.Time.Timeout.t -> unit
+(** Replace the timeout bounding reads (and writes) on the connection. The server advertises a
+    receive timeout through the [connection.recv_timeout_seconds] HELLO hint, overriding the
+    driver-configured default for that connection. *)
+
 type tls_mode =
   | Plain
   | Verify of string

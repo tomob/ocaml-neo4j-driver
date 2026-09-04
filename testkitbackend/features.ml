@@ -56,6 +56,9 @@ let features : string list =
     (* The driver's verify_authentication API (a read connection is opened with
        the given token; authentication errors answer false, others propagate). *)
     "Feature:API:Driver.VerifyAuthentication";
+    (* The server's [connection.recv_timeout_seconds] HELLO hint is honoured as
+       the connection's receive timeout. *)
+    "ConfHint:connection.recv_timeout_seconds";
     (* Auth token managers (phase A8): NewAuthTokenManager /
        NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
        authTokenManagerId. *)

@@ -37,6 +37,7 @@ type t = {
   ssr_enabled : bool ref;
   telemetry_enabled : bool ref;
   pipelined_pull : bool ref;
+  clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.3.0"
@@ -260,9 +261,16 @@ let request_telemetry t ~message ~re_auth feature action =
       recover_after_failure t error;
       Error error
 
+(* A positive [connection.recv_timeout_seconds] hint replaces the transport's
+   receive timeout with that many seconds. *)
+let set_recv_timeout_hint conn seconds =
+  if seconds > 0.0 then
+    Transport.set_read_timeout conn.transport (Eio.Time.Timeout.seconds conn.clock seconds)
+
 (* Record the HELLO response metadata: the server agent, and the [ssr.enabled]
    hint that turns on server-side routing (the server then sends [rt] routing
-   tables in RUN responses). *)
+   tables in RUN responses). The [connection.recv_timeout_seconds] hint
+   overrides the driver's receive timeout for this connection. *)
 let set_hello_metadata conn = function
   | Packstream.Map fields -> (
       (match List.assoc_opt "server" fields with
@@ -279,7 +287,12 @@ let set_hello_metadata conn = function
              advertise telemetry (or explicitly disables it) turns it off. *)
           match List.assoc_opt "telemetry.enabled" hints with
           | Some (Packstream.Bool true) -> ()
-          | _ -> conn.telemetry_enabled := false)
+          | _ -> (
+              conn.telemetry_enabled := false;
+              match List.assoc_opt "connection.recv_timeout_seconds" hints with
+              | Some (Packstream.Int seconds) -> set_recv_timeout_hint conn (Int64.to_float seconds)
+              | Some (Packstream.Float seconds) -> set_recv_timeout_hint conn seconds
+              | _ -> ()))
       | _ -> conn.telemetry_enabled := false)
   | _ -> ()
 
@@ -374,6 +387,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       ssr_enabled = ref false;
       telemetry_enabled = ref (not config.telemetry_disabled);
       pipelined_pull = ref false;
+      clock;
     }
   in
   match authenticate conn config with
