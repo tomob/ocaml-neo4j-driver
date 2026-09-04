@@ -119,6 +119,7 @@ let rewrite code classification =
   match code with
   | "Neo.ClientError.Security.AuthorizationExpired" -> (Transient, code)
   | "Neo.ClientError.Cluster.NotALeader" -> (Transient, code)
+  | "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase" -> (Transient, code)
   | "Neo.TransientError.Transaction.Terminated" -> (Client, "Neo.ClientError.Transaction.Terminated")
   | "Neo.TransientError.Transaction.LockClientStopped" ->
       (Client, "Neo.ClientError.Transaction.LockClientStopped")
