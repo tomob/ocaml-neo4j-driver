@@ -39,6 +39,10 @@ type t = {
   pipelined_pull : bool ref;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   utc_patch : bool ref;
+  (* The [qid] of the most recent RUN on this connection: a PULL/DISCARD of it
+     omits the [qid] (the server then targets the last query), older streams
+     send it explicitly. *)
+  last_qid : int option ref;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.3.0"
@@ -404,6 +408,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       pipelined_pull = ref false;
       clock;
       utc_patch = ref false;
+      last_qid = ref None;
     }
   in
   match authenticate conn config with
@@ -528,8 +533,14 @@ let run ?mode ?db ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~
             Bolt.run t.transport ~query ~parameters ~extra)
   in
   if t.major = 3 then t.pipelined_pull := true;
-  Ok (run_metadata_of metadata_response)
+  let run_metadata = run_metadata_of metadata_response in
+  (* The most recent query on the connection: a PULL/DISCARD of it may omit the
+     [qid] (which then targets the last query), while older streams need it. *)
+  t.last_qid := run_metadata.qid;
+  Ok run_metadata
 
+(* The PULL/DISCARD payload: Bolt 4+ carries the [n] and (when targeting an
+   older stream) the [qid]; Bolt 3's PULL_ALL/DISCARD_ALL take no fields. *)
 let pull_extra ?(n = -1) ?qid () =
   let extra = [ ("n", Packstream.Int (Int64.of_int n)) ] in
   let extra =
@@ -658,10 +669,18 @@ let has_records s = not (Queue.is_empty s.records)
 let next_record s = Queue.take_opt s.records
 let peek_record s = Queue.peek_opt s.records
 
+(* The [qid] a PULL/DISCARD must carry for this stream: omitted for the most
+   recent query on the connection (the server targets the last query then),
+   sent explicitly for older streams. *)
+let stream_qid s =
+  match (s.run_metadata.qid, !(s.conn.last_qid)) with
+  | Some qid, Some last when qid <> last -> Some qid
+  | _ -> None
+
 let pull_stream ?n s =
   if not s.has_more then Ok []
   else
-    let* records, outcome = pull ?n ?qid:s.run_metadata.qid s.conn ~hydration:s.hydration in
+    let* records, outcome = pull ?n ?qid:(stream_qid s) s.conn ~hydration:s.hydration in
     if records <> [] then s.had_record <- true;
     List.iter (fun record -> Queue.push record s.records) records;
     match outcome with
@@ -685,7 +704,7 @@ let pull_stream ?n s =
 let discard_stream s =
   if not s.has_more then Ok ()
   else
-    match discard ?qid:s.run_metadata.qid s.conn with
+    match discard ?qid:(stream_qid s) s.conn with
     | Error _ as error ->
         s.has_more <- false;
         error

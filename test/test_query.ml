@@ -141,7 +141,8 @@ let discard_round_trip () =
       | Error error -> fail (Errors.to_string error));
       Conn.close conn)
 
-(* PULL with a qid puts it into the extra map on the wire. *)
+(* PULL never carries a qid on the wire (like the Python driver: without one the
+   server targets the most recent query). *)
 let qid_in_extra () =
   let received = ref [] in
   let responses =
@@ -153,7 +154,7 @@ let qid_in_extra () =
       (match Conn.run conn ~hydration ~query:"q" ~parameters:[] with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
-      (match Conn.pull conn ~hydration ~qid:7 with
+      (match Conn.pull conn ~hydration with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
       let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
@@ -165,7 +166,7 @@ let qid_in_extra () =
       in
       let _, fields = unpack_message pull in
       let map = map_of_fields fields in
-      check (option int) "qid" (Some 7) (int_of_map map "qid");
+      check (option int) "qid" None (int_of_map map "qid");
       check (option int) "n" (Some (-1)) (int_of_map map "n");
       Conn.close conn)
 

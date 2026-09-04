@@ -62,6 +62,12 @@ let features : string list =
     (* The Bolt 4.1+ "utc" patch (patch_bolt in HELLO on Bolt >= 4.3): after the
        server confirms it, DateTimes use the Bolt 5 encoding. *)
     "Feature:Bolt:Patch:UTC";
+    (* Driver.execute_query (a query in a managed, retried transaction returning
+       an EagerResult), with an optional per-call auth token and bookmark
+       managers. *)
+    "Feature:API:BookmarkManager";
+    "Feature:API:Driver.ExecuteQuery";
+    "Feature:API:Driver.ExecuteQuery:WithAuth";
     (* Auth token managers (phase A8): NewAuthTokenManager /
        NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
        authTokenManagerId. *)

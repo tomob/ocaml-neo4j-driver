@@ -209,17 +209,18 @@ val pull :
   t ->
   hydration:Hydration.t ->
   (Values.t list list * (Packstream.value, Errors.t) result, Errors.t) result
-(** Send a PULL message, fetching up to [n] records (all by default) of the result [qid]. Records
-    are hydrated with [hydration]. Returns the records delivered and the terminal outcome: [Ok _]
-    with the PULL summary metadata (its [has_more] flag, readable via [Bolt.metadata_has_more], says
-    whether more records remain) on SUCCESS, or [Error _] for a server FAILURE (the records
-    delivered before the failure are kept). A server failure leaves the connection in the [Failed]
-    state. *)
+(** Send a PULL message, fetching up to [n] records (all by default) of the result [qid] ([qid] is
+    omitted for the most recent query, which the server then targets). Records are hydrated with
+    [hydration]. Returns the records delivered and the terminal outcome: [Ok _] with the PULL
+    summary metadata (its [has_more] flag, readable via [Bolt.metadata_has_more], says whether more
+    records remain) on SUCCESS, or [Error _] for a server FAILURE (the records delivered before the
+    failure are kept). A server failure leaves the connection in the [Failed] state. *)
 
 val discard : ?n:int -> ?qid:int -> t -> ((Packstream.value, Errors.t) result, Errors.t) result
 (** Send a DISCARD message, discarding up to [n] remaining records (all by default) of the result
-    [qid]. Returns the response: [Ok (Ok _)] with the DISCARD summary metadata on SUCCESS, or
-    [Error _] for a server failure (the connection enters the [Failed] state). *)
+    [qid] ([qid] is omitted for the most recent query). Returns the response: [Ok (Ok _)] with the
+    DISCARD summary metadata on SUCCESS, or [Error _] for a server failure (the connection enters
+    the [Failed] state). *)
 
 type stream
 (** A lazily-streamed result on a connection: RUN is sent immediately, records are pulled in batches
