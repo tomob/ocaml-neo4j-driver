@@ -38,6 +38,7 @@ type t = {
   telemetry_enabled : bool ref;
   pipelined_pull : bool ref;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
+  utc_patch : bool ref;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.3.0"
@@ -90,11 +91,15 @@ let hello_headers (config : config) major minor =
   let bolt_agent =
     if bolt_agent_version major minor then [ ("bolt_agent", bolt_agent ()) ] else []
   in
+  let patch_bolt =
+    if major = 4 && minor >= 3 then [ ("patch_bolt", Packstream.List [ Packstream.String "utc" ]) ]
+    else []
+  in
   let auth =
     if re_auth_of major minor then []
     else match Auth_manager.to_map config.auth with Packstream.Map fields -> fields | _ -> []
   in
-  Packstream.Map (base @ routing @ bolt_agent @ auth)
+  Packstream.Map (base @ routing @ patch_bolt @ bolt_agent @ auth)
 
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)
@@ -128,10 +133,14 @@ let auth_manager t = !(t.auth_manager)
 
 (* A hydration scope for this connection's protocol version (V1 = Bolt 3/4,
    V2 = Bolt 5, V3 = Bolt 6). The minor version gates Bolt 6.1-only types
-   (UUID). *)
+   (UUID). A Bolt 4 connection whose server confirmed the [utc] patch uses the
+   V2 (Bolt 5) Date/Time encoding. *)
 let hydration t =
   let version =
-    match t.major with 3 | 4 -> Hydration.V1 | 5 -> Hydration.V2 | _ -> Hydration.V3
+    match t.major with
+    | 3 | 4 -> if !(t.utc_patch) then Hydration.V2 else Hydration.V1
+    | 5 -> Hydration.V2
+    | _ -> Hydration.V3
   in
   Hydration.create version ~minor:t.minor
 
@@ -267,14 +276,20 @@ let set_recv_timeout_hint conn seconds =
   if seconds > 0.0 then
     Transport.set_read_timeout conn.transport (Eio.Time.Timeout.seconds conn.clock seconds)
 
-(* Record the HELLO response metadata: the server agent, and the [ssr.enabled]
-   hint that turns on server-side routing (the server then sends [rt] routing
-   tables in RUN responses). The [connection.recv_timeout_seconds] hint
-   overrides the driver's receive timeout for this connection. *)
+(* Record the HELLO response metadata: the server agent, the confirmed [utc]
+   patch (DateTimes then use the Bolt 5 encoding), and the [ssr.enabled] hint
+   that turns on server-side routing (the server then sends [rt] routing tables
+   in RUN responses). The [connection.recv_timeout_seconds] hint overrides the
+   driver's receive timeout for this connection. *)
 let set_hello_metadata conn = function
   | Packstream.Map fields -> (
       (match List.assoc_opt "server" fields with
       | Some (Packstream.String agent) -> conn.server_agent := Some agent
+      | _ -> ());
+      (match List.assoc_opt "patch_bolt" fields with
+      | Some (Packstream.List items)
+        when List.exists (function Packstream.String "utc" -> true | _ -> false) items ->
+          conn.utc_patch := true
       | _ -> ());
       match List.assoc_opt "hints" fields with
       | Some (Packstream.Map hints) -> (
@@ -388,6 +403,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       telemetry_enabled = ref (not config.telemetry_disabled);
       pipelined_pull = ref false;
       clock;
+      utc_patch = ref false;
     }
   in
   match authenticate conn config with

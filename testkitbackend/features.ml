@@ -59,6 +59,9 @@ let features : string list =
     (* The server's [connection.recv_timeout_seconds] HELLO hint is honoured as
        the connection's receive timeout. *)
     "ConfHint:connection.recv_timeout_seconds";
+    (* The Bolt 4.1+ "utc" patch (patch_bolt in HELLO on Bolt >= 4.3): after the
+       server confirms it, DateTimes use the Bolt 5 encoding. *)
+    "Feature:Bolt:Patch:UTC";
     (* Auth token managers (phase A8): NewAuthTokenManager /
        NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
        authTokenManagerId. *)
