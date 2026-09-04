@@ -36,6 +36,7 @@ type t = {
   last_database : string option ref;
   ssr_enabled : bool ref;
   telemetry_enabled : bool ref;
+  pipelined_pull : bool ref;
 }
 
 let default_user_agent = "ocaml-neo4j-driver/0.3.0"
@@ -173,11 +174,28 @@ let recover_after_failure t error =
                 (Errors.to_string reset_error)))
   | _ -> ()
 
+(* Drain a still-pending pipelined PULL response (Bolt 3) before the connection
+   is used for something else: the PULL_ALL was already sent by [run], and its
+   RECORD/SUCCESS messages must be consumed to keep the response stream in
+   sync. The records are dropped — this only happens when the abandoned stream
+   is not pulled again. *)
+let drain_pending_pull t =
+  if !(t.pipelined_pull) then begin
+    t.pipelined_pull := false;
+    match Bolt.collect_records [] t.transport with
+    | Ok (_, outcome) -> ( match outcome with Error _ -> t.state := State.Failed | Ok _ -> ())
+    | Error _ -> ()
+  end
+
 (* Send [action] (a Bolt message that already reads its response) and update the
    server state. If the server is in the FAILED state, a RESET is sent first.
    [has_more result] decides whether the state stays in STREAMING after the
-   message (used by PULL/DISCARD). *)
+   message (used by PULL/DISCARD). A pipelined PULL response pending on the
+   connection (Bolt 3) is drained first, except for the PULL/DISCARD that is
+   itself about to consume it. *)
 let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
+  if !(t.pipelined_pull) && message <> State.Pull && message <> State.Discard then
+    drain_pending_pull t;
   let* () = ensure_ready t in
   match action () with
   | Ok result ->
@@ -355,6 +373,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       last_database = ref None;
       ssr_enabled = ref false;
       telemetry_enabled = ref (not config.telemetry_disabled);
+      pipelined_pull = ref false;
     }
   in
   match authenticate conn config with
@@ -456,21 +475,29 @@ let run ?mode ?db ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~
         Result.map (fun items -> Some items) (Hydration.dehydrate_assoc_list hydration entries)
   in
   let re_auth = re_auth_of t.major t.minor in
+  let extra = build_extra ?mode ?db ?bookmarks ?timeout ?metadata () in
   let* metadata_response =
     match telemetry with
     | Some feature when telemetry_wanted t ->
         request_telemetry t ~message:State.Run ~re_auth feature (fun () ->
-            Bolt.send t.transport ~tag:Bolt.run_tag
-              [
-                Packstream.String query;
-                parameters;
-                build_extra ?mode ?db ?bookmarks ?timeout ?metadata ();
-              ])
+            Bolt.send t.transport ~tag:Bolt.run_tag [ Packstream.String query; parameters; extra ])
+    | _ when t.major = 3 ->
+        request t ~message:State.Run ~re_auth (fun () ->
+            let* () =
+              Bolt.send t.transport ~tag:Bolt.run_tag [ Packstream.String query; parameters; extra ]
+            in
+            let* () = Bolt.send t.transport ~tag:Bolt.pull_tag [] in
+            Bolt.respond t.transport
+            |> Result.map_error (fun error ->
+                (* The RUN failed: the pipelined PULL is answered with an
+                   IGNORED that must be drained before the follow-up RESET. *)
+                ignore (Bolt.respond t.transport);
+                error))
     | _ ->
         request t ~message:State.Run ~re_auth (fun () ->
-            Bolt.run t.transport ~query ~parameters
-              ~extra:(build_extra ?mode ?db ?bookmarks ?timeout ?metadata ()))
+            Bolt.run t.transport ~query ~parameters ~extra)
   in
+  if t.major = 3 then t.pipelined_pull := true;
   Ok (run_metadata_of metadata_response)
 
 let pull_extra ?(n = -1) ?qid () =
@@ -492,7 +519,13 @@ let pull ?n ?qid t ~hydration =
     request
       ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Pull ~re_auth
-      (fun () -> Bolt.pull ?extra:(pull_payload t ?n ?qid ()) t.transport)
+      (fun () ->
+        if !(t.pipelined_pull) then begin
+          (* Bolt 3: the PULL_ALL was already sent with the RUN — read it. *)
+          t.pipelined_pull := false;
+          Bolt.collect_records [] t.transport
+        end
+        else Bolt.pull ?extra:(pull_payload t ?n ?qid ()) t.transport)
   with
   | Error _ as error -> error
   | Ok (records, outcome) ->
@@ -513,7 +546,14 @@ let discard ?n ?qid t =
     request
       ~has_more:(fun (_, outcome) -> outcome_has_more outcome)
       t ~message:State.Discard ~re_auth
-      (fun () -> Bolt.discard ?extra:(pull_payload t ?n ?qid ()) t.transport)
+      (fun () ->
+        if !(t.pipelined_pull) then begin
+          (* Bolt 3: the PULL_ALL was already sent with the RUN — consume its
+             response instead of sending a DISCARD_ALL. *)
+          t.pipelined_pull := false;
+          Bolt.collect_records [] t.transport
+        end
+        else Bolt.discard ?extra:(pull_payload t ?n ?qid ()) t.transport)
   in
   if Result.is_error outcome then begin
     t.state := State.Failed;
