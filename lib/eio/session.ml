@@ -389,8 +389,12 @@ let execute t ~mode ?metadata ?timeout work =
   in
   attempt ()
 
-let close (t : t) =
-  !(t.current_tx) |> Option.iter (fun tx -> ignore (Tx.close tx));
+let close_with_result (t : t) =
+  let rollback_error =
+    match !(t.current_tx) with
+    | Some tx -> ( match Tx.close tx with Ok () -> None | Error error -> Some error)
+    | None -> None
+  in
   t.current_tx := None;
   (* A pending auto-commit result must be discarded (not RESET) before the
      connection is returned, like the Python driver's session close. *)
@@ -398,8 +402,11 @@ let close (t : t) =
   | Some stream -> ignore (Conn.discard_stream stream)
   | None -> ());
   t.auto_result := None;
-  match !(t.conn) with
+  (match !(t.conn) with
   | Some (conn, _) ->
       t.conn := None;
       t.release conn
-  | None -> ()
+  | None -> ());
+  match rollback_error with Some error -> Error error | None -> Ok ()
+
+let close t = ignore (close_with_result t)

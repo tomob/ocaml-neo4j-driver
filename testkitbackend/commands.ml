@@ -63,6 +63,8 @@ type driver = {
   connection_timeout : float;
   max_transaction_retry_time : float;
   resolver_registered : bool;
+  (* The driver-level default fetch size: used by sessions that do not set one. *)
+  fetch_size : int option;
   driver : Driver.t;
 }
 
@@ -441,6 +443,13 @@ let new_driver ctx fields =
         match float_of_string_opt ms with Some f -> f /. 1000.0 | None -> 30.0)
     | _ -> 30.0
   in
+  (* The driver-level default fetch size for sessions that do not set one. *)
+  let fetch_size =
+    match List.assoc_opt "fetchSize" fields with
+    | Some (`Int n) -> Some n
+    | Some (`Intlit n) -> int_of_string_opt n
+    | _ -> None
+  in
   let custom = if resolver_registered then Some (resolver ctx) else None in
   let custom_domain_name =
     if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
@@ -484,6 +493,7 @@ let new_driver ctx fields =
           connection_timeout;
           max_transaction_retry_time;
           resolver_registered;
+          fetch_size;
           driver;
         };
       ("Driver", `Assoc [ ("id", `Int id) ])
@@ -570,7 +580,10 @@ let new_session fields =
   in
   let impersonated_user = opt_string "impersonatedUser" fields in
   let fetch_size =
-    match List.assoc_opt "fetchSize" fields with Some (`Int n) -> Some n | _ -> None
+    match List.assoc_opt "fetchSize" fields with
+    | Some (`Int n) -> Some n
+    | Some (`Intlit n) -> int_of_string_opt n
+    | _ -> driver.fetch_size
   in
   let bookmarks =
     match List.assoc_opt "bookmarks" fields with
@@ -610,7 +623,10 @@ let new_session fields =
 let session_close fields =
   let id = int "sessionId" fields in
   (match Hashtbl.find_opt sessions id with
-  | Some session -> Session.close session.session
+  | Some session -> (
+      match Session.close_with_result session.session with
+      | Ok () -> ()
+      | Error error -> raise (Driver_error error))
   | None -> ());
   Hashtbl.remove sessions id;
   ("Session", `Assoc [ ("id", `Int id) ])
@@ -773,16 +789,18 @@ let transaction_rollback _ctx fields =
       end_transaction session_id None;
       ("Transaction", `Assoc [ ("id", `Int id) ])
 
-(* Closing a transaction is best-effort (like the Python driver's [close]):
-   a connection already terminated by the server (e.g. the stub's [S: <EXIT>]
-   after a FAILURE) makes the rollback fail with "Connection closed"; the
+(* Closing an open transaction rolls it back; a server FAILURE answering the
+   ROLLBACK is surfaced (like an explicit rollback and the reference drivers'
+   transaction close), while connection-level failures are best-effort and the
    transaction is closed anyway. *)
 let transaction_close _ctx fields =
   let id = int "txId" fields in
   let session_id, tx = get_transaction id in
-  (match Tx.close tx with Ok () -> () | Error _ -> ());
-  end_transaction session_id None;
-  ("Transaction", `Assoc [ ("id", `Int id) ])
+  match Tx.close tx with
+  | Ok () ->
+      end_transaction session_id None;
+      ("Transaction", `Assoc [ ("id", `Int id) ])
+  | Error error -> raise (Driver_error error)
 
 let session_last_bookmarks fields =
   let session = get_session (int "sessionId" fields) in

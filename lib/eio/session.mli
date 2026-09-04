@@ -120,4 +120,9 @@ val mark_tx_ended : t -> bookmark:string option -> unit
     transaction. *)
 
 val close : t -> unit
-(** Close the session's open transaction (if any) and its connection. *)
+(** Close the session's open transaction (if any) and its connection, best-effort. *)
+
+val close_with_result : t -> (unit, Errors.t) result
+(** Close the session's open transaction (if any) and its connection, like {!close}, but surfaces a
+    server FAILURE answering the rollback of the open transaction (connection-level failures are
+    best-effort). The session is cleaned up on every path. *)
