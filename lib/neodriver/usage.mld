@@ -67,8 +67,8 @@ v}
   per record). [Neo4jResult.consume] drains and returns the [Summary];
   [next], [peek] and [fetch] iterate without consuming everything.
 - The session's bookmarks are updated automatically once an auto-commit result
-  is consumed; read them with [Session.last_bookmarks] and seed them via
-  [Session.config]'s [bookmarks].
+  is consumed — what bookmarks are and how to chain sessions is explained in the
+  "Bookmarks and causal consistency" section below.
 - [Session.config] (base [Session.default_config]) also selects the [database]
   and the transaction retry settings.
 
@@ -143,6 +143,106 @@ v}
   does.
 - The work callback returns [(unit, Session.failure) result], so return query
   data through a ref, as above.
+
+{1 Bookmarks and causal consistency}
+
+Neo4j clusters are eventually consistent: a write lands on one server while a
+later transaction may be routed to another that has not seen it yet. A {b
+bookmark} is an opaque token the server returns with a successful commit — it
+represents the state of the database after that transaction. When a transaction
+carries the bookmarks of earlier writes, routing uses them to deliver it to a
+server that has already applied those writes. This is {b causal chaining} (or
+{b read-your-writes}): a transaction observes the writes whose bookmarks it
+carries.
+
+- Every successful commit returns a bookmark: [Tx.commit] hands it back and a
+  consumed auto-commit write records it on the session. A read-only transaction
+  or a rollback returns nothing.
+- A bookmark is an opaque string such as [neo4j:bookmark:v1:tx42] — never parse
+  it. Carrying several bookmarks is fine; the server uses the newest state.
+  On a single-instance server bookmarks change nothing, but they are required
+  for correct reads across a cluster.
+
+{2 Bookmark values}
+
+The driver represents bookmarks as a [Bookmarks.t]: an immutable, duplicate-free
+set of bookmark strings kept in the order they were given. It is the type of
+[Session.last_bookmarks] and of the session config's [bookmarks]. Build values
+with [Bookmarks.of_list], combine them with [Bookmarks.union], read them back
+with [Bookmarks.to_list]. Sessions and managers never invent bookmarks — they
+only pass on what the server returned.
+
+{2 A session chains itself}
+
+Once a session commits a write, the driver remembers the bookmark and sends it
+with the session's next query — no code needed. That is why, after a [CREATE]
+in a session, a later [MATCH] in the same session sees the write even on a
+cluster. Sessions only need help {i across} sessions: each new session starts
+fresh.
+
+{2 Manual chaining across sessions}
+
+[Session.last_bookmarks] exposes what the session last committed; seed a new
+session with it through the config's [bookmarks]:
+
+{v
+let s1 = Driver.session driver in
+(* run "CREATE (:Person {name: 'Alice'})" and consume the result *)
+
+let bookmarks = Session.last_bookmarks s1 in    (* Bookmarks.t *)
+Session.close s1;
+
+let s2 =
+  Driver.session ~config:{ Session.default_config with bookmarks } driver
+in
+(* run "MATCH (p:Person {name: 'Alice'}) RETURN p"
+   — guaranteed to see Alice, even on a cluster *)
+v}
+
+Passing bookmarks by hand works, but a [Bookmark_manager] does it for you.
+
+{2 Bookmark managers}
+
+For many short-lived sessions (for example one per web request), pass the same
+[Bookmark_manager] to all of them: each transaction is seeded with the
+manager's bookmarks and every successful commit updates the manager, so the
+chain is maintained driver-wide without bookmarks travelling through the
+application:
+
+{v
+let manager = Bookmark_manager.neo4j_bookmark_manager () in
+let run query =
+  let session =
+    Driver.session
+      ~config:{ Session.default_config with bookmark_manager = Some manager }
+      driver
+  in
+  (* run query, consume the result *)
+  Session.close session
+in
+run "CREATE (:Person {name: 'Alice'})";
+run "MATCH (p:Person {name: 'Alice'}) RETURN p"  (* seeded with Alice's write *)
+v}
+
+[Bookmark_manager.neo4j_bookmark_manager] is the built-in implementation and is
+thread-safe (sessions in different fibers may share it). Its optional arguments:
+
+- [initial_bookmarks] — bookmarks from outside the driver (for example
+  persisted by the application) to start the chain from;
+- [bookmarks_supplier] — a [unit -> Bookmarks.t] consulted on every access;
+  its result is merged into the returned set but not stored (feed the manager
+  from an external store without taking ownership);
+- [bookmarks_consumer] — a [Bookmarks.t -> unit] callback invoked after a
+  commit updates the manager, with the resulting set; persist it there and
+  restore it via [initial_bookmarks] on the next process start.
+
+Any value with the [Bookmark_manager.t] interface ([get_bookmarks] /
+[update_bookmarks]) works as a manager, not just the built-in one. When a
+session is configured with both [bookmarks] and a manager, the [bookmarks]
+merge into the manager's set for the session's {i first} transaction only; the
+session's own commits then drive the chain.
+
+The runnable {{:https://github.com/tomob/ocaml-neo4j-driver/tree/main/examples/bookmarks.ml }bookmarks example} puts all three patterns together.
 
 {1 Authentication}
 
@@ -268,14 +368,25 @@ a failure is worth retrying.
 Base it on [Session.default_config] and update only what you need:
 
 {v
-let config = { Session.default_config with database = Some "mydb"; bookmarks = [ "bm-1" ] } in
+let config =
+  { Session.default_config with
+    database = Some "mydb";
+    bookmarks = Bookmarks.of_list [ "bm-1" ]
+  }
+in
 Driver.connect ~uri ~auth ~config net clock sw
 v}
 
 - [database] — database selected in RUN/BEGIN (honored).
 - [access_mode] — [Read] / [Write], sent in BEGIN for explicit and managed
   transactions (honored for explicit/managed).
-- [bookmarks] — initial bookmarks, sent in RUN/BEGIN (honored).
+- [bookmarks] — initial bookmarks ([Bookmarks.t]), sent in RUN/BEGIN (honored).
+- [bookmark_manager] — an optional [Bookmark_manager.t] sharing bookmarks
+  across sessions: each transaction is seeded with the manager's bookmarks
+  (merged with [bookmarks] for the session's first transaction) and every
+  successful commit hands the returned bookmark back to the manager. Sessions
+  created with the same manager are causally chained; [None] (the default)
+  keeps the classic per-session [last_bookmarks] chaining.
 - [impersonated_user] — user to impersonate, sent in BEGIN (honored for
   explicit/managed).
 - [max_transaction_retry_time] — retry budget of [Session.execute] (default
@@ -285,6 +396,10 @@ v}
 - [retry_delay_multiplier] — backoff growth (default 2.0, honored).
 - [retry_delay_jitter_factor] — backoff jitter (default 0.2, honored).
 - [fetch_size] — stream batch size hint (accepted, not yet applied).
+
+How bookmarks are used (what they are, the [Bookmarks.t] values, manual
+chaining and [Bookmark_manager]s) is covered in the "Bookmarks and causal
+consistency" section above.
 
 {2 Query and transaction options}
 
@@ -361,8 +476,9 @@ the data.
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
 - Notification filtering and telemetry.
-- The high-level API ([execute_query], [verify_connectivity]) and bookmark/auth
-  managers.
+- The high-level API ([execute_query], [verify_connectivity],
+  [supports_multi_db]) is not exposed by the library yet (backend-only,
+  TestKit).
 
 See {{:https://github.com/tomob/ocaml-neo4j-driver/blob/main/PLAN.md }PLAN.md}
 for the full roadmap.

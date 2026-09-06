@@ -134,12 +134,14 @@ let bookmark_read_your_writes () =
               | Error e -> fail (Errors.to_string e))
           | Error e -> fail (Errors.to_string e));
           let bookmark =
-            match Session.last_bookmarks s1 with
+            match Bookmarks.to_list (Session.last_bookmarks s1) with
             | [ b ] when b <> "" -> b
             | _ -> fail "expected one non-empty bookmark"
           in
           let s2 =
-            Driver.session ~config:{ Session.default_config with bookmarks = [ bookmark ] } driver
+            Driver.session
+              ~config:{ Session.default_config with bookmarks = Bookmarks.singleton bookmark }
+              driver
           in
           check int "s2 sees the write" 1 (node_count s2 id);
           Session.close s1;
@@ -223,7 +225,7 @@ let managed_execute_commit () =
           | Ok () -> ()
           | Error _ -> fail "expected Ok");
           check int "visible after managed commit" 1 (node_count session id);
-          (match Session.last_bookmarks session with
+          (match Bookmarks.to_list (Session.last_bookmarks session) with
           | [ b ] when b <> "" -> ()
           | _ -> fail "expected a bookmark");
           Session.close session))

@@ -24,6 +24,6 @@ let () =
       match Session.execute session ~mode:Config.Write work with
       | Ok () ->
           Printf.printf "created %d node(s); bookmarks: %s\n" !created
-            (String.concat "," (Session.last_bookmarks session))
+            (String.concat "," (Bookmarks.to_list (Session.last_bookmarks session)))
       | Error (Session.Driver error) -> failwith (Errors.to_string error)
       | Error Session.Client -> failwith "the application aborted the transaction")

@@ -36,7 +36,13 @@ module Routing_table = Neodriver_core.Routing_table
 (** Routing tables for [neo4j://] (routed) drivers. *)
 
 module Auth_manager = Neodriver_core.Auth_manager
-(** Authentication tokens and (later) auth managers. *)
+(** Authentication tokens and auth managers. *)
+
+module Bookmarks = Neodriver_core.Bookmarks
+(** An immutable set of bookmark string values (causal chaining). *)
+
+module Bookmark_manager = Neodriver_core.Bookmark_manager
+(** Bookmark managers (sharing bookmarks across sessions). *)
 
 module Conn = Neodriver_eio.Conn
 (** Minimal Bolt connection (connect, authenticate, run/pull/discard, transactions). *)

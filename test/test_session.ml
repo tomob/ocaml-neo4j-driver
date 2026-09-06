@@ -29,6 +29,21 @@ let unpack_message bytes =
 
 let message_tags received = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received)
 
+(* The [bookmarks] list of the most recent RUN message. *)
+let last_run_bookmarks received =
+  let rec find = function
+    | [] -> []
+    | bytes :: rest -> (
+        match Packstream.unpack bytes with
+        | Ok (Packstream.Structure (0x10, [ _; _; Packstream.Map extra ])) -> (
+            match List.assoc_opt "bookmarks" extra with
+            | Some (Packstream.List items) ->
+                List.map (function Packstream.String b -> b | _ -> "?") items
+            | _ -> [])
+        | _ -> find rest)
+  in
+  find (List.rev !received)
+
 (* A session whose connection connects to the mock server at [port]. *)
 let session net clock sw port =
   let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
@@ -79,7 +94,7 @@ let execute_ok () =
       | Ok () -> ()
       | Error _ -> fail "expected Ok");
       check int "one attempt" 1 !attempts;
-      check (list string) "bookmarks" [ "b1" ] (Session.last_bookmarks session);
+      check (list string) "bookmarks" [ "b1" ] (Bookmarks.to_list (Session.last_bookmarks session));
       check (list int) "wire sequence"
         [ 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x12 ]
         (message_tags received))
@@ -124,7 +139,7 @@ let execute_retries () =
       | Ok () -> ()
       | Error _ -> fail "expected Ok after retry");
       check int "two attempts" 2 !attempts;
-      check (list string) "bookmarks" [ "b2" ] (Session.last_bookmarks session);
+      check (list string) "bookmarks" [ "b2" ] (Bookmarks.to_list (Session.last_bookmarks session));
       check (list int) "wire sequence"
         [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x12 ]
         (message_tags received))
@@ -178,7 +193,7 @@ let execute_client_failure () =
       | Error Session.Client -> ()
       | Error (Session.Driver _) -> fail "expected a client failure");
       check int "one attempt" 1 !attempts;
-      check (list string) "bookmarks" [] (Session.last_bookmarks session);
+      check (list string) "bookmarks" [] (Bookmarks.to_list (Session.last_bookmarks session));
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x11; 0x13 ] (message_tags received))
 
 (* Auto-commit run captures the bookmark from the PULL summary. *)
@@ -202,7 +217,8 @@ let run_captures_bookmark () =
           | Ok _ -> ()
           | Error error -> fail (Errors.to_string error))
       | Error error -> fail (Errors.to_string error));
-      check (list string) "bookmarks" [ "auto-b" ] (Session.last_bookmarks session);
+      check (list string) "bookmarks" [ "auto-b" ]
+        (Bookmarks.to_list (Session.last_bookmarks session));
       (* consume() discards the rest of the stream instead of pulling it. *)
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x2F ] (message_tags received))
 
@@ -340,6 +356,113 @@ let run_uses_effective_database () =
             match List.assoc_opt "db" extra with Some (Packstream.String db) -> db | _ -> "")
         | None -> fail "expected a RUN message"))
 
+(* A session with a bookmark manager sends the manager's bookmarks merged with
+   its own initial (config) bookmarks, and hands the commit's bookmark back to
+   the manager (which supersedes what was sent). *)
+let manager_seeds_run_and_updates () =
+  let manager = Bookmark_manager.neo4j_bookmark_manager () in
+  manager.update_bookmarks ~previous:Bookmarks.empty ~new_bookmarks:(Bookmarks.of_list [ "bm1" ]);
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success_meta [ ("bookmark", Packstream.String "bm2") ];
+         ] ))
+    (fun net clock sw port ->
+      let session_config =
+        {
+          Session.default_config with
+          bookmarks = Bookmarks.of_list [ "unmanaged" ];
+          bookmark_manager = Some manager;
+        }
+      in
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
+      in
+      let session = Session.create session_config ~clock ~connect () in
+      (match Session.run session ~query:"CREATE (n) RETURN 1" ~parameters:[] with
+      | Ok result -> (
+          match Neo4jResult.consume result with
+          | Ok _ -> ()
+          | Error error -> fail (Errors.to_string error))
+      | Error error -> fail (Errors.to_string error));
+      check (list string) "RUN sends manager ∪ initial" [ "bm1"; "unmanaged" ]
+        (last_run_bookmarks received);
+      check (list string) "session records its commit bookmark" [ "bm2" ]
+        (Bookmarks.to_list (Session.last_bookmarks session));
+      check (list string) "manager superseded by the commit bookmark" [ "bm2" ]
+        (Bookmarks.to_list (manager.get_bookmarks ())))
+
+(* Two sessions sharing a manager are causally chained: the second session's
+   transaction is seeded with the first session's committed bookmark. *)
+let manager_chains_across_sessions () =
+  let manager = Bookmark_manager.neo4j_bookmark_manager () in
+  let first_received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         first_received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success_meta [ ("bookmark", Packstream.String "bm1") ];
+         ] ))
+    (fun net clock sw port ->
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
+      in
+      let session =
+        Session.create
+          { Session.default_config with bookmark_manager = Some manager }
+          ~clock ~connect ()
+      in
+      (match Session.run session ~query:"CREATE (n) RETURN 1" ~parameters:[] with
+      | Ok result -> (
+          match Neo4jResult.consume result with
+          | Ok _ -> ()
+          | Error error -> fail (Errors.to_string error))
+      | Error error -> fail (Errors.to_string error));
+      check (list string) "manager holds the first commit" [ "bm1" ]
+        (Bookmarks.to_list (manager.get_bookmarks ()));
+      Session.close session;
+      let second_received = ref [] in
+      Test_mock.with_mock
+        (Test_mock.Session
+           ( (5, 4),
+             second_received,
+             [
+               Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false);
+             ] ))
+        (fun net clock sw port ->
+          let session =
+            Session.create
+              { Session.default_config with bookmark_manager = Some manager }
+              ~clock
+              ~connect:(fun ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ ->
+                match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+                | Ok conn -> Ok (conn, None)
+                | Error error -> Error error)
+              ()
+          in
+          (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+          | Ok result -> (
+              match Neo4jResult.consume result with
+              | Ok _ -> ()
+              | Error error -> fail (Errors.to_string error))
+          | Error error -> fail (Errors.to_string error));
+          check (list string) "second session seeded by the manager" [ "bm1" ]
+            (last_run_bookmarks second_received)))
+
 let tests =
   [
     ("[Session] execute_ok", [ test_case "commit + bookmark" `Quick execute_ok ]);
@@ -353,4 +476,8 @@ let tests =
     ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
     ("[Session] negative_timeout", [ test_case "negative tx/query timeout" `Quick negative_timeout ]);
+    ( "[Session] manager_seeds_run_and_updates",
+      [ test_case "manager + initial + commit" `Quick manager_seeds_run_and_updates ] );
+    ( "[Session] manager_chains_across_sessions",
+      [ test_case "shared manager chains sessions" `Quick manager_chains_across_sessions ] );
   ]

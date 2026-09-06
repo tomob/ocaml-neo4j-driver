@@ -966,7 +966,9 @@ let route_carries_session_bookmarks () =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
-      let session_config = { Session.default_config with bookmarks = [ "bm1"; "bm2" ] } in
+      let session_config =
+        { Session.default_config with bookmarks = Bookmarks.of_list [ "bm1"; "bm2" ] }
+      in
       let session =
         Session.create session_config ~clock
           ~connect:(fun ~mode ~database ~bookmarks ~auth:_ ->

@@ -12,4 +12,6 @@ module Hydration = Hydration
 module Capabilities = Capabilities
 module Routing_table = Routing_table
 module Auth_manager = Auth_manager
+module Bookmarks = Bookmarks
+module Bookmark_manager = Bookmark_manager
 module Log = Log

@@ -25,24 +25,31 @@ type config = {
   access_mode : Config.access_mode;
   impersonated_user : string option;
   fetch_size : int option;
-  bookmarks : string list;
+  bookmarks : Bookmarks.t;
+  bookmark_manager : Bookmark_manager.t option;
   auth : Auth_manager.token option;
   max_transaction_retry_time : float;
   initial_retry_delay : float;
   retry_delay_multiplier : float;
   retry_delay_jitter_factor : float;
 }
-(** Session settings. [bookmarks] seeds the session's bookmarks. [auth] is the session's own auth
-    token (user switching): [None] (default) uses the driver's auth manager, [Some token] replaces
-    it for this session (the connection is opened with — or re-authenticated to — that token). The
-    retry parameters mirror the Python driver defaults ([max_transaction_retry_time] is configurable
-    via the TestKit driver request). *)
+(** Session settings. [bookmarks] seeds the session's bookmarks: without a [bookmark_manager] they
+    are sent with every transaction and replaced by a commit's bookmark (the [last_bookmarks] causal
+    chaining); with a [bookmark_manager] they act as one-off initial bookmarks merged into the
+    manager's set for the session's first transaction. [bookmark_manager] (default [None]) supplies
+    and receives the bookmarks of every transaction, so sessions sharing a manager are causally
+    chained across the driver. [auth] is the session's own auth token (user switching): [None]
+    (default) uses the driver's auth manager, [Some token] replaces it for this session (the
+    connection is opened with — or re-authenticated to — that token). The retry parameters mirror
+    the Python driver defaults ([max_transaction_retry_time] is configurable via the TestKit driver
+    request). *)
 
 val default_config : config
 (** Session configuration with the driver defaults: write access, no database or impersonation, and
     the Python retry defaults (1s initial delay, x2 multiplier, 0.2 jitter, 30s budget). *)
 
 type t
+
 (** A session: its lazy connection, bookmarks and current transaction. *)
 
 val create :
@@ -110,9 +117,10 @@ val execute :
     the [max_transaction_retry_time] budget remains, [work] is retried after a jittered backoff. On
     [Error Client] the transaction is rolled back without retrying. *)
 
-val last_bookmarks : t -> string list
+val last_bookmarks : t -> Bookmarks.t
 (** The session's last known bookmarks (seeded from the config, updated on every successful commit).
-*)
+    The bookmarks of sessions sharing a [Bookmark_manager] are available through the manager;
+    [last_bookmarks] reports what this session itself last committed (or was seeded with). *)
 
 val mark_tx_ended : t -> bookmark:string option -> unit
 (** Record the end of the session's current transaction: a successful commit's [bookmark] updates

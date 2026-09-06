@@ -65,26 +65,20 @@ type driver = {
   resolver_registered : bool;
   (* The driver-level default fetch size: used by sessions that do not set one. *)
   fetch_size : int option;
-  (* The bookmarks of the driver's implicit (Neo4j-style) bookmark manager,
-     used by driver.execute_query when no bookmark manager is configured. *)
-  default_bookmarks : string list ref;
+  (* The driver's implicit (Neo4j-style) bookmark manager, used by
+     driver.execute_query when no bookmark manager is configured (the analogue
+     of the Python [execute_query_bookmark_manager]). *)
+  default_manager : Bookmark_manager.t;
   driver : Driver.t;
 }
 
 type session = { driver_id : int; session : Session.t }
 type result = { res : Neo4jResult.t }
 
-(* A bookmark manager created by NewBookmarkManager: it returns its current
-   bookmarks and, once a transaction run with them commits, replaces them with
-   the returned bookmark (a newer bookmark supersedes the supplied ones). *)
-type bookmark_manager = { mutable bookmarks : string list }
-
-(* Which bookmark manager an execute_query call uses. *)
-type manager_use =
-  | Driver_bookmarks of string list ref
-  | Custom_manager of bookmark_manager
-  | No_manager
-
+(* A bookmark manager created by NewBookmarkManager, keyed by id (the shared id
+   space). Supplier/consumer round-trips ask the harness for extra bookmarks and
+   notify it of committed ones. *)
+let bookmark_managers : (int, Bookmark_manager.t) Hashtbl.t = Hashtbl.create 16
 let drivers : (int, driver) Hashtbl.t = Hashtbl.create 16
 let sessions : (int, session) Hashtbl.t = Hashtbl.create 16
 let transactions : (int, int * Tx.t) Hashtbl.t = Hashtbl.create 16
@@ -92,7 +86,6 @@ let results : (int, result) Hashtbl.t = Hashtbl.create 16
 let custom_resolutions : (int, string list) Hashtbl.t = Hashtbl.create 16
 let errors : (int, Errors.t) Hashtbl.t = Hashtbl.create 16
 let auth_managers : (int, Auth_manager.t) Hashtbl.t = Hashtbl.create 16
-let bookmark_managers : (int, bookmark_manager) Hashtbl.t = Hashtbl.create 16
 let next_id = ref 0
 
 let new_id () =
@@ -315,6 +308,68 @@ let auth_of fields =
       | Error error -> raise (Backend_error (Errors.to_string error)))
   | _ -> raise (Backend_error "authorizationToken is required")
 
+(* --- Bookmark managers (phase A8) --- *)
+
+(* The raw bookmark strings of a JSON [bookmarks] field. *)
+let bookmarks_json = function
+  | Some (`List items) ->
+      List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) items
+  | _ -> []
+
+(* The supplier of a NewBookmarkManager with a registered bookmarks supplier:
+   push BookmarksSupplierRequest and await BookmarksSupplierCompleted. *)
+let bookmark_supplier ctx id () =
+  let key = new_id () in
+  match
+    read_completed ctx "BookmarksSupplierRequest"
+      (`Assoc [ ("id", `Int key); ("bookmarkManagerId", `Int id) ])
+  with
+  | Some data when request_id_eq key (List.assoc_opt "requestId" data) -> (
+      match List.assoc_opt "bookmarks" data with
+      | Some (`List _ as bookmarks) -> Bookmarks.of_list (bookmarks_json (Some bookmarks))
+      | _ -> raise (Backend_error "bad BookmarksSupplierCompleted"))
+  | Some _ -> raise (Backend_error "bad requestId in BookmarksSupplierCompleted")
+  | None -> raise (Backend_error "harness closed during bookmark supply")
+
+(* The consumer of a NewBookmarkManager with a registered bookmarks consumer:
+   push BookmarksConsumerRequest with the snapshot and await the Completed. *)
+let bookmark_consumer ctx id bookmarks =
+  let key = new_id () in
+  match
+    read_completed ctx "BookmarksConsumerRequest"
+      (`Assoc
+         [
+           ("id", `Int key);
+           ("bookmarkManagerId", `Int id);
+           ("bookmarks", `List (List.map (fun b -> `String b) (Bookmarks.to_list bookmarks)));
+         ])
+  with
+  | Some data when request_id_eq key (List.assoc_opt "requestId" data) -> ()
+  | Some _ -> raise (Backend_error "bad requestId in BookmarksConsumerCompleted")
+  | None -> raise (Backend_error "harness closed during bookmark consumption")
+
+(* A bookmark manager created by NewBookmarkManager, looked up by id. *)
+let custom_bookmark_manager id =
+  match Hashtbl.find_opt bookmark_managers id with
+  | Some manager -> Some manager
+  | None -> raise (Backend_error "unknown bookmark manager")
+
+(* Resolve a [bookmarkManagerId] JSON entry to a manager: [-1] disables it; an
+   absent / null entry means [default] — [None] for a NewSession, the driver's
+   implicit manager for driver.execute_query. *)
+let bookmark_manager_of_field ~default fields =
+  match List.assoc_opt "bookmarkManagerId" fields with
+  | None -> default
+  | Some `Null -> default
+  | Some (`Int -1) -> None
+  | Some (`Int id) -> custom_bookmark_manager id
+  | Some (`Intlit s) -> (
+      match int_of_string_opt s with
+      | Some -1 -> None
+      | Some id -> custom_bookmark_manager id
+      | None -> raise (Backend_error "bad bookmarkManagerId"))
+  | Some _ -> raise (Backend_error "bad bookmarkManagerId")
+
 (* Ask the harness to resolve an address (custom resolver) and return the
    addresses to try. The follow-up ResolverResolutionCompleted request is
    consumed and processed here (it is not dispatched through the normal loop). *)
@@ -509,7 +564,7 @@ let new_driver ctx fields =
           max_transaction_retry_time;
           resolver_registered;
           fetch_size;
-          default_bookmarks = ref [];
+          default_manager = Bookmark_manager.neo4j_bookmark_manager ();
           driver;
         };
       ("Driver", `Assoc [ ("id", `Int id) ])
@@ -601,12 +656,11 @@ let new_session fields =
     | Some (`Intlit n) -> int_of_string_opt n
     | _ -> driver.fetch_size
   in
-  let bookmarks =
-    match List.assoc_opt "bookmarks" fields with
-    | Some (`List bookmarks) ->
-        List.map (function `String b -> b | _ -> raise (Backend_error "bad bookmark")) bookmarks
-    | _ -> []
-  in
+  let bookmarks = Bookmarks.of_list (bookmarks_json (List.assoc_opt "bookmarks" fields)) in
+  (* A session may carry its own bookmark manager: its bookmarks are merged
+     with the session's [bookmarks] for the first transaction and the manager
+     is updated on every commit. *)
+  let bookmark_manager = bookmark_manager_of_field ~default:None fields in
   (* A session may carry its own auth token (user switching, Bolt >= 5.1): it is
      used instead of the driver's auth for this session's connections. *)
   let auth =
@@ -625,6 +679,7 @@ let new_session fields =
         impersonated_user;
         fetch_size;
         bookmarks;
+        bookmark_manager;
         auth;
         max_transaction_retry_time = driver.max_transaction_retry_time;
         initial_retry_delay = 1.0;
@@ -821,7 +876,8 @@ let transaction_close _ctx fields =
 let session_last_bookmarks fields =
   let session = get_session (int "sessionId" fields) in
   let bookmarks = Session.last_bookmarks session.session in
-  ("Bookmarks", `Assoc [ ("bookmarks", `List (List.map (fun b -> `String b) bookmarks)) ])
+  ( "Bookmarks",
+    `Assoc [ ("bookmarks", `List (List.map (fun b -> `String b) (Bookmarks.to_list bookmarks))) ] )
 
 let record_json record = `Assoc [ ("values", `List (List.map Testkit_values.to_yojson record)) ]
 
@@ -1225,20 +1281,26 @@ let fake_time_uninstall ctx =
   Fake_time.uninstall ctx.mock;
   fake_time_ack ()
 
-(* NewBookmarkManager: create a (Neo4j-style) bookmark manager seeded with the
-   initial bookmarks. Supplier/consumer callbacks are not exercised by the
-   driver_execute_query suite, so only the seed is kept. *)
-let new_bookmark_manager fields =
-  let initial =
-    match List.assoc_opt "initialBookmarks" fields with
-    | Some (`List items) ->
-        List.map
-          (function `String b -> b | _ -> raise (Backend_error "bad initialBookmark"))
-          items
-    | _ -> []
+(* NewBookmarkManager: create a Neo4j-style bookmark manager seeded with the
+   initial bookmarks. A registered bookmarks supplier / consumer round-trips to
+   the harness: [get_bookmarks] asks the supplier for extra bookmarks and
+   [update_bookmarks] notifies the consumer of the resulting snapshot. *)
+let new_bookmark_manager ctx fields =
+  let initial = Bookmarks.of_list (bookmarks_json (List.assoc_opt "initialBookmarks" fields)) in
+  let registered key =
+    match List.assoc_opt key fields with Some (`Bool registered) -> registered | _ -> false
   in
   let id = new_id () in
-  Hashtbl.add bookmark_managers id { bookmarks = initial };
+  let supplier =
+    if registered "bookmarksSupplierRegistered" then Some (bookmark_supplier ctx id) else None
+  in
+  let consumer =
+    if registered "bookmarksConsumerRegistered" then Some (bookmark_consumer ctx id) else None
+  in
+  let manager =
+    Bookmark_manager.neo4j_bookmark_manager ~initial_bookmarks:initial ?supplier ?consumer ()
+  in
+  Hashtbl.add bookmark_managers id manager;
   ("BookmarkManager", `Assoc [ ("id", `Int id) ])
 
 let bookmark_manager_close fields =
@@ -1271,23 +1333,9 @@ let execute_query _ctx fields =
     | _ -> None
   in
   (* The bookmark manager of this call: the driver's implicit one (no
-     bookmarkManagerId), an explicit one, or none (bookmarkManagerId = -1). *)
-  let manager =
-    match List.assoc_opt "bookmarkManagerId" config_fields with
-    | None -> Driver_bookmarks driver.default_bookmarks
-    | Some `Null -> Driver_bookmarks driver.default_bookmarks
-    | Some (`Int -1) -> No_manager
-    | Some (`Int manager_id) -> (
-        match Hashtbl.find_opt bookmark_managers manager_id with
-        | Some manager -> Custom_manager manager
-        | None -> raise (Backend_error "unknown bookmark manager"))
-    | _ -> raise (Backend_error "bad bookmarkManagerId")
-  in
-  let manager_bookmarks =
-    match manager with
-    | Driver_bookmarks bookmarks -> !bookmarks
-    | Custom_manager manager -> manager.bookmarks
-    | No_manager -> []
+     bookmarkManagerId or null), an explicit one, or none (-1). *)
+  let bookmark_manager =
+    bookmark_manager_of_field ~default:(Some driver.default_manager) config_fields
   in
   let session_config =
     Session.
@@ -1296,7 +1344,8 @@ let execute_query _ctx fields =
         access_mode;
         impersonated_user;
         fetch_size = driver.fetch_size;
-        bookmarks = manager_bookmarks;
+        bookmarks = Bookmarks.empty;
+        bookmark_manager;
         auth;
         max_transaction_retry_time = driver.max_transaction_retry_time;
         initial_retry_delay = 1.0;
@@ -1329,12 +1378,8 @@ let execute_query _ctx fields =
   let response =
     match outcome with
     | Ok () -> (
-        (* A successful commit supersedes the bookmarks supplied by the manager
-           with the returned one (like the Python Neo4jBookmarkManager). *)
-        (match manager with
-        | Driver_bookmarks bookmarks -> bookmarks := Session.last_bookmarks session
-        | Custom_manager manager -> manager.bookmarks <- Session.last_bookmarks session
-        | No_manager -> ());
+        (* The session updated the bookmark manager itself when the commit
+           succeeded (its bookmark supersedes the bookmarks that were sent). *)
         match !eager with
         | Some (keys, records, summary) ->
             ( "EagerResult",
@@ -1364,7 +1409,7 @@ let handle ctx name data =
   | "FakeTimeUninstall" -> Some (fake_time_uninstall ctx)
   | "NewDriver" -> Some (new_driver ctx fields)
   | "DriverClose" -> Some (driver_close fields)
-  | "NewBookmarkManager" -> Some (new_bookmark_manager fields)
+  | "NewBookmarkManager" -> Some (new_bookmark_manager ctx fields)
   | "BookmarkManagerClose" -> Some (bookmark_manager_close fields)
   | "ExecuteQuery" -> Some (execute_query ctx fields)
   | "NewAuthTokenManager" -> Some (new_auth_token_manager ctx fields)

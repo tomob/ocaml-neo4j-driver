@@ -266,7 +266,7 @@ its [+s]/[+ssc] variants) drivers now route:
   multi-db/leader-switch scenarios); `scripts/testkit_stub.sh` (no arguments runs every
   `tests.stub.*` suite, or pass modules explicitly) is the harness for iterating on them.
 
-### Phase A8 — Auth management (the bookmark half stays deferred)
+### Phase A8 — Auth management
 
 The auth-manager half of Phase A8 is **done** (commits "Add auth token type and auth managers",
 "Wire auth managers into connections, pool and cluster", "Support TestKit auth token managers",
@@ -312,11 +312,41 @@ The auth-manager half of Phase A8 is **done** (commits "Add auth token type and 
   mark clears it; `Liveness: MockTime`/`Feature:Backend:MockTime` (fake-time providers) remains
   deferred, so the mock-time tests stay skipped.
 
-**Deferred (follow-ups):**
+### Phase A8 — Bookmarks (done)
 
-### Phase A8 — Bookmarks (remaining)
+The bookmarks half of Phase A8 is **done** (the auth half is above), closing the last deferred
+A8 item:
 
-- `bookmarks.ml` (immutable set + union), `last_bookmarks`, `bookmark_manager` (supplier/consumer) with a default implementation.
+- **`bookmarks.ml` (core)** — `Bookmarks.t`, an immutable, duplicate-free set of bookmark strings
+  kept in first-seen order (`empty`/`is_empty`/`singleton`/`of_list`/`to_list`/`union`/`diff`/`add`/`mem`/
+  `equal`), the OCaml analogue of the Python `Bookmarks` container. `Session.config`'s `bookmarks`
+  and `Session.last_bookmarks` are migrated to it (the wire stays `string list`; the session
+  converts at the send boundary, so `Conn.run`/`connect`/ROUTE are untouched).
+- **`bookmark_manager.ml` (core)** — the `Bookmark_manager.t` interface
+  (`get_bookmarks : unit -> Bookmarks.t`, `update_bookmarks :
+  previous:Bookmarks.t -> new_bookmarks:Bookmarks.t -> unit`; a record of closures so custom
+  managers — e.g. the TestKit ones that round-trip to the harness — plug in directly) plus the
+  built-in `neo4j_bookmark_manager ?initial_bookmarks ?supplier ?consumer`, a thread-safe set that
+  unions the supplier's result into `get_bookmarks` without storing it and, on `update_bookmarks`,
+  drops the `previous` bookmarks that were sent, adds the new ones and notifies the `consumer`
+  (outside the lock) with the snapshot — Python `AsyncNeo4jBookmarkManager` parity.
+- **Session integration** — `Session.config.bookmark_manager` (default `None`; sessions without a
+  manager behave as before). A session with a manager seeds every RUN / BEGIN / connection acquire
+  (so the ROUTE carries them too) with `manager.get_bookmarks () ∪ config.bookmarks`, remembering
+  what it sent; a successful commit makes the returned bookmark the session's own, consumes the
+  config `bookmarks` (they merge only into the first transaction), and hands the bookmark to the
+  manager with the sent set as `previous` — so a shared manager causally chains sessions, with a
+  read or an "empty" bookmark never overwriting state. Unit tests cover the wire bookmarks
+  (manager ∪ initial), the commit superseding what was sent, and chaining across two sessions.
+- **TestKit backend** — `NewBookmarkManager` honours `initialBookmarks` and the
+  `bookmarksSupplierRegistered` / `bookmarksConsumerRegistered` flags (supplier/consumer
+  round-trips via `BookmarksSupplierRequest`/`BookmarksSupplierCompleted` and
+  `BookmarksConsumerRequest`/`BookmarksConsumerCompleted`, synchronous like the auth managers);
+  `NewSession` accepts `bookmarkManagerId`; `ExecuteQuery` uses the driver's implicit bookmark
+  manager (`default_manager`, the analogue of Python's `execute_query_bookmark_manager`) through
+  the session instead of snapshotting `default_bookmarks`. `tests.stub.driver_parameters
+  .test_bookmark_manager` (16 tests) is green; `driver_execute_query` stays 15/15 and the
+  regression suites (bookmarks, session_run_parameters, tx_begin_parameters, routing) stay green.
 
 ### Phase A9 — High-level API
 

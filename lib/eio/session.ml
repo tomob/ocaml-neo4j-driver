@@ -13,7 +13,8 @@ type config = {
   access_mode : Config.access_mode;
   impersonated_user : string option;
   fetch_size : int option;
-  bookmarks : string list;
+  bookmarks : Bookmarks.t;
+  bookmark_manager : Bookmark_manager.t option;
   auth : Auth_manager.token option;
   max_transaction_retry_time : float;
   initial_retry_delay : float;
@@ -27,7 +28,8 @@ let default_config =
     access_mode = Config.default_access_mode;
     impersonated_user = None;
     fetch_size = None;
-    bookmarks = [];
+    bookmarks = Bookmarks.empty;
+    bookmark_manager = None;
     auth = None;
     max_transaction_retry_time = 30.0;
     initial_retry_delay = 1.0;
@@ -54,7 +56,17 @@ type t = {
   on_rt : string option -> Packstream.value -> unit;
   database : string option ref;
   conn : (Conn.t * Config.access_mode) option ref;
-  bookmarks : string list ref;
+  (* The session's own bookmarks: the config's [bookmarks] until the first
+     successful commit replaces them (the value [last_bookmarks] reports). *)
+  bookmarks : Bookmarks.t ref;
+  (* The config's [bookmarks] as "initial" bookmarks for a session with a
+     bookmark manager: they are merged into what the session sends until the
+     first commit consumes them (Python's [_initial_bookmarks]). *)
+  initial_bookmarks : Bookmarks.t ref;
+  (* The bookmarks most recently sent with a RUN / BEGIN / connection acquire:
+     handed to the bookmark manager as the [previous] set when a commit
+     supersedes them. *)
+  last_sent : Bookmarks.t ref;
   current_tx : Tx.t option ref;
   auto_result : Conn.stream option ref;
   telemetry_sent_on : (Conn.t * int) list ref;
@@ -70,10 +82,42 @@ let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> (
     database = ref config.database;
     conn = ref None;
     bookmarks = ref config.bookmarks;
+    initial_bookmarks = ref config.bookmarks;
+    last_sent = ref Bookmarks.empty;
     current_tx = ref None;
     auto_result = ref None;
     telemetry_sent_on = ref [];
   }
+
+(* The bookmarks to send with the next RUN / BEGIN / connection acquire (the
+   Python [_get_bookmarks]): the session's own bookmarks without a manager;
+   with a manager, the manager's bookmarks merged with the session's initial
+   (config) bookmarks — the merge is what the operation actually sends, and is
+   remembered so a later commit can hand it back to the manager as the
+   [previous] set. *)
+let bookmarks_to_send t =
+  let sent =
+    match t.config.bookmark_manager with
+    | None -> !(t.bookmarks)
+    | Some manager -> Bookmarks.union (manager.get_bookmarks ()) !(t.initial_bookmarks)
+  in
+  t.last_sent := sent;
+  sent
+
+(* Record the bookmarks returned by a successful commit (the Python
+   [_update_bookmarks]): the session's own bookmarks become [bookmarks], the
+   initial (config) bookmarks are consumed (only the first commit may carry
+   them) and — with a manager — the manager is told that the [bookmarks]
+   supersede what the transaction sent. An empty set leaves everything
+   untouched (a read or an [empty] bookmark never overwrites state). *)
+let record_bookmarks t bookmarks =
+  if not (Bookmarks.is_empty bookmarks) then begin
+    t.initial_bookmarks := Bookmarks.empty;
+    t.bookmarks := bookmarks;
+    match t.config.bookmark_manager with
+    | Some manager -> manager.update_bookmarks ~previous:!(t.last_sent) ~new_bookmarks:bookmarks
+    | None -> ()
+  end
 
 (* Drain a pending auto-commit result (the Python driver's consume of the auto
    result): a new query on the same connection must finish the previous stream
@@ -146,7 +190,9 @@ let rec conn_for_mode (t : t) ~mode =
       conn_for_mode t ~mode
   | None ->
       let* conn, effective =
-        t.connect ~mode ~database:!(t.database) ~bookmarks:!(t.bookmarks) ~auth:t.config.auth
+        t.connect ~mode ~database:!(t.database)
+          ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
+          ~auth:t.config.auth
       in
       (* The connection may resolve the session's database (a routed
              default-database session learns its home database here); the
@@ -181,7 +227,7 @@ let tx_conn t =
 let mark_bookmark t = function
   | Packstream.Map fields -> (
       match List.assoc_opt "bookmark" fields with
-      | Some (Packstream.String b) -> t.bookmarks := [ b ]
+      | Some (Packstream.String b) -> record_bookmarks t (Bookmarks.singleton b)
       | _ -> ())
   | _ -> ()
 
@@ -226,7 +272,8 @@ let run ?timeout ?metadata t ~query ~parameters =
       let* run_metadata =
         match
           Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ~telemetry:2
-            ~bookmarks:!(t.bookmarks) ?db:!(t.database) ?timeout ?metadata
+            ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
+            ?db:!(t.database) ?timeout ?metadata
         with
         | Ok run_metadata -> Ok run_metadata
         | Error _ as error ->
@@ -292,7 +339,9 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
       in
       let extra =
         Conn.build_extra ~mode ?db:!(t.database) ?imp_user:t.config.impersonated_user ?timeout
-          ?metadata ~bookmarks:!(t.bookmarks) ()
+          ?metadata
+          ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
+          ()
       in
       match Tx.begin_transaction conn ~extra ~fetch_size:t.config.fetch_size ~telemetry with
       | Ok tx ->
@@ -315,7 +364,7 @@ let last_bookmarks t = !(t.bookmarks)
 (* The session's transaction has ended: record [bookmark] (if any) and forget
    the current transaction so a new one can begin. *)
 let mark_tx_ended t ~bookmark =
-  (match bookmark with Some b -> t.bookmarks := [ b ] | None -> ());
+  (match bookmark with Some b -> record_bookmarks t (Bookmarks.singleton b) | None -> ());
   t.current_tx := None
 
 let execute t ~mode ?metadata ?timeout work =

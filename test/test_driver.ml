@@ -124,7 +124,13 @@ let custom_config () =
          [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false) ]
        ))
     (fun net clock sw port ->
-      let config = { Session.default_config with database = Some "mydb"; bookmarks = [ "bm-1" ] } in
+      let config =
+        {
+          Session.default_config with
+          database = Some "mydb";
+          bookmarks = Bookmarks.of_list [ "bm-1" ];
+        }
+      in
       let session =
         match
           Driver.connect

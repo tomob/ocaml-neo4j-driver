@@ -65,3 +65,16 @@ afterwards.
 ```sh
 dune exec examples/managed_transaction.exe
 ```
+
+## bookmarks
+
+Causal consistency with bookmarks: what they are and how to chain sessions. The
+program writes a `Person` node and shows the three ways the returned bookmark
+is used — automatically within one session (read-your-writes), manually across
+sessions (the writer's `Session.last_bookmarks` seed the reader's config), and
+through a shared `Bookmark_manager` (every session sharing it is chained
+without passing bookmarks around). Cleans up the demo nodes at the end.
+
+```sh
+dune exec examples/bookmarks.exe
+```

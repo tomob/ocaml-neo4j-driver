@@ -38,6 +38,12 @@ module Neo4jResult = Neo4j_result
 module Summary = Summary
 (** The summary of a query result (counters, plan, notifications, ...). *)
 
+module Bookmarks = Neodriver_core.Bookmarks
+(** An immutable set of bookmark string values (causal chaining). *)
+
+module Bookmark_manager = Neodriver_core.Bookmark_manager
+(** Bookmark managers (sharing bookmarks across sessions). *)
+
 module Log = Neodriver_core.Log
 (** Logging infrastructure ([Logs] sources, connection ids, value formatting and the
     [NEO4J_LOG_LEVEL] / [NEO4J_LOG_SCOPES] environment control). *)

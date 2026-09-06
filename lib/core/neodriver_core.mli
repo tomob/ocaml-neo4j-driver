@@ -30,7 +30,13 @@ module Routing_table = Routing_table
 (** Routing tables for [neo4j://] (routed) drivers. *)
 
 module Auth_manager = Auth_manager
-(** Authentication tokens and (later) auth managers. *)
+(** Authentication tokens and auth managers. *)
+
+module Bookmarks = Bookmarks
+(** An immutable set of bookmark string values (causal chaining). *)
+
+module Bookmark_manager = Bookmark_manager
+(** Bookmark managers (sharing bookmarks across sessions). *)
 
 module Log = Log
 (** Logging infrastructure ([Logs] sources, connection ids, value formatting and the
