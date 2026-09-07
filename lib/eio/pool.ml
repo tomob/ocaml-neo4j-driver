@@ -2,8 +2,9 @@
 
    Connections are created on demand (up to [max_connection_pool_size]),
    reused while idle (checked against the max lifetime and, when configured,
-   liveness-checked with a RESET) and returned to the pool with a RESET on
-   release. An [acquire] that cannot obtain a connection within the
+   liveness-checked with a RESET once they have been idle for at least the
+   liveness timeout) and returned to the pool on release. An [acquire] that
+   cannot obtain a connection within the
    [connection_acquisition_timeout] fails with
    [Errors.Connection_acquisition_timeout] — the timeout is a single deadline
    for the whole acquisition, covering not only waiting for a free connection
@@ -70,26 +71,34 @@ let with_lock m f =
   Eio.Mutex.lock m;
   Fun.protect ~finally:(fun () -> Eio.Mutex.unlock m) f
 
-(* Whether a connection has been alive longer than the max lifetime. *)
-let over_lifetime t created_at =
-  let age = Mtime.span (now t) created_at in
+(* Whether a connection has been idle longer than the max lifetime (the idle
+   queue stamps when the connection was released). *)
+let over_lifetime t idle_since =
+  let age = Mtime.span (now t) idle_since in
   Mtime.Span.to_float_ns age >= t.pool_config.max_connection_lifetime *. 1_000_000_000.
 
-(* Liveness-check an idle connection on reuse: with [force] (a one-shot
+(* How long the connection has been idle, in seconds. *)
+let idle_seconds t idle_since =
+  Mtime.Span.to_float_ns (Mtime.span (now t) idle_since) /. 1_000_000_000.
+
+(* Liveness-check an idle connection on reuse. With [force] (a one-shot
    driver-level acquire such as GetServerInfo, which must see a clean
    connection — the Python driver passes [liveness_check_timeout = 0] there) or
-   a configured [liveness_check_timeout], probe it with a RESET (bounded by the
-   timeout when one is configured); otherwise a clean connection is reused
-   as-is (MinimalResets). On failure the connection is closed. *)
-let liveness_ok t ~force conn =
+   when the connection has been idle for at least the configured
+   [liveness_check_timeout], probe it with a RESET bounded by that timeout;
+   a connection idle for less is reused as-is (MinimalResets). On failure the
+   connection is closed. *)
+let liveness_ok t ~force ~idle_since conn =
   match (force, t.pool_config.liveness_check_timeout) with
   | true, _ -> Stdlib.Result.is_ok (Conn.reset conn)
   | false, Some timeout -> (
-      try
-        Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds t.clock timeout) (fun () ->
-            Conn.reset conn)
-        |> Stdlib.Result.is_ok
-      with _ -> false)
+      if idle_seconds t idle_since < timeout then true
+      else
+        try
+          Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds t.clock timeout) (fun () ->
+              Conn.reset conn)
+          |> Stdlib.Result.is_ok
+        with _ -> false)
   | false, None -> true
 
 (* Pop a reusable connection off the idle queue, closing any that are over
@@ -100,19 +109,19 @@ let rec take_idle t ~force_liveness =
         let rec go () =
           if Queue.is_empty t.idle then None
           else
-            let conn, created_at = Queue.pop t.idle in
-            if over_lifetime t created_at then begin
+            let conn, idle_since = Queue.pop t.idle in
+            if over_lifetime t idle_since then begin
               Conn.close conn;
               go ()
             end
-            else Some conn
+            else Some (conn, idle_since)
         in
         go ())
   in
   match reusable with
   | None -> None
-  | Some conn ->
-      if liveness_ok t ~force:force_liveness conn then Some conn
+  | Some (conn, idle_since) ->
+      if liveness_ok t ~force:force_liveness ~idle_since conn then Some conn
       else (
         Log.debug Log.pool (fun m ->
             m "[#%04X]  _: <POOL> found unhealthy connection" (Conn.id conn));

@@ -320,20 +320,59 @@ let set_hello_metadata conn = function
 let authenticate conn config =
   let major, minor = version conn in
   let re_auth = re_auth_of major minor in
-  let* hello_metadata =
-    request conn ~message:State.Hello ~re_auth (fun () ->
-        Bolt.hello conn.transport ~headers:(hello_headers config major minor))
-  in
-  set_hello_metadata conn hello_metadata;
-  let* () =
-    if re_auth then
-      request conn ~message:State.Logon ~re_auth (fun () ->
-          Bolt.logon conn.transport ~auth:(auth_map config.auth))
-      |> Result.map (fun _ -> ())
-    else Ok ()
-  in
-  conn.current_auth := Some config.auth;
-  Ok ()
+  if not re_auth then begin
+    (* Bolt <= 5.0: the auth travels inline in HELLO. *)
+    let* hello_metadata =
+      request conn ~message:State.Hello ~re_auth (fun () ->
+          Bolt.hello conn.transport ~headers:(hello_headers config major minor))
+    in
+    set_hello_metadata conn hello_metadata;
+    conn.current_auth := Some config.auth;
+    Ok ()
+  end
+  else begin
+    (* Bolt >= 5.1 authenticates with HELLO followed by LOGON. Both messages
+       are pipelined — written before either response is read — like the
+       Python driver: LOGON does not depend on the HELLO response, and a
+       server may script the two exchanges back to back. A FAILED HELLO leaves
+       the LOGON response (an IGNORE) on the wire, which is drained before the
+       failure is handled. *)
+    let* () = ensure_ready conn in
+    let outcome =
+      let* () = Bolt.send conn.transport ~tag:Bolt.hello_tag [ hello_headers config major minor ] in
+      let* () = Bolt.send conn.transport ~tag:Bolt.logon_tag [ auth_map config.auth ] in
+      match Bolt.respond conn.transport with
+      | Error error ->
+          ignore (Bolt.respond conn.transport);
+          Error error
+      | Ok hello_metadata -> (
+          match Bolt.respond conn.transport with
+          | Ok _ -> Ok hello_metadata
+          | Error error -> Error error)
+    in
+    match outcome with
+    | Ok hello_metadata ->
+        set_hello_metadata conn hello_metadata;
+        let old = !(conn.state) in
+        let after_hello = State.server_transition ~re_auth old State.Hello in
+        let new_state = State.server_transition ~re_auth after_hello State.Logon in
+        if old <> new_state then
+          Log.debug Log.io (fun m ->
+              m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id conn) (State.to_string old)
+                (State.to_string new_state));
+        conn.state := new_state;
+        conn.current_auth := Some config.auth;
+        Ok ()
+    | Error error ->
+        if not (State.failed !(conn.state)) then
+          Log.debug Log.io (fun m ->
+              m "[#%04X]  _: <CONNECTION> server state: %s > %s" (id conn)
+                (State.to_string !(conn.state)) (State.to_string State.Failed));
+        conn.state := State.Failed;
+        let error = report conn error in
+        recover_after_failure conn error;
+        Error error
+  end
 
 let connect ?resolver ?domain_name_resolver net clock sw config =
   let* tls = tls_of_scheme config.host config.scheme in

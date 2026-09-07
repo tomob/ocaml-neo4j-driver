@@ -932,6 +932,66 @@ let route_carries_imp_user () =
       | Error e -> fail (Errors.to_string e));
       Cluster.close cluster)
 
+(* A routed driver's routing connection is liveness-checked like a pooled one:
+   once it has been idle for at least the liveness timeout, the next ROUTE on
+   it is preceded by a RESET (a connection idle for less is reused as-is). *)
+let routing_conn_liveness_after_idle () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: HELLO, ROUTE, then (after the idle sleep) the liveness
+           RESET followed by the second ROUTE, all on one connection. *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~ttl:0L ~db:"homedb" [ a ] [ b ] [ b ]) ];
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~ttl:0L ~db:"homedb" [ a ] [ b ] [ b ]) ];
+            ] );
+        ];
+        [
+          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
+      let pool_config =
+        match
+          Config.make_pool_config ~home_db_cache_ttl:0.0 ~liveness_check_timeout:(Some 0.05) ()
+        with
+        | Ok pool_config -> pool_config
+        | Error error -> fail (Errors.to_string error)
+      in
+      let cluster =
+        Cluster.create ~pool_config ~connect ~connect_routing:connect ~routing_context:[] ~initial
+          clock
+      in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
+      in
+      let c1 =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      Eio.Time.Mono.sleep clock 0.12;
+      let c2 =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      check (list int) "router wire" [ 0x01; 0x66; 0x0F; 0x66 ] (tags (List.nth received 0));
+      Cluster.release cluster c1;
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
 (* A routed session's bookmarks go into the ROUTE request when its routing
    table is first fetched (the server uses them for routing), so a session
    created with bookmarks sends them on the first acquire. *)
@@ -1220,6 +1280,8 @@ let tests =
       [ test_case "default-db acquire reuses the home db" `Quick home_db_resolves_and_caches ] );
     ( "[Cluster] home-db cache TTL expiry",
       [ test_case "expired entry re-routes" `Quick home_db_ttl_expires ] );
+    ( "[Cluster] routing connection liveness",
+      [ test_case "RESET after the liveness timeout" `Quick routing_conn_liveness_after_idle ] );
     ( "[Cluster] home-db cache per impersonated user",
       [ test_case "separate home dbs" `Quick home_db_per_imp_user ] );
     ( "[Cluster] ROUTE carries the impersonated user",

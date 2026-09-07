@@ -33,7 +33,7 @@ type t = {
   errors : (string option, Errors.t * Mtime.t) Hashtbl.t;
   in_flight : (string option, bool) Hashtbl.t;
   pools : (string, Pool.t) Hashtbl.t;
-  routing : (string, Conn.t) Hashtbl.t;
+  routing : (string, Conn.t * Mtime.t) Hashtbl.t;
   home_dbs : (string option, string * Mtime.t) Hashtbl.t;
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
@@ -139,7 +139,7 @@ let drop_pool cluster key =
 (* Close the routing connection for [key], if any (caller holds the lock). *)
 let drop_routing_conn cluster key =
   match Hashtbl.find_opt cluster.routing key with
-  | Some conn ->
+  | Some (conn, _) ->
       Hashtbl.remove cluster.routing key;
       Conn.close conn
   | None -> ()
@@ -242,29 +242,53 @@ let re_auth_routing cluster ~session_auth conn =
           let* token = manager.get_auth () in
           re_auth_to token conn)
 
+(* Liveness-check the routing connection before reusing it, like a pooled
+   connection: it is probed with a RESET (bounded by the liveness timeout)
+   once it has been idle for at least [liveness_check_timeout]; a failed probe
+   drops it so a fresh connection is opened. *)
+let routing_liveness_ok cluster ~idle_since conn =
+  match cluster.pool_config.liveness_check_timeout with
+  | Some timeout when elapsed_s cluster idle_since >= timeout -> (
+      try
+        Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds cluster.clock timeout) (fun () ->
+            Conn.reset conn)
+        |> Stdlib.Result.is_ok
+      with _ -> false)
+  | _ -> true
+
 (* The persistent routing connection for [addr]: ROUTE requests reuse it (the
    server expects several ROUTEs on one connection), created on first use (with
    the session token when provided), re-authenticated when the token rotated,
-   and dropped (closed) when the address is deactivated. Guarded by
+   liveness-checked (RESET) once it has been idle for at least the liveness
+   timeout, and dropped (closed) when the address is deactivated. Guarded by
    [routing_lock]. *)
 let rec routing_conn cluster ~session_auth addr =
   let key = Addressing.to_string addr in
   match Hashtbl.find_opt cluster.routing key with
-  | Some conn -> (
-      match re_auth_routing cluster ~session_auth conn with
-      | Ok () -> Ok conn
-      | Error (Errors.Configuration_error _) ->
-          (* The protocol cannot re-authenticate an existing connection (Bolt
-             < 5.1): drop it and recreate it, which authenticates with the
-             current token. *)
-          Hashtbl.remove cluster.routing key;
-          Conn.close conn;
-          routing_conn cluster ~session_auth addr
-      | Error _ as error -> error)
+  | Some (conn, last_used) ->
+      if routing_liveness_ok cluster ~idle_since:last_used conn then
+        match re_auth_routing cluster ~session_auth conn with
+        | Ok () ->
+            Hashtbl.replace cluster.routing key (conn, now cluster);
+            Ok conn
+        | Error (Errors.Configuration_error _) ->
+            (* The protocol cannot re-authenticate an existing connection (Bolt
+               < 5.1): drop it and recreate it, which authenticates with the
+               current token. *)
+            Hashtbl.remove cluster.routing key;
+            Conn.close conn;
+            routing_conn cluster ~session_auth addr
+        | Error _ as error -> error
+      else (
+        Log.debug Log.pool (fun m ->
+            m "[#%04X]  _: <ROUTING> liveness check failed, reconnecting" (Conn.id conn));
+        Hashtbl.remove cluster.routing key;
+        Conn.close conn;
+        routing_conn cluster ~session_auth addr)
   | None ->
       let* conn = cluster.connect_routing ~session_auth addr in
       Conn.set_on_error conn (fun conn error -> on_error cluster conn error);
-      Hashtbl.add cluster.routing key conn;
+      Hashtbl.add cluster.routing key (conn, now cluster);
       Ok conn
 
 (* Whether [addr] appears among the readers or writers of [table] (i.e. the
@@ -283,7 +307,7 @@ let hand_routing_to_pool cluster addr =
   with_lock cluster (fun () ->
       let key = Addressing.to_string addr in
       match Hashtbl.find_opt cluster.routing key with
-      | Some conn -> Pool.put_conn (pool_for cluster addr) conn
+      | Some (conn, _) -> Pool.put_conn (pool_for cluster addr) conn
       | None -> ())
 
 (* Execute a ROUTE request on [conn] and parse the response. *)
@@ -680,4 +704,4 @@ let force_routing_table_update cluster ~database ~bookmarks =
 let close cluster =
   with_lock cluster (fun () ->
       Hashtbl.iter (fun _ pool -> Pool.close pool) cluster.pools;
-      Hashtbl.iter (fun _ conn -> Conn.close conn) cluster.routing)
+      Hashtbl.iter (fun _ (conn, _) -> Conn.close conn) cluster.routing)

@@ -166,8 +166,41 @@ let lifetime_expired () =
         [ 0x01; 0x6A; 0x10; 0x3F; 0x01; 0x6A; 0x10; 0x3F ]
         (message_tags received))
 
-(* With a liveness check enabled, reusing an idle connection sends a RESET. *)
-let liveness_check () =
+(* With a liveness check enabled, a connection idle for less than the liveness
+   timeout is reused without a RESET (MinimalResets — the probe only happens
+   once the idle time reaches the timeout). *)
+let liveness_before_timeout () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records ([ [ Packstream.Int 1L ] ], false);
+           Test_mock.Success;
+           Test_mock.Records ([ [ Packstream.Int 2L ] ], false);
+         ] ))
+    (fun net clock sw port ->
+      let pool_config = { Config.default_pool_config with liveness_check_timeout = Some 0.5 } in
+      let pool = pool net clock sw port ~pool_config () in
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+      | Ok conn ->
+          run_query conn "RETURN 1";
+          Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+      | Ok conn ->
+          run_query conn "RETURN 2";
+          Pool.release pool conn
+      | Error e -> fail (Errors.to_string e));
+      check (list int) "wire" [ 0x01; 0x6A; 0x10; 0x3F; 0x10; 0x3F ] (message_tags received))
+
+(* Once the idle time reaches the liveness timeout, reusing the connection
+   sends a RESET before the next request. *)
+let liveness_after_idle () =
   let received = ref [] in
   Test_mock.with_mock
     (Test_mock.Session
@@ -183,13 +216,14 @@ let liveness_check () =
            Test_mock.Records ([ [ Packstream.Int 2L ] ], false);
          ] ))
     (fun net clock sw port ->
-      let pool_config = { Config.default_pool_config with liveness_check_timeout = Some 0.5 } in
+      let pool_config = { Config.default_pool_config with liveness_check_timeout = Some 0.05 } in
       let pool = pool net clock sw port ~pool_config () in
       (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 1";
           Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
+      Eio.Time.Mono.sleep clock 0.12;
       (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
       | Ok conn ->
           run_query conn "RETURN 2";
@@ -510,7 +544,9 @@ let tests =
     ("[Pool] reuse", [ test_case "reuse idle" `Quick reuse ]);
     ("[Pool] defunct", [ test_case "failed conn not reused" `Quick defunct_not_reused ]);
     ("[Pool] lifetime", [ test_case "expired not reused" `Quick lifetime_expired ]);
-    ("[Pool] liveness", [ test_case "reset on reuse" `Quick liveness_check ]);
+    ("[Pool] liveness", [ test_case "reset after the liveness timeout" `Quick liveness_after_idle ]);
+    ( "[Pool] liveness before timeout",
+      [ test_case "no reset below the liveness timeout" `Quick liveness_before_timeout ] );
     ("[Pool] in-use count", [ test_case "checked-out tracking" `Quick in_use_count ]);
     ("[Pool] acquisition timeout", [ test_case "timeout" `Quick acquisition_timeout ]);
     ( "[Pool] acquisition bounds connect",

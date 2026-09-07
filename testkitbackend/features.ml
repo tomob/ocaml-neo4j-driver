@@ -31,6 +31,11 @@ let features : string list =
        Bolt handshake + HELLO/auth), and takes precedence over the socket
        connection timeout. *)
     "Feature:API:ConnectionAcquisitionTimeout";
+    (* An idle connection is liveness-checked with a RESET when it has been
+       idle for at least the configured liveness_check_timeout (both pooled
+       data connections and a routed driver's routing connection); the RESET
+       is bounded by that timeout and a failure discards the connection. *)
+    "Feature:API:Liveness.Check";
     "Feature:API:Result.List";
     "Feature:API:Result.Peek";
     "Feature:API:Result.Single";

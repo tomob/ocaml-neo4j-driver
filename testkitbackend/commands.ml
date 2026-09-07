@@ -538,12 +538,20 @@ let new_driver ctx fields =
           match float_of_string_opt ms with Some f -> f /. 1000.0 | None -> 60.0)
       | _ -> Config.default_pool_config.connection_acquisition_timeout
     in
+    (* None/null disables the liveness check (the default). *)
+    let liveness_check_timeout =
+      match List.assoc_opt "livenessCheckTimeoutMs" fields with
+      | Some (`Int ms) -> Some (float_of_int ms /. 1000.0)
+      | Some (`Intlit ms) -> (
+          match float_of_string_opt ms with Some f -> Some (f /. 1000.0) | None -> None)
+      | _ -> None
+    in
     let telemetry_disabled =
       match List.assoc_opt "telemetryDisabled" fields with Some (`Bool b) -> b | _ -> false
     in
     match
       Config.make_pool_config ~max_connection_pool_size ~connection_acquisition_timeout
-        ~telemetry_disabled ()
+        ~liveness_check_timeout ~telemetry_disabled ()
     with
     | Ok pool_config -> pool_config
     | Error error -> raise (Driver_error error)
