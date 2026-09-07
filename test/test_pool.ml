@@ -470,6 +470,41 @@ let session_auth_user_switching () =
       | Error e -> fail (Errors.to_string e));
       check (list int) "wire" [ 0x01; 0x6A; 0x6B; 0x6A; 0x6B; 0x6A ] (message_tags received))
 
+(* The acquisition timeout covers establishing a new connection too: a connect
+   that takes longer than the timeout is aborted with
+   Connection_acquisition_timeout instead of hanging, and the aborted acquire
+   returns its permit (a following acquire reaches the pool again instead of
+   waiting on the full pool). *)
+let connect_bounded_by_acquisition_timeout () =
+  Eio_main.run (fun env ->
+      let clock = Eio.Stdenv.mono_clock env in
+      let calls = ref 0 in
+      let connect _session_auth =
+        incr calls;
+        (* The first connect would take longer than the acquisition timeout;
+           later ones fail fast. *)
+        if !calls = 1 then Eio.Time.Mono.sleep clock 0.6;
+        Error (Errors.Service_unavailable "connect failed")
+      in
+      let pool_config =
+        {
+          Config.default_pool_config with
+          max_connection_pool_size = 1;
+          connection_acquisition_timeout = 0.1;
+        }
+      in
+      let pool = Pool.create ~pool_config ~connect clock in
+      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+      | Error (Errors.Connection_acquisition_timeout _) -> ()
+      | Ok _ -> fail "expected an acquisition timeout"
+      | Error _ -> fail "expected Connection_acquisition_timeout");
+      (* The timed-out acquire released its permit: a second acquire reaches the
+         (now fast) connect instead of waiting on the full pool. *)
+      match Pool.acquire ~force_liveness:false ~session_auth:None pool with
+      | Error (Errors.Service_unavailable _) -> ()
+      | Ok _ -> fail "expected the connect failure"
+      | Error _ -> fail "expected Service_unavailable from connect")
+
 let tests =
   [
     ("[Pool] reuse", [ test_case "reuse idle" `Quick reuse ]);
@@ -478,6 +513,11 @@ let tests =
     ("[Pool] liveness", [ test_case "reset on reuse" `Quick liveness_check ]);
     ("[Pool] in-use count", [ test_case "checked-out tracking" `Quick in_use_count ]);
     ("[Pool] acquisition timeout", [ test_case "timeout" `Quick acquisition_timeout ]);
+    ( "[Pool] acquisition bounds connect",
+      [
+        test_case "slow connect aborted by the acquisition timeout" `Quick
+          connect_bounded_by_acquisition_timeout;
+      ] );
     ("[Pool] closed", [ test_case "closed pool" `Quick closed_pool ]);
     ("[Pool] session close once", [ test_case "idempotent close" `Quick session_close_once ]);
     ( "[Pool] re-auth on token change",

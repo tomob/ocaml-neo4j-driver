@@ -57,8 +57,12 @@ val connect :
     TestKit harness's custom domain-name resolution); literal IPs are used as-is. An IPv6 literal in
     [config.host] is treated as such (the address is built with brackets around the host). For Bolt
     >= 5.1 the authentication is sent via LOGON after HELLO; for older versions it is inline in
-    HELLO. [clock] bounds the whole attempt and subsequent reads/writes by
-    [config.connection_timeout].
+    HELLO. [clock] and [config.connection_timeout] bound the TCP connect / TLS handshake and the
+    connection's subsequent reads and writes. The Bolt version handshake itself is not bounded by
+    [config.connection_timeout]: it is expected to run inside a connection-acquisition deadline that
+    bounds the whole [connect] (the pool's / routing cluster's acquisition timeout fires first when
+    it is smaller, and a handshake that outlives the socket connection timeout but fits in the
+    acquisition deadline still succeeds).
     @return
       [Error _] for connection/handshake failures, for routing schemes (unsupported until routing is
       implemented), or for an authentication failure reported by the server. *)

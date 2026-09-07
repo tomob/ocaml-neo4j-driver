@@ -388,11 +388,18 @@ let hello_logon () =
           | _ -> fail "expected HELLO followed by LOGON");
           Conn.close conn)
 
-(* A server-side authentication failure is surfaced as a Neo4j error. *)
+(* A server-side authentication failure is surfaced as a Neo4j error. The mock
+   answers the driver's eager RESET after the FAILURE with a SUCCESS (as a real
+   server does). *)
 let hello_failure () =
   Test_mock.with_mock
     (Test_mock.Session
-       ((5, 0), ref [], [ Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad creds") ]))
+       ( (5, 0),
+         ref [],
+         [
+           Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad creds");
+           Test_mock.Success;
+         ] ))
     (fun net clock sw port ->
       let config = config "127.0.0.1" port Addressing.Bolt in
       match Conn.connect net clock sw config with
@@ -655,6 +662,7 @@ let error_hook_makes_retryable () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad creds");
+           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let config = config "127.0.0.1" port Addressing.Bolt in
@@ -716,6 +724,7 @@ let failure_gql_code () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Failure_gql ("Neo.ClientError.Statement.SyntaxError", "bad");
+           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let config = config "127.0.0.1" port Addressing.Bolt in
@@ -856,6 +865,24 @@ let run_captures_rt () =
               | None -> fail "expected the rt metadata"));
           Conn.close conn)
 
+(* The socket connection timeout (SCT) bounds the TCP connect (and TLS) only:
+   it must not abort a Bolt handshake that takes longer than the SCT but is
+   answered in time — an enclosing acquisition deadline is what bounds the
+   handshake. A handshake answered after 0.6 s therefore succeeds even though
+   the connection timeout is 0.2 s. *)
+let handshake_not_bounded_by_sct () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session_delayed_handshake ((5, 0), 0.6, received, [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      let base = config "127.0.0.1" port Addressing.Bolt in
+      let config = { base with connection_timeout = 0.2 } in
+      match Conn.connect net clock sw config with
+      | Ok conn ->
+          check (list int) "HELLO sent" [ 0x01 ] (List.map message_tag (List.rev !received));
+          Conn.close conn
+      | Error e -> fail (Errors.to_string e))
+
 let tests =
   [
     ("[Conn] route_via_mock", [ test_case "ROUTE message + routing table" `Quick route_via_mock ]);
@@ -872,6 +899,11 @@ let tests =
     ( "[Conn] route_procedure_empty_records",
       [ test_case "empty procedure result" `Quick route_procedure_empty_records ] );
     ("[Conn] connect_via_mock", [ test_case "connect negotiates" `Quick connect_via_mock ]);
+    ( "[Conn] handshake_not_bounded_by_sct",
+      [
+        test_case "handshake outlives the socket connection timeout" `Quick
+          handshake_not_bounded_by_sct;
+      ] );
     ("[Conn] connect_via_mock_tls", [ test_case "bolt+ssc connects" `Quick connect_via_mock_tls ]);
     ( "[Conn] hello_inline_auth",
       [ test_case "HELLO carries inline auth for 5.0" `Quick hello_inline_auth ] );

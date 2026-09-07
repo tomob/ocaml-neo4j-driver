@@ -11,7 +11,7 @@ let connect net clock sw port =
 (* write then read back the same bytes through the mock (echo). *)
 let echo () =
   Test_mock.with_server
-    (fun flow ->
+    (fun _clock flow ->
       let data = Test_mock.read_exact flow 5 in
       Test_mock.write flow data)
     (fun net clock sw port ->
@@ -32,7 +32,7 @@ let echo () =
 let framing_round_trip () =
   let message = String.make 40000 'x' in
   Test_mock.with_server
-    (fun flow ->
+    (fun _clock flow ->
       let buffer = Buffer.create 1024 in
       let rec loop () =
         let size = Bytes.get_uint16_be (Bytes.of_string (Test_mock.read_exact flow 2)) 0 in
@@ -61,7 +61,7 @@ let framing_round_trip () =
 (* a NOOP (empty message) is skipped by read_message. *)
 let noop_skip () =
   Test_mock.with_server
-    (fun flow ->
+    (fun _clock flow ->
       Test_mock.write flow "\x00\x00";
       Test_mock.write flow "\x00\x02hi\x00\x00")
     (fun net clock sw port ->

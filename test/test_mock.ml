@@ -18,8 +18,11 @@ type behavior =
   | Manifest_unknown
   | Manifest of (int * int * int) list
   | Session of (int * int) * Bytes.t list ref * response list
-(* handshake at the given version, then read one Bolt message per
+  (* handshake at the given version, then read one Bolt message per
          [response], recording each in [received] and replying accordingly *)
+  | Session_delayed_handshake of (int * int) * float * Bytes.t list ref * response list
+(* like [Session], but the server answers the Bolt handshake only after the
+         given delay (in seconds) *)
 
 type flow = [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r
 
@@ -119,7 +122,17 @@ let reply_message flow = function
                    [ Neodriver.Packstream.Map [ ("has_more", Neodriver.Packstream.Bool has_more) ] ]
                  ))))
 
-let rec serve_behavior behavior flow =
+(* Serve a session's message/reply stream: read one Bolt message per response,
+   recording it in [received], and reply. *)
+let serve_responses flow received responses =
+  List.iter
+    (fun response ->
+      let message = read_message flow in
+      received := Bytes.of_string message :: !received;
+      reply_message flow response)
+    responses
+
+let rec serve_behavior ?clock behavior flow =
   match behavior with
   | V1 (major, minor) ->
       write flow ("\x00\x00" ^ String.make 1 (Char.chr minor) ^ String.make 1 (Char.chr major))
@@ -141,16 +154,16 @@ let rec serve_behavior behavior flow =
       (* The client replies with its chosen version and capabilities. *)
       ignore (read_exact flow 5)
   | Session (version, received, responses) ->
-      (* Consume the client's handshake (magic + 16-byte proposal); the V1
-         response below does not itself read it. *)
       ignore (read_exact flow 20);
-      serve_behavior (V1 (fst version, snd version)) flow;
-      List.iter
-        (fun response ->
-          let message = read_message flow in
-          received := Bytes.of_string message :: !received;
-          reply_message flow response)
-        responses
+      serve_behavior ?clock (V1 (fst version, snd version)) flow;
+      serve_responses flow received responses
+  | Session_delayed_handshake (version, delay, received, responses) ->
+      ignore (read_exact flow 20);
+      (match clock with
+      | Some clock -> Eio.Time.Mono.sleep clock delay
+      | None -> failwith "mock: a delayed handshake needs a clock");
+      serve_behavior ?clock (V1 (fst version, snd version)) flow;
+      serve_responses flow received responses
 
 (* Whether binding a loopback TCP socket is allowed. Some sandboxed
    environments (e.g. the opam build on macOS arm64) forbid it with an EPERM
@@ -183,13 +196,14 @@ let with_server handler client =
             Eio.Fiber.fork_promise ~sw (fun () ->
                 let flow, _ = Eio.Net.accept ~sw listening in
                 let flow = (flow :> flow) in
-                handler flow)
+                handler clock flow)
           in
           let result = client net clock sw port in
           ignore (Eio.Promise.await_exn server);
           result))
 
-let with_mock behavior client = with_server (serve_behavior behavior) client
+let with_mock behavior client =
+  with_server (fun clock flow -> serve_behavior ~clock behavior flow) client
 
 (* Serve several sequential connections, each with its own [Session]-style
    behavior, sharing the [received] log. The client connects once per session
@@ -212,7 +226,7 @@ let with_mock_multi sessions client =
                   (fun (version, received, responses) ->
                     let flow, _ = Eio.Net.accept ~sw listening in
                     let flow = (flow :> flow) in
-                    serve_behavior (Session (version, received, responses)) flow;
+                    serve_behavior ~clock (Session (version, received, responses)) flow;
                     (* Close the flow so a client that sends more (e.g. the pool's
                        RESET on release of a connection we have nothing left for)
                        fails fast instead of waiting for a response. *)
@@ -256,7 +270,7 @@ let with_servers n make_connections client =
                       (fun (version, received, responses) ->
                         let flow, _ = Eio.Net.accept ~sw listening in
                         let flow = (flow :> flow) in
-                        serve_behavior (Session (version, received, responses)) flow;
+                        serve_behavior ~clock (Session (version, received, responses)) flow;
                         Eio.Flow.close flow)
                       connection_list))
               listeners connections

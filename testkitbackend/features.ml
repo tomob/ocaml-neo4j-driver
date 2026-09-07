@@ -26,6 +26,11 @@ let features : string list =
     (* Implemented API surface (B0b). *)
     "Feature:API:Driver:GetServerInfo";
     "Feature:API:Driver.VerifyConnectivity";
+    (* The connection acquisition timeout covers the whole acquisition (waiting
+       for a free connection as well as establishing a new one: TCP connect +
+       Bolt handshake + HELLO/auth), and takes precedence over the socket
+       connection timeout. *)
+    "Feature:API:ConnectionAcquisitionTimeout";
     "Feature:API:Result.List";
     "Feature:API:Result.Peek";
     "Feature:API:Result.Single";

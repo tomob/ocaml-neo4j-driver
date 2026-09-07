@@ -5,7 +5,12 @@
    liveness-checked with a RESET) and returned to the pool with a RESET on
    release. An [acquire] that cannot obtain a connection within the
    [connection_acquisition_timeout] fails with
-   [Errors.Connection_acquisition_timeout].
+   [Errors.Connection_acquisition_timeout] — the timeout is a single deadline
+   for the whole acquisition, covering not only waiting for a free connection
+   but also establishing a new one (TCP connect + Bolt handshake + HELLO/auth)
+   when none is idle: the pool's connect runs inside the deadline, so a slow
+   server counts against the acquisition budget (and the socket connection
+   timeout never short-circuits a handshake that fits in it).
 
    Auth: the pool owns the driver's auth manager. New connections
    resolve their initial token from it at connect time; a reused connection is
@@ -197,10 +202,13 @@ let set_conn_auth_manager t session_auth conn =
   | Some token -> Conn.set_auth_manager conn (Auth_manager.static token)
   | None -> Option.iter (fun manager -> Conn.set_auth_manager conn manager) t.auth_manager
 
-(* A permit is held: hand out a connection, re-authenticating a reused one and
-   purging (and retrying) connections whose protocol cannot re-authenticate —
-   the latter only for the driver's own auth: a session-level auth unsupported
-   by the protocol is surfaced instead. *)
+(* Acquire the pool's permit and hand out a connection (see [acquire]). The
+   permit stays held on success (it belongs to the checked-out connection) and
+   is released by the caller when [acquire_loop] reports a failure or the
+   acquire is aborted. A reused connection that cannot re-authenticate because
+   the protocol lacks re-authentication (Bolt < 5.1) is purged and the acquire
+   retried — the latter only for the driver's own auth: a session-level auth
+   unsupported by the protocol is surfaced instead. *)
 let rec acquire_loop t session_auth ~force_liveness ~force_auth =
   match take_idle t ~force_liveness with
   | Some conn -> (
@@ -219,7 +227,6 @@ let rec acquire_loop t session_auth ~force_liveness ~force_auth =
       | Error error ->
           remove_live t conn;
           Conn.close conn;
-          Eio.Semaphore.release t.permits;
           Error error)
   | None -> (
       Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> trying to hand out new connection");
@@ -241,28 +248,51 @@ let rec acquire_loop t session_auth ~force_liveness ~force_auth =
                  future switches are impossible. *)
               remove_live t conn;
               Conn.close conn;
-              Eio.Semaphore.release t.permits;
               Error
                 (Errors.Configuration_error
                    "Re-authentication is not supported by this protocol version")
           | _ -> Ok conn)
-      | Error _ as error ->
-          Eio.Semaphore.release t.permits;
-          error)
+      | Error _ as error -> error)
 
 let acquire ?(force_auth = false) ~session_auth ~force_liveness t =
   if t.closed then Error (Errors.Connection_pool_error "Pool is closed")
   else
-    let* () =
+    (* One acquisition-timeout deadline bounds the whole acquire: waiting for a
+       permit AND, when none is idle, establishing a new connection (TCP +
+       handshake + auth — [connect] runs in this deadline). The permit is
+       released whenever the acquire does not hand out a connection: on a
+       connect failure, on the deadline firing mid-connect, or when an
+       enclosing deadline (a routed driver's cluster acquire) cancels this one.
+       The deadline is [Eio.Time.Timeout.run_exn]: its own expiry surfaces as
+       [Eio.Time.Timeout], while an enclosing region's cancellation propagates
+       as a [Eio.Cancel.Cancelled] — either way the held permit is returned. *)
+    let held = ref false in
+    let release_permit () =
+      if !held then begin
+        held := false;
+        Eio.Semaphore.release t.permits
+      end
+    in
+    let outcome =
       try
         Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds t.clock t.acquisition_timeout) (fun () ->
             Eio.Semaphore.acquire t.permits;
-            Ok ())
-      with Eio.Time.Timeout ->
-        Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> acquisition timed out");
-        Error (Errors.Connection_acquisition_timeout "Timed out waiting for a free connection")
+            held := true;
+            acquire_loop t session_auth ~force_liveness ~force_auth)
+      with
+      | Eio.Time.Timeout ->
+          release_permit ();
+          Log.debug Log.pool (fun m -> m "[#0000]  _: <POOL> acquisition timed out");
+          Error (Errors.Connection_acquisition_timeout "Timed out waiting for a free connection")
+      | exn ->
+          release_permit ();
+          raise exn
     in
-    acquire_loop t session_auth ~force_liveness ~force_auth
+    match outcome with
+    | Ok conn -> Ok conn
+    | Error error ->
+        release_permit ();
+        Error error
 
 (* Hand an already-established connection to the pool as an idle connection,
    without acquiring a permit (the connection never held one). Used to recycle

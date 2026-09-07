@@ -367,8 +367,16 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
     let* transport =
       Transport.connect net sw ~timeout:(timeout_of_config clock config) ~tls address
     in
-    let* major, minor = Handshake.negotiate transport in
-    Ok (transport, major, minor, address)
+    Transport.set_read_timeout transport Eio.Time.Timeout.none;
+    let keep = ref false in
+    Fun.protect
+      ~finally:(fun () ->
+        if !keep then Transport.set_read_timeout transport (timeout_of_config clock config)
+        else try Transport.close transport with _ -> ())
+      (fun () ->
+        let* major, minor = Handshake.negotiate transport in
+        keep := true;
+        Ok (transport, major, minor, address))
   in
   let rec attempt failed errors = function
     | [] -> (
@@ -411,12 +419,22 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       last_qid = ref None;
     }
   in
-  match authenticate conn config with
-  | Ok () -> Ok conn
+  let keep = ref false in
+  let outcome =
+    Fun.protect
+      ~finally:(fun () -> if not !keep then try Transport.close transport with _ -> ())
+      (fun () ->
+        match authenticate conn config with
+        | Ok () ->
+            keep := true;
+            Ok conn
+        | Error error -> Error error)
+  in
+  match outcome with
+  | Ok conn -> Ok conn
   | Error error ->
       Log.debug Log.io (fun m ->
           m "[#%04X]  C: <OPEN FAILED> %s" (id conn) (Errors.to_string error));
-      Transport.close transport;
       Error error
 
 let logon t auth =

@@ -357,8 +357,10 @@ a failure is worth retrying.
 - [auth] (required) — from [Conn.basic_auth ?principal ?credentials ()]
   (principal defaults to [neo4j], credentials to the empty string).
 - [?user_agent] — the HELLO user agent (default [Conn.default_user_agent]).
-- [?connection_timeout] (seconds) — bounds the whole connect attempt and
-  subsequent reads/writes (default 30.0; [infinity] disables the deadline).
+- [?connection_timeout] (seconds) — bounds the TCP connect / TLS handshake
+  and the connection's reads and writes (default 30.0; [infinity] disables the
+  deadline). The Bolt version handshake itself is bounded by the
+  [connection_acquisition_timeout] acquisition deadline, not by this timeout.
 - [?config] — a [Session.config] (see below).
 - [?resolver] — [Addressing.t -> (Addressing.t list, Errors.t) result];
   replaces the address lookup, each returned address being tried in turn.

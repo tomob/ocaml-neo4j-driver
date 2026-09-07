@@ -22,10 +22,10 @@ let server_config () =
   | Ok config -> config
   | Error (`Msg msg) -> failwith ("bad TLS server config: " ^ msg)
 
-let handler behavior flow =
+let handler behavior clock flow =
   try
     let tls = Tls_eio.server_of_flow (server_config ()) flow in
-    Test_mock.serve_behavior behavior (tls :> Test_mock.flow)
+    Test_mock.serve_behavior ~clock behavior (tls :> Test_mock.flow)
   with
   | Eio.Cancel.Cancelled _ as exn -> raise exn
   | _ -> ()
