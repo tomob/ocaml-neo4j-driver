@@ -579,8 +579,12 @@ let select_from_table ?(exclude = []) cluster ~mode table =
 (* Resolve the effective database for [database] and the routing table to use:
    a fixed database is used as-is (the effective database equals it); the
    default database is resolved to the server's home database — from the cache
-   when fresh (no ROUTE), otherwise from the ROUTE response's [db] field, which
-   is then cached for [imp_user]. *)
+   when fresh (no ROUTE), otherwise from a fresh ROUTE response's [db] field,
+   which is then cached for [imp_user]. With the home-db cache disabled or
+   expired a default-database acquire always issues the ROUTE (it may have
+   moved since the last session resolved it): like the Python driver without
+   the home-database-cache optimisation, the home database is resolved per
+   session and pinned to that session. *)
 let resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth =
   match database with
   | Some db ->
@@ -600,24 +604,14 @@ let resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth =
               ~session_auth
           in
           Ok (table, Some home_db)
-      | None -> (
-          (* The home database is not cached (the home-db cache is disabled or
-             expired). A fresh routing table for the default database is reused
-             as-is — its [db] (the home database when the server reports one) is
-             cached for later — and only a missing/expired table is resolved
-             over a fresh ROUTE. *)
-          match with_lock cluster (fun () -> fresh_table cluster ~database:None ~mode) with
-          | Some table ->
-              cache_home_table cluster ~imp_user table;
-              Ok (table, Routing_table.database table)
-          | None ->
-              Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
-              let* table =
-                resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
-                  ~session_auth
-              in
-              cache_home_table cluster ~imp_user table;
-              Ok (table, Routing_table.database table)))
+      | None ->
+          Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
+          let* table =
+            resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
+              ~session_auth
+          in
+          cache_home_table cluster ~imp_user table;
+          Ok (table, Routing_table.database table))
 
 (* Result of trying to acquire a connection from a table: [Role_empty] is the
    table itself having no address for the role (an acquire may refetch once —
@@ -700,6 +694,15 @@ let force_routing_table_update cluster ~database ~bookmarks =
           ignore (with_lock cluster (fun () -> store_table cluster ~database table));
           Ok ()
       | Error _ as error -> error)
+
+(* Test-support: the (in_use, idle) counts of the data pool for [address], keyed
+   like [Addressing.to_string] ("host:port", IPv6 bracketed), or (0, 0) when no
+   pool exists yet for it (pools are created lazily). *)
+let pool_metrics cluster address =
+  with_lock cluster (fun () ->
+      match Hashtbl.find_opt cluster.pools address with
+      | Some pool -> (Pool.in_use_count pool, Pool.idle_count pool)
+      | None -> (0, 0))
 
 let close cluster =
   with_lock cluster (fun () ->

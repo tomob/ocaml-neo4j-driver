@@ -144,6 +144,7 @@ type run_metadata = {
 val run :
   ?mode:Config.access_mode ->
   ?db:string ->
+  ?imp_user:string ->
   ?bookmarks:string list ->
   ?timeout:float ->
   ?metadata:(string * Values.t) list ->

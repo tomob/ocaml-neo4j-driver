@@ -273,7 +273,7 @@ let run ?timeout ?metadata t ~query ~parameters =
         match
           Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ~telemetry:2
             ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
-            ?db:!(t.database) ?timeout ?metadata
+            ?imp_user:t.config.impersonated_user ?db:!(t.database) ?timeout ?metadata
         with
         | Ok run_metadata -> Ok run_metadata
         | Error _ as error ->

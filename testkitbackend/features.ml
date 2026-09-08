@@ -92,4 +92,8 @@ let features : string list =
        CheckSessionAuthSupport. *)
     "Feature:API:Session:AuthConfig";
     "Feature:API:Driver.SupportsSessionAuth";
+    (* Sessions may impersonate another user: routed default-database sessions
+       resolve the home database per session over ROUTE (imp_user on the wire),
+       and RUN/BEGIN carry the impersonated user. *)
+    "Feature:Impersonation";
   ]

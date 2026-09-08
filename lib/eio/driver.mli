@@ -77,3 +77,8 @@ val force_routing_table_update :
   t -> database:string option -> bookmarks:string list -> (unit, Errors.t) result
 (** Force a routing-table refresh for [database] (test-support API for the TestKit backend; a direct
     [bolt://] driver has no routing table and gets an error). *)
+
+val connection_pool_metrics : t -> address:string -> int * int
+(** The [(in_use, idle)] connection counts of the pool for [address] (the routing cluster's
+    per-address pools; a direct driver ignores the address). Test-support API for the TestKit
+    backend ([GetConnectionPoolMetrics]). *)

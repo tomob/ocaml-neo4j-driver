@@ -1271,6 +1271,20 @@ let forced_routing_table_update fields =
   | Ok () -> ("Driver", `Assoc [ ("id", `Int id) ])
   | Error error -> raise (Driver_error error)
 
+(* The connection pool metrics (in_use, idle) of the pool serving [address]
+   (routing cluster per-address pools; a direct driver reports its single
+   pool). *)
+let connection_pool_metrics fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  let address =
+    match List.assoc_opt "address" fields with
+    | Some (`String address) -> address
+    | _ -> raise (Backend_error "GetConnectionPoolMetrics needs an address")
+  in
+  let in_use, idle = Driver.connection_pool_metrics driver.driver ~address in
+  ("ConnectionPoolMetrics", `Assoc [ ("inUse", `Int in_use); ("idle", `Int idle) ])
+
 (* --- Mock time (Backend:MockTime) --- *)
 
 let fake_time_ack () = ("FakeTimeAck", `Assoc [])
@@ -1446,6 +1460,7 @@ let handle ctx name data =
   | "SessionLastBookmarks" -> Some (session_last_bookmarks fields)
   | "GetRoutingTable" -> Some (get_routing_table fields)
   | "ForcedRoutingTableUpdate" -> Some (forced_routing_table_update fields)
+  | "GetConnectionPoolMetrics" -> Some (connection_pool_metrics fields)
   | "ResolverResolutionCompleted" -> resolver_resolution_completed fields
   | _ -> raise (Backend_error ("No request handler for " ^ name))
 

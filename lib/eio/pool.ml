@@ -71,6 +71,10 @@ let with_lock m f =
   Eio.Mutex.lock m;
   Fun.protect ~finally:(fun () -> Eio.Mutex.unlock m) f
 
+(* The number of idle connections waiting to be reused. Test-support accessor
+   (the backend's GetConnectionPoolMetrics). *)
+let idle_count t = with_lock t.mutex (fun () -> Queue.length t.idle)
+
 (* Whether a connection has been idle longer than the max lifetime (the idle
    queue stamps when the connection was released). *)
 let over_lifetime t idle_since =

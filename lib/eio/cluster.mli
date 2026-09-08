@@ -80,5 +80,10 @@ val release : t -> Conn.t -> unit
 (** Return a connection to its pool (found via the connection's address; a connection whose pool is
     unknown is closed instead). *)
 
+val pool_metrics : t -> string -> int * int
+(** The [(in_use, idle)] counts of the data pool keyed by [address] ([Addressing.to_string] format),
+    or [(0, 0)] when no pool exists for it yet. Test-support API for the TestKit backend
+    ([GetConnectionPoolMetrics]). *)
+
 val close : t -> unit
 (** Close all the cluster's pools. *)

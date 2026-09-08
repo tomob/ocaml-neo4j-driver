@@ -210,3 +210,12 @@ let force_routing_table_update t ~database ~bookmarks =
   match t.connection with
   | Cluster cluster -> Cluster.force_routing_table_update cluster ~database ~bookmarks
   | Pool _ -> Error (Errors.Service_unavailable "routing requires a neo4j:// URI")
+
+(* The [(in_use, idle)] connection counts of the pool for [address]: a routed
+   driver's per-address pools, or the single pool of a direct driver (the
+   address is ignored there). Test-support API for the backend's
+   [GetConnectionPoolMetrics]. *)
+let connection_pool_metrics t ~address =
+  match t.connection with
+  | Cluster cluster -> Cluster.pool_metrics cluster address
+  | Pool pool -> (Pool.in_use_count pool, Pool.idle_count pool)

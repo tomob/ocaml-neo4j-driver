@@ -829,6 +829,67 @@ let home_db_ttl_expires () =
       Cluster.release cluster c2;
       Cluster.close cluster)
 
+(* Without the home-db cache, a default-database acquire re-resolves the home
+   database every session — even when the previously fetched routing table is
+   still fresh: each acquire issues its own ROUTE and pins its db to the
+   session. *)
+let default_db_resolves_each_session () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: both ROUTEs on the same reused connection *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+            ] );
+        ];
+        [
+          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
+      let cluster =
+        Cluster.create
+          ~pool_config:{ Config.default_pool_config with home_db_cache_ttl = 0.0 }
+          ~connect ~connect_routing:connect ~routing_context:[] ~initial clock
+      in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
+      in
+      let c1 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "first effective database" (Some "homedb") effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      let c2 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "second effective database" (Some "homedb") effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "a ROUTE per default-database session" 2
+        (count_tag 0x66 (tags (List.nth received 0)));
+      Cluster.release cluster c1;
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
 (* The home-db cache is keyed by the impersonated user: two impersonations get
    separate ROUTEs and separate effective databases. *)
 let home_db_per_imp_user () =
@@ -1280,6 +1341,8 @@ let tests =
       [ test_case "default-db acquire reuses the home db" `Quick home_db_resolves_and_caches ] );
     ( "[Cluster] home-db cache TTL expiry",
       [ test_case "expired entry re-routes" `Quick home_db_ttl_expires ] );
+    ( "[Cluster] default-db resolves per session",
+      [ test_case "fresh table does not skip the ROUTE" `Quick default_db_resolves_each_session ] );
     ( "[Cluster] routing connection liveness",
       [ test_case "RESET after the liveness timeout" `Quick routing_conn_liveness_after_idle ] );
     ( "[Cluster] home-db cache per impersonated user",

@@ -47,6 +47,10 @@ val in_use_count : t -> int
 (** The number of connections currently checked out of the pool (the load a routing cluster uses to
     balance across addresses). *)
 
+val idle_count : t -> int
+(** The number of idle connections waiting to be reused. Test-support accessor (the backend's
+    GetConnectionPoolMetrics). *)
+
 val put_conn : t -> Conn.t -> unit
 (** Get a connection, reusing an idle one (lifetime- and liveness-checked) or creating a new one.
     @return

@@ -550,7 +550,8 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
   in
   Packstream.Map items
 
-let run ?mode ?db ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~parameters =
+let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~parameters
+    =
   (* Like the Python driver, the connection's last database is only updated
      outside a transaction: inside one the BEGIN's database stays authoritative
      (a tx RUN does not carry [db]). *)
@@ -567,7 +568,7 @@ let run ?mode ?db ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~
         Result.map (fun items -> Some items) (Hydration.dehydrate_assoc_list hydration entries)
   in
   let re_auth = re_auth_of t.major t.minor in
-  let extra = build_extra ?mode ?db ?bookmarks ?timeout ?metadata () in
+  let extra = build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () in
   let* metadata_response =
     match telemetry with
     | Some feature when telemetry_wanted t ->
