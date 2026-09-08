@@ -490,8 +490,8 @@ let cache_home_table cluster ~key table =
    the server's home database: it is cached for the session's identity and the
    table is stored under the home database too, so default-database sessions
    resolve to it without a ROUTE. Malformed values are ignored. *)
-let update_table cluster ~database ~imp_user rt =
-  let key = match imp_user with Some user -> Imp_db user | None -> Driver_db in
+let update_table cluster ~database ~imp_user ~session_auth rt =
+  let key = home_db_key_of ~imp_user ~session_auth in
   match Routing_table.parse rt with
   | Some table ->
       ignore
@@ -499,6 +499,19 @@ let update_table cluster ~database ~imp_user rt =
              cache_home_table_locked cluster ~key table;
              store_table cluster ~database table))
   | None -> ()
+
+(* A RUN response on an unpinned (guessed) default-database session reported
+   [database] as the actual database the server used. When the cached home
+   database the session guessed from differs from it, the stale cache entry is
+   dropped so the next default-database session re-resolves the home database
+   over ROUTE (like the Python driver: a guessed home database that moved must
+   not keep being reused). *)
+let home_db_reported cluster ~imp_user ~session_auth database =
+  let key = home_db_key_of ~imp_user ~session_auth in
+  with_lock cluster (fun () ->
+      match Hashtbl.find_opt cluster.home_dbs key with
+      | Some (cached, _) when cached <> database -> Hashtbl.remove cluster.home_dbs key
+      | _ -> ())
 
 (* Fetch a fresh table for [database] outside the lock while holding the
    single-flight marker, then store it (or record the failure in the negative

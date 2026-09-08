@@ -132,10 +132,19 @@ let session ?config t =
     match t.connection with
     | Cluster cluster ->
         fun database rt ->
-          Cluster.update_table cluster ~database ~imp_user:config.impersonated_user rt
+          Cluster.update_table cluster ~database ~imp_user:config.impersonated_user
+            ~session_auth:config.auth rt
     | Pool _ -> fun _ _ -> ()
   in
-  Session.create config ~clock:t.clock ~connect ~release ~on_rt ()
+  let on_home_db_reported =
+    match t.connection with
+    | Cluster cluster ->
+        fun db ->
+          Cluster.home_db_reported cluster ~imp_user:config.impersonated_user
+            ~session_auth:config.auth db
+    | Pool _ -> fun _ -> ()
+  in
+  Session.create config ~clock:t.clock ~connect ~release ~on_rt ~on_home_db_reported ()
 
 (* A connection for driver-level operations (e.g. verify connectivity); return
    it with [release]. [mode] selects the connection role for routed drivers

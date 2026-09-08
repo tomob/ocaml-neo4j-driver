@@ -63,6 +63,7 @@ val create :
     (Conn.t * string option, Errors.t) result) ->
   ?release:(Conn.t -> unit) ->
   ?on_rt:(string option -> Packstream.value -> unit) ->
+  ?on_home_db_reported:(string -> unit) ->
   unit ->
   t
 (** Create a session. [connect] establishes the session's connection on first use with the session's
@@ -74,8 +75,10 @@ val create :
     then on. [release] returns the connection on [close] (default [Conn.close]; a pool provides
     [Pool.release]). [on_rt] receives the [rt] routing tables the server returns in auto-commit RUN
     responses when server-side routing is enabled, keyed by the session's effective database (the
-    routing cluster installs it to update its tables); it defaults to a no-op. [clock] bounds the
-    transaction retry budget and backoff. *)
+    routing cluster installs it to update its tables); it defaults to a no-op. [on_home_db_reported]
+    receives the [db] a server reports for an unpinned (guessed) default-database RUN response (the
+    routing cluster drops its stale home-database cache entry on a mismatch); it defaults to a
+    no-op. [clock] bounds the transaction retry budget and backoff. *)
 
 val conn : t -> (Conn.t, Errors.t) result
 (** The session's connection, connecting on first use. A held connection whose auth changed (a

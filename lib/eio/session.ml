@@ -54,6 +54,7 @@ type t = {
     (Conn.t * string option, Errors.t) result;
   release : Conn.t -> unit;
   on_rt : string option -> Packstream.value -> unit;
+  on_home_db_reported : string -> unit;
   database : string option ref;
   conn : (Conn.t * Config.access_mode) option ref;
   (* The session's own bookmarks: the config's [bookmarks] until the first
@@ -72,13 +73,15 @@ type t = {
   telemetry_sent_on : (Conn.t * int) list ref;
 }
 
-let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> ()) () =
+let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> ())
+    ?(on_home_db_reported = fun _ -> ()) () =
   {
     config;
     clock;
     connect;
     release;
     on_rt;
+    on_home_db_reported;
     database = ref config.database;
     conn = ref None;
     bookmarks = ref config.bookmarks;
@@ -277,11 +280,6 @@ let run ?timeout ?metadata t ~query ~parameters =
         with
         | Ok run_metadata -> Ok run_metadata
         | Error _ as error ->
-            (* A server FAILURE already recovered the connection with an eager
-               RESET (Conn.recover_after_failure); a connection still in the
-               FAILED state was not (a connection-level failure) — recover it
-               here, dropping it when the server terminated the connection so
-               the next operation reconnects instead of reusing a dead socket. *)
             (if Conn.is_failed conn then
                match Conn.reset conn with
                | Ok () -> ()
@@ -290,13 +288,11 @@ let run ?timeout ?metadata t ~query ~parameters =
                    t.release conn);
             error
       in
-      (* Server-side routing: when the server advertised [ssr.enabled] and
-         answered RUN with an [rt] routing table, hand it to the on_rt callback
-         (the routing cluster of a routed driver updates its table). The
-         callback gets the session's effective database, so SSR tables land
-         under the resolved key. *)
       (if Conn.ssr_enabled conn then
          match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
+      (match (!(t.database), run_metadata.db) with
+      | None, Some db -> t.on_home_db_reported db
+      | _ -> ());
       let stream =
         Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary ->
             mark_bookmark t summary)

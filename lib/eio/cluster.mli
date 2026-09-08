@@ -59,11 +59,24 @@ val deactivate : t -> Addressing.t -> unit
 val on_write_failure : t -> database:string option -> Addressing.t -> unit
 (** Remove [addr] from the [writers] of [database] (a NotALeader / read-only failure). *)
 
-val update_table : t -> database:string option -> imp_user:string option -> Packstream.value -> unit
+val update_table :
+  t ->
+  database:string option ->
+  imp_user:string option ->
+  session_auth:Auth_manager.token option ->
+  Packstream.value ->
+  unit
 (** Apply an [rt] routing table received from the server (server-side routing) for [database]: parse
     it and, when valid, replace the cached table (fresh timestamp), refresh [routers] and clear a
-    cached fetch error. The table's [db] field (the server's home database) is cached for [imp_user]
-    so default-database sessions can reuse it without a ROUTE. Malformed values are ignored. *)
+    cached fetch error. The table's [db] field (the server's home database) is cached for the
+    session identity ([imp_user] / [session_auth], like [home_db_key_of]) so default-database
+    sessions can reuse it without a ROUTE. Malformed values are ignored. *)
+
+val home_db_reported :
+  t -> imp_user:string option -> session_auth:Auth_manager.token option -> string -> unit
+(** A RUN response on an unpinned (guessed) default-database session reported the [db] it actually
+    used: when it differs from the home database cached for the session identity, the stale cache
+    entry is dropped so the next default-database session re-resolves over ROUTE. *)
 
 val routing_table_of : t -> database:string option -> Routing_table.t option
 (** The cached routing table for [database], if any (no fetch; read under the lock). Test-support

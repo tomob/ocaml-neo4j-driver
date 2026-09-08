@@ -501,6 +501,7 @@ type run_metadata = {
   bookmark : string option;
   t_first : int option;
   rt : Packstream.value option;
+  db : string option;
 }
 
 let map_fields key = function Packstream.Map fields -> List.assoc_opt key fields | _ -> None
@@ -523,7 +524,8 @@ let run_metadata_of metadata =
   let bookmark = map_fields "bookmark" metadata |> string_opt in
   let t_first = map_fields "t_first" metadata |> int_opt in
   let rt = map_fields "rt" metadata in
-  { fields; qid; bookmark; t_first; rt }
+  let db = map_fields "db" metadata |> string_opt in
+  { fields; qid; bookmark; t_first; rt; db }
 
 (* The extra map shared by BEGIN and auto-commit RUN: mode, db, impersonation,
    bookmarks, tx_metadata and tx_timeout (milliseconds). *)

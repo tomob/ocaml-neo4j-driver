@@ -610,7 +610,8 @@ let update_table_replaces_table () =
       check int "first read goes to B" (List.nth ports 1) (Addressing.port (Conn.address c1));
       let a = "127.0.0.1:" ^ string_of_int (List.nth ports 0) in
       let c = "127.0.0.1:" ^ string_of_int (List.nth ports 2) in
-      Cluster.update_table cluster ~database:None ~imp_user:None (rt ~db:"homedb" [ a ] [ c ] [ c ]);
+      Cluster.update_table cluster ~database:None ~imp_user:None ~session_auth:None
+        (rt ~db:"homedb" [ a ] [ c ] [ c ]);
       let c2 =
         match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
       in
@@ -675,7 +676,8 @@ let session_rt_updates_routing_table () =
           ~connect:(fun ~mode ~database ~bookmarks ~auth:_ ->
             Cluster.acquire cluster ~mode ~database ~imp_user:None ~bookmarks ~session_auth:None
               ~force_liveness:false)
-          ~on_rt:(fun database rt -> Cluster.update_table cluster ~database ~imp_user:None rt)
+          ~on_rt:(fun database rt ->
+            Cluster.update_table cluster ~database ~imp_user:None ~session_auth:None rt)
           ()
       in
       (match Session.run session ~query:"RETURN 1" ~parameters:[] with
@@ -1223,6 +1225,71 @@ let route_carries_session_bookmarks () =
         (route_bookmarks (List.nth received 0) = [ "bm1"; "bm2" ]);
       Cluster.close cluster)
 
+(* A guessed (unpinned) default-database run reported [db] different from the
+   guessed home database: [home_db_reported] drops the stale cache entry, so
+   the next default-database acquire re-resolves over a fresh ROUTE (and pins)
+   instead of reusing the stale guess. *)
+let guessed_home_db_mismatch_invalidates_cache () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: the first (explicit) ROUTE and the re-resolution ROUTE after
+           the guessed home database was reported to have moved *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+            ] );
+        ];
+        (* reader B: connection 1 (the first explicit acquire) and connection 2
+           (the re-resolved acquire), both with SSR *)
+        [
+          ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]);
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
+      let cluster =
+        Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
+          ~routing_context:[] ~initial clock
+      in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
+      in
+      (* Seed the cache (an explicit resolution) and learn that SSR is around. *)
+      let c1 =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      (* A guessed (unpinned) run was answered with the actual home database
+         "otherdb": the stale "homedb" cache entry must be dropped. *)
+      Cluster.home_db_reported cluster ~imp_user:None ~session_auth:None "otherdb";
+      (* The stale entry is gone: the next default-database acquire re-resolves
+         over a fresh ROUTE and pins the resolved home database. *)
+      let c2 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "re-resolved home database" (Some "homedb") effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "a stale guessed home database is re-resolved" 2
+        (count_tag 0x66 (tags (List.nth received 0)));
+      Cluster.release cluster c1;
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
 (* An SSR [rt] table (update_table) caches the home database and its table:
    once an SSR-capable connection has been seen, the next default-database
    acquire for the same user guesses both without a ROUTE (and stays
@@ -1268,7 +1335,7 @@ let update_table_captures_home_db () =
       in
       check int "first acquire routed" 1 (count_tag 0x66 (tags received));
       Cluster.release cluster c1;
-      Cluster.update_table cluster ~database:None ~imp_user:(Some "u")
+      Cluster.update_table cluster ~database:None ~imp_user:(Some "u") ~session_auth:None
         (rt ~db:"homedb" [ addr ] [ addr ] [ addr ]);
       let c2 =
         match acquire () with
@@ -1493,6 +1560,8 @@ let tests =
       [ test_case "cache hit skips the ROUTE once SSR is seen" `Quick home_db_guessed_after_ssr ] );
     ( "[Cluster] home db never guessed without SSR",
       [ test_case "no cache reuse without SSR" `Quick home_db_not_guessed_without_ssr ] );
+    ( "[Cluster] guessed home db reported as moved",
+      [ test_case "stale guess re-resolves" `Quick guessed_home_db_mismatch_invalidates_cache ] );
     ( "[Cluster] routing connection liveness",
       [ test_case "RESET after the liveness timeout" `Quick routing_conn_liveness_after_idle ] );
     ( "[Cluster] home-db cache per impersonated user",

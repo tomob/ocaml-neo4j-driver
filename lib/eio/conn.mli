@@ -135,11 +135,12 @@ type run_metadata = {
   bookmark : string option;
   t_first : int option;
   rt : Packstream.value option;
+  db : string option;
 }
 (** Metadata of a RUN response: the result's field names, the query id (for multiple results), the
     [bookmark] reported for an auto-commit transaction (if any), the [t_first] timing (result
-    available-after, milliseconds) and the [rt] routing-table value reported when server-side
-    routing is enabled (if any). *)
+    available-after, milliseconds), the [rt] routing-table value reported when server-side routing
+    is enabled (if any), and the [db] the server reports it actually used for the query (if any). *)
 
 val run :
   ?mode:Config.access_mode ->
