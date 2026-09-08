@@ -51,6 +51,11 @@ let features : string list =
     (* A clean connection is released without a RESET (reset happens lazily on
        reuse, or to recover a FAILED connection on release). *)
     "Optimization:MinimalResets";
+    (* The driver keeps a home-database cache keyed by the session identity and
+       guesses the cached home database for default-database sessions once an
+       SSR-capable connection has been seen (a wrong guess is correctable); the
+       cache entry is dropped when a guessed run reports a different database. *)
+    "Optimization:HomeDatabaseCache";
     (* On a Neo.ClientError.Security.AuthorizationExpired no connection is
        reused for anything but finishing a started job: the driver marks every
        connection unauthenticated and re-establishes auth on its next use. *)

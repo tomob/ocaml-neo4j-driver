@@ -501,16 +501,14 @@ let update_table cluster ~database ~imp_user ~session_auth rt =
   | None -> ()
 
 (* A RUN response on an unpinned (guessed) default-database session reported
-   [database] as the actual database the server used. When the cached home
-   database the session guessed from differs from it, the stale cache entry is
-   dropped so the next default-database session re-resolves the home database
-   over ROUTE (like the Python driver: a guessed home database that moved must
-   not keep being reused). *)
+   [database] as the actual database the server used: it is remembered for the
+   session identity, replacing a stale cached home database the session
+   guessed from (like the Python driver's database_callback). *)
 let home_db_reported cluster ~imp_user ~session_auth database =
   let key = home_db_key_of ~imp_user ~session_auth in
   with_lock cluster (fun () ->
       match Hashtbl.find_opt cluster.home_dbs key with
-      | Some (cached, _) when cached <> database -> Hashtbl.remove cluster.home_dbs key
+      | Some (cached, _) when cached <> database -> set_home_db cluster key database
       | _ -> ())
 
 (* Fetch a fresh table for [database] outside the lock while holding the
@@ -647,15 +645,18 @@ let select_from_table ?(exclude = []) cluster ~mode table =
 (* Resolve the effective database for [database] and the routing table to use.
    A fixed database is used as-is ([effective] = [table_key] = it). The default
    database resolves to the server's home database in one of two ways:
-   - "guessed" — when a connection with server-side routing has been seen and
-     the identity's cache entry is fresh, the cached home database's table is
-     used without a ROUTE and the session stays unpinned ([effective] = None:
-     a wrong guess is safe, the server reports and can correct it);
+   - "guessed" — when a connection with server-side routing has been seen, the
+     identity's cache entry is fresh AND a fresh routing table is available for
+     the cached home database, that table is used without a ROUTE and the
+     session stays unpinned ([effective] = None: a wrong guess is safe, the
+     server reports and can correct it);
    - otherwise the home database is resolved over a fresh ROUTE, pinned to the
-     session ([effective] = [Some home_db]) and cached for the identity. With
-     the home-db cache disabled or expired a default-database acquire therefore
-     always issues the ROUTE (it may have moved since the last session resolved
-     it), like the Python driver without the home-database-cache optimisation. *)
+     session ([effective] = [Some home_db]) and cached for the identity — also
+     when a guessed cache entry points at a database whose routing table is
+     missing. With the home-db cache disabled or expired a default-database
+     acquire therefore always issues the ROUTE (the home database may have
+     moved since the last session resolved it), like the Python driver without
+     the home-database-cache optimisation. *)
 let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key ~bookmarks
     ~session_auth =
   match database with
@@ -667,21 +668,44 @@ let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key
       in
       Ok { table; effective = Some db; guessed = false; table_key = Some db }
   | None -> (
-      match
+      (* The home database is resolved explicitly (a fresh ROUTE) unless an
+         SSR-capable connection has been seen AND a fresh cache entry points at
+         a home database whose routing table is available: then the cached
+         home database is "guessed" — the session is not pinned to it (its
+         queries carry no [db]) and the server may report the actual database.
+         A guessed database whose table is missing is resolved explicitly
+         instead (a ROUTE without [db], like the Python driver). *)
+      let cached_home_db =
         if force_explicit || not cluster.ssr_seen then None
         else with_lock cluster (fun () -> home_db_of cluster key)
-      with
-      | Some home_db ->
-          Log.debug Log.pool (fun m ->
-              m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
-          let* table =
-            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~key ~bookmarks
-              ~force:false ~session_auth
-          in
-          (* The home database is guessed from the cache: the session is not
-             pinned to it (its queries carry no [db]) and the server may report
-             the actual database. *)
-          Ok { table; effective = None; guessed = true; table_key = Some home_db }
+      in
+      match cached_home_db with
+      | Some home_db -> (
+          match
+            with_lock cluster (fun () -> fresh_table cluster ~database:(Some home_db) ~mode)
+          with
+          | Some table ->
+              Log.debug Log.pool (fun m ->
+                  m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
+              Ok { table; effective = None; guessed = true; table_key = Some home_db }
+          | None ->
+              Log.debug Log.pool (fun m ->
+                  m
+                    "[#0000]  _: <WORKSPACE> no table for the cached home database %s, resolving \
+                     explicitly"
+                    home_db);
+              let* table =
+                resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
+                  ~session_auth
+              in
+              cache_home_table cluster ~key table;
+              Ok
+                {
+                  table;
+                  effective = Routing_table.database table;
+                  guessed = false;
+                  table_key = Routing_table.database table;
+                })
       | None ->
           Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
           let* table =

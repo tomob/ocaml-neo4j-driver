@@ -56,10 +56,12 @@ let default_pool_config =
     connection_write_timeout = 30.0;
     keep_alive = true;
     telemetry_disabled = false;
-    (* The home-database cache is off by default (the Optimisation:HomeDatabaseCache
-       feature is not advertised): a default-database acquire always re-resolves
-       the home database over ROUTE, like the Python driver without the feature. *)
-    home_db_cache_ttl = 0.0;
+    (* The home-database cache is on (the Optimization:HomeDatabaseCache feature
+       is advertised): a default-database session may reuse the cached home
+       database of its identity — guessed only when a server-side-routing
+       capable connection has been seen (a wrong guess is then correctable) —
+       instead of re-resolving it over ROUTE. A TTL <= 0 disables it. *)
+    home_db_cache_ttl = Float.infinity;
   }
 
 (* The names of the checks that fail, in order. *)
