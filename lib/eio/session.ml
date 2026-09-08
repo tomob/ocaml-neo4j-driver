@@ -291,7 +291,9 @@ let run ?timeout ?metadata t ~query ~parameters =
       (if Conn.ssr_enabled conn then
          match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
       (match (!(t.database), run_metadata.db) with
-      | None, Some db -> t.on_home_db_reported db
+      | None, Some db ->
+          t.database := Some db;
+          t.on_home_db_reported db
       | _ -> ());
       let stream =
         Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary ->
@@ -339,15 +341,20 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
           ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
           ()
       in
+      let report_actual_db reported_db =
+        match (!(t.database), reported_db) with
+        | None, Some db ->
+            t.database := Some db;
+            t.on_home_db_reported db
+        | _ -> ()
+      in
       match Tx.begin_transaction conn ~extra ~fetch_size:t.config.fetch_size ~telemetry with
-      | Ok tx ->
+      | Ok (tx, reported_db) ->
+          report_actual_db reported_db;
           t.current_tx := Some tx;
           Ok tx
       | Error (Errors.Neo4j _ as error) -> Error error
       | Error error ->
-          (* A failed BEGIN (e.g. a connection-level error on a connection whose
-             server has gone away) leaves the connection unusable: drop it so
-             the next operation reconnects instead of reusing it. *)
           t.conn := None;
           t.release conn;
           Error error)

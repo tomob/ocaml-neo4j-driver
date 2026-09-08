@@ -797,14 +797,18 @@ let begin_ ?telemetry t ~extra =
       | _ -> ())
   | _ -> ());
   let re_auth = re_auth_of t.major t.minor in
-  let* _ =
+  let* metadata =
     match telemetry with
     | Some feature when telemetry_wanted t ->
         request_telemetry t ~message:State.Begin ~re_auth feature (fun () ->
             Bolt.send t.transport ~tag:Bolt.begin_tag [ extra ])
     | _ -> request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra)
   in
-  Ok ()
+  Ok
+    (match metadata with
+    | Packstream.Map fields -> (
+        match List.assoc_opt "db" fields with Some (Packstream.String db) -> Some db | _ -> None)
+    | _ -> None)
 
 let commit t =
   let re_auth = re_auth_of t.major t.minor in

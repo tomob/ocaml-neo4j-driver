@@ -74,9 +74,9 @@ val update_table :
 
 val home_db_reported :
   t -> imp_user:string option -> session_auth:Auth_manager.token option -> string -> unit
- (** A RUN response on an unpinned (guessed) default-database session reported the [db] it actually
-     used: it replaces the home database cached for the session identity (a stale guess the server
-     corrected). *)
+(** A RUN response on an unpinned (guessed) default-database session reported the [db] it actually
+    used: it replaces the home database cached for the session identity (a stale guess the server
+    corrected). *)
 
 val routing_table_of : t -> database:string option -> Routing_table.t option
 (** The cached routing table for [database], if any (no fetch; read under the lock). Test-support

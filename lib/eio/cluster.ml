@@ -668,13 +668,6 @@ let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key
       in
       Ok { table; effective = Some db; guessed = false; table_key = Some db }
   | None -> (
-      (* The home database is resolved explicitly (a fresh ROUTE) unless an
-         SSR-capable connection has been seen AND a fresh cache entry points at
-         a home database whose routing table is available: then the cached
-         home database is "guessed" — the session is not pinned to it (its
-         queries carry no [db]) and the server may report the actual database.
-         A guessed database whose table is missing is resolved explicitly
-         instead (a ROUTE without [db], like the Python driver). *)
       let cached_home_db =
         if force_explicit || not cluster.ssr_seen then None
         else with_lock cluster (fun () -> home_db_of cluster key)

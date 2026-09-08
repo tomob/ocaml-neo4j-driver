@@ -162,10 +162,11 @@ val run :
       [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
       the next request). *)
 
-val begin_ : ?telemetry:int -> t -> extra:Packstream.value -> (unit, Errors.t) result
+val begin_ : ?telemetry:int -> t -> extra:Packstream.value -> (string option, Errors.t) result
 (** Send a BEGIN message (start a transaction) with the given [extra] map (see [build_extra]). A
     RESET is sent first if the server is in the [Failed] state. [telemetry] batches a TELEMETRY
-    notification with the BEGIN. *)
+    notification with the BEGIN. Returns the [db] the server reports the transaction runs on (Bolt
+    5.2+), if any. *)
 
 val build_extra :
   ?mode:Config.access_mode ->

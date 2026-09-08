@@ -51,7 +51,7 @@ let connect net clock sw port =
 
 let begin_tx conn =
   match Tx.begin_transaction conn ~extra:(Conn.build_extra ()) ~fetch_size:None ~telemetry:None with
-  | Ok tx -> tx
+  | Ok (tx, _) -> tx
   | Error error -> fail (Errors.to_string error)
 
 (* begin -> run -> commit: the wire sequence and the captured bookmark. *)
@@ -131,6 +131,7 @@ let build_extra_fields () =
       (match Tx.begin_transaction conn ~extra ~fetch_size:None ~telemetry:None with
       | Ok _ -> ()
       | Error e -> fail (Errors.to_string e));
+
       let tag, fields = unpack_message (List.hd !received) in
       check int "message tag" 0x11 tag;
       check string "mode" "r" (map_value fields "mode");

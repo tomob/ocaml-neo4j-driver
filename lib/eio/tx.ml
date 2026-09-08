@@ -34,7 +34,8 @@ let metadata_string key = function
 let begin_transaction conn ~extra ~fetch_size ~telemetry =
   match Conn.begin_ ?telemetry conn ~extra with
   | Error _ as error -> error
-  | Ok () -> Ok { conn; fetch_size; state = Open; bookmark = ref None; streams = [] }
+  | Ok reported_db ->
+      Ok ({ conn; fetch_size; state = Open; bookmark = ref None; streams = [] }, reported_db)
 
 (* Drain the transaction's still-open results (like the Python driver's
    _consume_results) so COMMIT/ROLLBACK can follow, and mark them closed: a
