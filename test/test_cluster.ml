@@ -10,6 +10,10 @@ open Alcotest
 (* The cluster tests exercise the home-database cache explicitly, so they opt
    in with an unbounded TTL (the production default disables the cache). *)
 let default_pool_config = { Config.default_pool_config with home_db_cache_ttl = infinity }
+
+(* A HELLO response advertising server-side routing: only then may a
+   default-database session "guess" the home database from the cache. *)
+let ssr_hints = [ ("hints", Packstream.Map [ ("ssr.enabled", Packstream.Bool true) ]) ]
 let auth () = Conn.basic_auth ~principal:"neo4j" ~credentials:"password" ()
 
 let config host port =
@@ -170,13 +174,13 @@ let per_role_least_loaded () =
               Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b; c ] [ d ]) ];
             ] );
         ];
-        (* readers B and C: one pool connection each *)
-        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
-        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
-        (* writer D: one pool connection per write *)
+        (* readers B and C: one pool connection each (with SSR) *)
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]) ];
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success_meta ssr_hints ]) ];
+        (* writer D: one pool connection per write (with SSR) *)
         [
-          ((5, 0), List.nth received 3, [ Test_mock.Success ]);
-          ((5, 0), List.nth received 3, [ Test_mock.Success ]);
+          ((5, 0), List.nth received 3, [ Test_mock.Success_meta ssr_hints ]);
+          ((5, 0), List.nth received 3, [ Test_mock.Success_meta ssr_hints ]);
         ];
       ])
     (fun net clock sw ports ->
@@ -239,9 +243,9 @@ let least_loaded_reader_selection () =
         ];
         (* reader B: the first and last acquires (the released connection is
            reused as-is, MinimalResets — no RESET and no new HELLO). *)
-        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]) ];
         (* reader C: the middle acquire only *)
-        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success_meta ssr_hints ]) ];
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
@@ -363,17 +367,17 @@ let deactivate_on_database_unavailable () =
               Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b; c ] [ b ]) ];
             ] );
         ];
-        (* reader B: HELLO ok, RUN fails with DatabaseUnavailable *)
+        (* reader B: HELLO ok (with SSR), RUN fails with DatabaseUnavailable *)
         [
           ( (5, 0),
             List.nth received 1,
             [
-              Test_mock.Success;
+              Test_mock.Success_meta ssr_hints;
               Test_mock.Failure ("Neo.TransientError.General.DatabaseUnavailable", "db down");
             ] );
         ];
-        (* reader C: the second acquire's connection *)
-        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
+        (* reader C: the second acquire's connection (with SSR) *)
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success_meta ssr_hints ]) ];
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
@@ -581,10 +585,11 @@ let update_table_replaces_table () =
               Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
             ] );
         ];
-        (* reader B: one pool connection *)
-        [ ((5, 0), List.nth received 1, [ Test_mock.Success ]) ];
-        (* reader C: one pool connection *)
-        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
+        (* reader B: one pool connection (with SSR, so a later default-db
+           acquire may guess the cached home database) *)
+        [ ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]) ];
+        (* reader C: one pool connection (with SSR) *)
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success_meta ssr_hints ]) ];
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
@@ -651,8 +656,9 @@ let session_rt_updates_routing_table () =
                 ];
             ] );
         ];
-        (* reader C: one pool connection *)
-        [ ((5, 0), List.nth received 2, [ Test_mock.Success ]) ];
+        (* reader C: one pool connection (with SSR, so the guessed acquire may
+           use it) *)
+        [ ((5, 0), List.nth received 2, [ Test_mock.Success_meta ssr_hints ]) ];
       ])
     (fun net clock sw ports ->
       let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
@@ -710,8 +716,9 @@ let route_bookmarks received =
   | _ -> fail "expected a ROUTE message"
 
 (* A default-database acquire resolves the home database from the ROUTE
-   response's [db] field and caches it: the second acquire reuses it (and the
-   aliased home-database table) without a new ROUTE. *)
+   response's [db] field and caches it for the identity. Once an SSR-capable
+   connection has been seen, the second acquire "guesses" the cached home
+   database: no new ROUTE and the session stays unpinned (effective None). *)
 let home_db_resolves_and_caches () =
   let received = List.init 2 (fun _ -> ref []) in
   Test_mock.with_servers 2
@@ -728,10 +735,10 @@ let home_db_resolves_and_caches () =
               Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
             ] );
         ];
-        (* reader B: one pool connection per acquire *)
+        (* reader B: one pool connection per acquire, both with SSR *)
         [
-          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
-          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]);
         ];
       ])
     (fun net clock sw ports ->
@@ -750,14 +757,14 @@ let home_db_resolves_and_caches () =
       let c1 =
         match acquire () with
         | Ok (conn, effective) ->
-            check (option string) "first effective database" (Some "homedb") effective;
+            check (option string) "first pins the resolved home database" (Some "homedb") effective;
             conn
         | Error e -> fail (Errors.to_string e)
       in
       let c2 =
         match acquire () with
         | Ok (conn, effective) ->
-            check (option string) "second effective database" (Some "homedb") effective;
+            check (option string) "second is unpinned (guessed)" None effective;
             conn
         | Error e -> fail (Errors.to_string e)
       in
@@ -885,6 +892,117 @@ let default_db_resolves_each_session () =
         | Error e -> fail (Errors.to_string e)
       in
       check int "a ROUTE per default-database session" 2
+        (count_tag 0x66 (tags (List.nth received 0)));
+      Cluster.release cluster c1;
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
+(* With an SSR-capable connection seen and a fresh home-db cache entry, a
+   default-database acquire "guesses" the home database: no ROUTE is issued and
+   the session stays unpinned (effective database None). *)
+let home_db_guessed_after_ssr () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: one ROUTE (the first, explicit resolution only) *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+            ] );
+        ];
+        (* reader B: both connections advertise server-side routing *)
+        [
+          ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success_meta ssr_hints ]);
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
+      let cluster =
+        Cluster.create
+          ~pool_config:{ Config.default_pool_config with home_db_cache_ttl = infinity }
+          ~connect ~connect_routing:connect ~routing_context:[] ~initial clock
+      in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
+      in
+      let c1 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "first pins the resolved home database" (Some "homedb") effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      let c2 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "second is unpinned (guessed)" None effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "a guessed session does not ROUTE" 1 (count_tag 0x66 (tags (List.nth received 0)));
+      Cluster.release cluster c1;
+      Cluster.release cluster c2;
+      Cluster.close cluster)
+
+(* Without an SSR-capable connection the home-db cache is never guessed from:
+   every default-database session re-resolves (and pins) over a fresh ROUTE,
+   however fresh the cache entry is. *)
+let home_db_not_guessed_without_ssr () =
+  let received = List.init 2 (fun _ -> ref []) in
+  Test_mock.with_servers 2
+    (fun ports ->
+      let addr i = "127.0.0.1:" ^ string_of_int i in
+      let a = addr (List.nth ports 0) in
+      let b = addr (List.nth ports 1) in
+      [
+        (* router A: both default-database sessions ROUTE *)
+        [
+          ( (5, 0),
+            List.nth received 0,
+            [
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ a ] [ b ] [ b ]) ];
+            ] );
+        ];
+        [
+          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+          ((5, 0), List.nth received 1, [ Test_mock.Success ]);
+        ];
+      ])
+    (fun net clock sw ports ->
+      let initial = Addressing.IPv4 ("127.0.0.1", List.nth ports 0) in
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
+      in
+      let cluster =
+        Cluster.create
+          ~pool_config:{ Config.default_pool_config with home_db_cache_ttl = infinity }
+          ~connect ~connect_routing:connect ~routing_context:[] ~initial clock
+      in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:None ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
+      in
+      let c1 =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      let c2 =
+        match acquire () with Ok (conn, _) -> conn | Error e -> fail (Errors.to_string e)
+      in
+      check int "every default-database session re-routes" 2
         (count_tag 0x66 (tags (List.nth received 0)));
       Cluster.release cluster c1;
       Cluster.release cluster c2;
@@ -1105,34 +1223,62 @@ let route_carries_session_bookmarks () =
         (route_bookmarks (List.nth received 0) = [ "bm1"; "bm2" ]);
       Cluster.close cluster)
 
-(* An SSR [rt] table (update_table) caches the home database and its table: the
-   next default-database acquire for the same user reuses both without a
-   ROUTE. *)
+(* An SSR [rt] table (update_table) caches the home database and its table:
+   once an SSR-capable connection has been seen, the next default-database
+   acquire for the same user guesses both without a ROUTE (and stays
+   unpinned). *)
 let update_table_captures_home_db () =
   let received = ref [] in
-  Test_mock.with_mock
-    (Test_mock.Session ((5, 0), received, [ Test_mock.Success ]))
-    (fun net clock sw port ->
-      let addr = "127.0.0.1:" ^ string_of_int port in
+  Test_mock.with_servers 1
+    (fun ports ->
+      let addr = "127.0.0.1:" ^ string_of_int (List.hd ports) in
+      [
+        (* the single router/data server: HELLO (with SSR) then the ROUTE; the
+           connection is then reused from the data pool *)
+        [
+          ( (5, 0),
+            received,
+            [
+              Test_mock.Success_meta ssr_hints;
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ addr ] [ addr ] [ addr ]) ];
+            ] );
+        ];
+      ])
+    (fun net clock sw ports ->
+      let port = List.hd ports in
       let initial = Addressing.IPv4 ("127.0.0.1", port) in
-      let connect ~session_auth:_ a =
-        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port a))
+      let connect ~session_auth:_ addr =
+        Conn.connect net clock sw (config "127.0.0.1" (Addressing.port addr))
       in
       let cluster =
         Cluster.create ~pool_config:default_pool_config ~connect ~connect_routing:connect
           ~routing_context:[] ~initial clock
       in
+      let addr = "127.0.0.1:" ^ string_of_int port in
+      let acquire () =
+        Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") ~bookmarks:[]
+          ~session_auth:None ~force_liveness:false
+      in
+      let c1 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "first pins the resolved home database" (Some "homedb") effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "first acquire routed" 1 (count_tag 0x66 (tags received));
+      Cluster.release cluster c1;
       Cluster.update_table cluster ~database:None ~imp_user:(Some "u")
         (rt ~db:"homedb" [ addr ] [ addr ] [ addr ]);
-      (match
-         Cluster.acquire cluster ~mode:Config.Read ~database:None ~imp_user:(Some "u") ~bookmarks:[]
-           ~session_auth:None ~force_liveness:false
-       with
-      | Ok (conn, effective) ->
-          check (option string) "effective database from SSR table" (Some "homedb") effective;
-          check int "no ROUTE after the SSR table update" 0 (count_tag 0x66 (tags received));
-          Cluster.release cluster conn
-      | Error e -> fail (Errors.to_string e));
+      let c2 =
+        match acquire () with
+        | Ok (conn, effective) ->
+            check (option string) "seeded home db guessed (unpinned)" None effective;
+            conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      check int "no ROUTE after the SSR table update" 1 (count_tag 0x66 (tags received));
+      Cluster.release cluster c2;
       Cluster.close cluster)
 
 (* The cached table is visible through routing_table_of only after a fetch; a
@@ -1254,7 +1400,7 @@ let routed_security_error_retryable () =
           ( (5, 4),
             List.nth received 1,
             [
-              Test_mock.Success;
+              Test_mock.Success_meta ssr_hints;
               Test_mock.Success;
               Test_mock.Failure ("Neo.ClientError.Security.Unauthorized", "bad creds");
               Test_mock.Success;
@@ -1343,6 +1489,10 @@ let tests =
       [ test_case "expired entry re-routes" `Quick home_db_ttl_expires ] );
     ( "[Cluster] default-db resolves per session",
       [ test_case "fresh table does not skip the ROUTE" `Quick default_db_resolves_each_session ] );
+    ( "[Cluster] home db guessed after SSR",
+      [ test_case "cache hit skips the ROUTE once SSR is seen" `Quick home_db_guessed_after_ssr ] );
+    ( "[Cluster] home db never guessed without SSR",
+      [ test_case "no cache reuse without SSR" `Quick home_db_not_guessed_without_ssr ] );
     ( "[Cluster] routing connection liveness",
       [ test_case "RESET after the liveness timeout" `Quick routing_conn_liveness_after_idle ] );
     ( "[Cluster] home-db cache per impersonated user",

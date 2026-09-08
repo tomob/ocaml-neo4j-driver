@@ -19,6 +19,38 @@ open Neodriver_core
 
 let ( let* ) = Result.bind
 
+(* The identity whose home database is cached: the session's impersonated user;
+   the principal of a session-level basic token (like the Python driver, which
+   consolidates a basic token to its principal); a canonical representation of
+   any other session-level token; or the driver's own shared identity (all
+   driver-level auths are equal — a rotated auth token does not invalidate the
+   cache entry). *)
+type db_key = Driver_db | Imp_db of string | Auth_db of string
+
+(* A stable, comparable representation of an auth token that is not the basic
+   principal case handled in [home_db_key_of]. *)
+let canonical_auth token =
+  let str = function None -> "" | Some s -> s in
+  let parameter (key, value) = key ^ "=" ^ Neodriver_packstream.Packstream.to_string value in
+  String.concat "\000"
+    (token.Auth_manager.scheme :: str token.Auth_manager.principal
+    :: str token.Auth_manager.credentials
+    :: str token.Auth_manager.realm
+    :: List.map parameter token.Auth_manager.parameters)
+
+(* The home-db cache key of a session: its impersonated user wins; otherwise a
+   session-level basic token is consolidated to its principal; any other
+   session-level token uses a canonical key; a plain session shares the
+   driver's own entry. *)
+let home_db_key_of ~imp_user ~session_auth =
+  match imp_user with
+  | Some user -> Imp_db user
+  | None -> (
+      match session_auth with
+      | Some { Auth_manager.scheme = "basic"; principal = Some principal; _ } -> Imp_db principal
+      | Some token -> Auth_db (canonical_auth token)
+      | None -> Driver_db)
+
 type t = {
   pool_config : Config.pool_config;
   connect : session_auth:Auth_manager.token option -> Addressing.t -> (Conn.t, Errors.t) result;
@@ -34,7 +66,12 @@ type t = {
   in_flight : (string option, bool) Hashtbl.t;
   pools : (string, Pool.t) Hashtbl.t;
   routing : (string, Conn.t * Mtime.t) Hashtbl.t;
-  home_dbs : (string option, string * Mtime.t) Hashtbl.t;
+  home_dbs : (db_key, string * Mtime.t) Hashtbl.t;
+  (* Whether a connection with server-side routing ([ssr.enabled]) has been
+     acquired: only then may a default-database session "guess" the home
+     database from the cache — a wrong guess is safe because the server can
+     correct it. *)
+  mutable ssr_seen : bool;
   lock : Eio.Mutex.t;
   cond : Eio.Condition.t;
   routing_lock : Eio.Mutex.t;
@@ -62,6 +99,7 @@ let create ?resolver ?(auth_manager : Auth_manager.t option = None) ~pool_config
     pools = Hashtbl.create 4;
     routing = Hashtbl.create 4;
     home_dbs = Hashtbl.create 4;
+    ssr_seen = false;
     lock = Eio.Mutex.create ();
     cond = Eio.Condition.create ();
     routing_lock = Eio.Mutex.create ();
@@ -203,21 +241,19 @@ let pool_for cluster addr =
       Hashtbl.add cluster.pools key pool;
       pool
 
-(* The cached home database of [imp_user] (None = the driver's own user), if
-   its age is within [home_db_cache_ttl] (caller holds the lock). An expired
-   entry is a miss: the next default-database session resolves it again over
-   ROUTE. *)
-let home_db_of cluster imp_user =
-  match Hashtbl.find_opt cluster.home_dbs imp_user with
+(* The cached home database of the session identity [key], if its age is within
+   [home_db_cache_ttl] (caller holds the lock). An expired entry is a miss: the
+   next default-database session resolves it again over ROUTE. *)
+let home_db_of cluster key =
+  match Hashtbl.find_opt cluster.home_dbs key with
   | Some (database, cached_at)
     when elapsed_s cluster cached_at <= cluster.pool_config.home_db_cache_ttl ->
       Some database
   | _ -> None
 
-(* Cache [database] as the home database of [imp_user] (caller holds the
-   lock). *)
-let set_home_db cluster imp_user database =
-  Hashtbl.replace cluster.home_dbs imp_user (database, now cluster)
+(* Cache [database] as the home database of the session identity [key] (caller
+   holds the lock). *)
+let set_home_db cluster key database = Hashtbl.replace cluster.home_dbs key (database, now cluster)
 
 (* Re-authenticate the routing connection when the manager's token differs from
    the one it is logged on with (or when it was marked unauthenticated), like a
@@ -434,31 +470,33 @@ let store_table cluster ~database table =
   Log.debug Log.pool (fun m -> m "[#0000]  _: <ROUTING> updated table=%s" (table_str table));
   table
 
-(* Cache the home database of the fetched table for [imp_user] and store the
-   table under it too, so a later default-database session (which resolves to
-   it via the cache) reuses it without a ROUTE. The caller holds the lock. *)
-let cache_home_table_locked cluster ~imp_user table =
+(* Cache the home database of the fetched table for the session identity [key]
+   and store the table under it too, so a later default-database session (which
+   resolves to it via the cache) reuses it without a ROUTE. The caller holds
+   the lock. *)
+let cache_home_table_locked cluster ~key table =
   match Routing_table.database table with
   | Some home_db ->
-      set_home_db cluster imp_user home_db;
+      set_home_db cluster key home_db;
       Hashtbl.replace cluster.tables (Some home_db) (table, now cluster)
   | None -> ()
 
-let cache_home_table cluster ~imp_user table =
-  with_lock cluster (fun () -> cache_home_table_locked cluster ~imp_user table)
+let cache_home_table cluster ~key table =
+  with_lock cluster (fun () -> cache_home_table_locked cluster ~key table)
 
 (* Apply an [rt] routing table received from the server (SSR) for [database]:
    parse it and, when valid, replace the cached table (fresh timestamp),
    refresh [routers] and clear a cached fetch error. The table's [db] field is
-   the server's home database: it is cached for [imp_user] and the table is
-   stored under the home database too, so default-database sessions resolve to
-   it without a ROUTE. Malformed values are ignored. *)
+   the server's home database: it is cached for the session's identity and the
+   table is stored under the home database too, so default-database sessions
+   resolve to it without a ROUTE. Malformed values are ignored. *)
 let update_table cluster ~database ~imp_user rt =
+  let key = match imp_user with Some user -> Imp_db user | None -> Driver_db in
   match Routing_table.parse rt with
   | Some table ->
       ignore
         (with_lock cluster (fun () ->
-             cache_home_table_locked cluster ~imp_user table;
+             cache_home_table_locked cluster ~key table;
              store_table cluster ~database table))
   | None -> ()
 
@@ -467,10 +505,10 @@ let update_table cluster ~database ~imp_user rt =
    cache) and broadcast — all in one lock section, so a waiter woken by the
    broadcast sees the stored table and the (default-database) home-db cache and
    does not re-fetch. A default-database fetch also caches the home database
-   returned in the [rt] here, inside the same lock section. Cancellation (e.g.
-   the caller's acquisition timeout) still clears the marker and wakes the
-   waiters. *)
-let fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth routers =
+   returned in the [rt] here, under the session identity [key], inside the same
+   lock section. Cancellation (e.g. the caller's acquisition timeout) still
+   clears the marker and wakes the waiters. *)
+let fetch_and_store cluster ~database ~imp_user ~key ~bookmarks ~session_auth routers =
   let result =
     try fetch_table cluster ~database ~imp_user ~bookmarks ~session_auth None routers
     with exn ->
@@ -489,7 +527,7 @@ let fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth routers
               match database with
               | Some _ -> database
               | None ->
-                  cache_home_table_locked cluster ~imp_user table;
+                  cache_home_table_locked cluster ~key table;
                   Routing_table.database table
             in
             Ok (store_table cluster ~database table)
@@ -512,8 +550,10 @@ let fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth routers
    [force] (a default-database resolve whose home-db cache is empty or expired)
    the fresh-table cache is skipped, so the ROUTE is always issued: like the
    Python driver without the home-database-cache optimisation, a default-
-   database acquire re-resolves the home database every time. *)
-let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~(force : bool) ~session_auth =
+   database acquire re-resolves the home database every time. [key] is the
+   session identity the home database is cached under. *)
+let rec resolve_table cluster ~database ~mode ~imp_user ~key ~bookmarks ~(force : bool)
+    ~session_auth =
   let decision =
     with_lock cluster (fun () ->
         match if force then None else fresh_table cluster ~database ~mode with
@@ -539,16 +579,31 @@ let rec resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~(force : boo
         (* A concurrent default-database fetch may have cached the home
            database while we waited: re-resolve through the cache, falling back
            to another forced fetch only if it still isn't cached. *)
-        begin match with_lock cluster (fun () -> home_db_of cluster imp_user) with
+        begin match with_lock cluster (fun () -> home_db_of cluster key) with
         | Some home_db ->
-            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
-              ~session_auth
+            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~key ~bookmarks
+              ~force:false ~session_auth
         | None ->
-            resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:true ~session_auth
+            resolve_table cluster ~database ~mode ~imp_user ~key ~bookmarks ~force:true
+              ~session_auth
         end
-      else resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false ~session_auth
+      else
+        resolve_table cluster ~database ~mode ~imp_user ~key ~bookmarks ~force:false ~session_auth
   | `Fetch ->
-      fetch_and_store cluster ~database ~imp_user ~bookmarks ~session_auth (fetch_routers cluster)
+      fetch_and_store cluster ~database ~imp_user ~key ~bookmarks ~session_auth
+        (fetch_routers cluster)
+
+(* The outcome of resolving [database]: the routing table to use, the effective
+   database the session runs on ([None] when the home database was only
+   "guessed" from the cache — the session stays unpinned and sends no [db]),
+   whether it was guessed, and the key the table is cached under (for a
+   Role-empty refetch). *)
+type resolution = {
+  table : Routing_table.t;
+  effective : string option;
+  guessed : bool;
+  table_key : string option;
+}
 
 (* Load of an address: in-use connections of its pool, or 0 if no pool exists
    yet (pools are created lazily for the chosen address only). *)
@@ -576,42 +631,58 @@ let select_from_table ?(exclude = []) cluster ~mode table =
       | Some addr -> Ok (addr, pool_for cluster addr)
       | None -> Error (Errors.Service_unavailable "routing table has no suitable address"))
 
-(* Resolve the effective database for [database] and the routing table to use:
-   a fixed database is used as-is (the effective database equals it); the
-   default database is resolved to the server's home database — from the cache
-   when fresh (no ROUTE), otherwise from a fresh ROUTE response's [db] field,
-   which is then cached for [imp_user]. With the home-db cache disabled or
-   expired a default-database acquire always issues the ROUTE (it may have
-   moved since the last session resolved it): like the Python driver without
-   the home-database-cache optimisation, the home database is resolved per
-   session and pinned to that session. *)
-let resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth =
+(* Resolve the effective database for [database] and the routing table to use.
+   A fixed database is used as-is ([effective] = [table_key] = it). The default
+   database resolves to the server's home database in one of two ways:
+   - "guessed" — when a connection with server-side routing has been seen and
+     the identity's cache entry is fresh, the cached home database's table is
+     used without a ROUTE and the session stays unpinned ([effective] = None:
+     a wrong guess is safe, the server reports and can correct it);
+   - otherwise the home database is resolved over a fresh ROUTE, pinned to the
+     session ([effective] = [Some home_db]) and cached for the identity. With
+     the home-db cache disabled or expired a default-database acquire therefore
+     always issues the ROUTE (it may have moved since the last session resolved
+     it), like the Python driver without the home-database-cache optimisation. *)
+let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key ~bookmarks
+    ~session_auth =
   match database with
   | Some db ->
       Log.debug Log.pool (fun m ->
           m "[#0000]  _: <WORKSPACE> routing towards fixed database: %s" db);
       let* table =
-        resolve_table cluster ~database ~mode ~imp_user ~bookmarks ~force:false ~session_auth
+        resolve_table cluster ~database ~mode ~imp_user ~key ~bookmarks ~force:false ~session_auth
       in
-      Ok (table, database)
+      Ok { table; effective = Some db; guessed = false; table_key = Some db }
   | None -> (
-      match with_lock cluster (fun () -> home_db_of cluster imp_user) with
+      match
+        if force_explicit || not cluster.ssr_seen then None
+        else with_lock cluster (fun () -> home_db_of cluster key)
+      with
       | Some home_db ->
           Log.debug Log.pool (fun m ->
               m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
           let* table =
-            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~bookmarks ~force:false
-              ~session_auth
+            resolve_table cluster ~database:(Some home_db) ~mode ~imp_user ~key ~bookmarks
+              ~force:false ~session_auth
           in
-          Ok (table, Some home_db)
+          (* The home database is guessed from the cache: the session is not
+             pinned to it (its queries carry no [db]) and the server may report
+             the actual database. *)
+          Ok { table; effective = None; guessed = true; table_key = Some home_db }
       | None ->
           Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
           let* table =
-            resolve_table cluster ~database:None ~mode ~imp_user ~bookmarks ~force:true
+            resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
               ~session_auth
           in
-          cache_home_table cluster ~imp_user table;
-          Ok (table, Routing_table.database table))
+          cache_home_table cluster ~key table;
+          Ok
+            {
+              table;
+              effective = Routing_table.database table;
+              guessed = false;
+              table_key = Routing_table.database table;
+            })
 
 (* Result of trying to acquire a connection from a table: [Role_empty] is the
    table itself having no address for the role (an acquire may refetch once —
@@ -629,7 +700,12 @@ let rec acquire_from_table cluster ~mode ~effective ~session_auth ~force_livenes
   match select_from_table ~exclude:tried cluster ~mode table with
   | Ok (addr, pool) -> (
       match Pool.acquire ~session_auth ~force_auth ~force_liveness pool with
-      | Ok conn -> Acquired (conn, effective)
+      | Ok conn ->
+          (* Remember that a server-side-routing capable connection exists, so
+             later default-database sessions may guess the home database from
+             the cache. *)
+          if Conn.ssr_enabled conn then with_lock cluster (fun () -> cluster.ssr_seen <- true);
+          Acquired (conn, effective)
       | Error (Errors.Service_unavailable _) ->
           deactivate cluster addr;
           acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness ~force_auth
@@ -637,6 +713,13 @@ let rec acquire_from_table cluster ~mode ~effective ~session_auth ~force_livenes
             (Addressing.to_string addr :: tried)
       | Error error -> Failed error)
   | Error error -> if tried = [] then Role_empty else Failed error
+
+(* Return a connection to its pool (found via its address; a connection whose
+   pool is unknown is closed instead). *)
+let release cluster conn =
+  match Hashtbl.find_opt cluster.pools (Addressing.to_string (Conn.address conn)) with
+  | Some pool -> Pool.release pool conn
+  | None -> Conn.close conn
 
 let acquire ?(force_auth = false) cluster ~mode ~database ~imp_user ~bookmarks ~session_auth
     ~force_liveness =
@@ -648,28 +731,34 @@ let acquire ?(force_auth = false) cluster ~mode ~database ~imp_user ~bookmarks ~
          auto-commit query) then retries. Connection failures do not trigger a
          refetch — the failed addresses are deactivated and the next ones of
          the same table tried within [acquire_from_table]. *)
+      let key = home_db_key_of ~imp_user ~session_auth in
       let max_refetches = 1 in
-      let rec attempt refetches =
-        let* table, effective =
-          resolve_for cluster ~database ~mode ~imp_user ~bookmarks ~session_auth
+      let rec attempt ?(fallback = false) refetches =
+        let* resolution =
+          resolve_for ~force_explicit:fallback cluster ~database ~mode ~imp_user ~key ~bookmarks
+            ~session_auth
         in
         match
-          acquire_from_table cluster ~mode ~effective ~session_auth ~force_liveness ~force_auth
-            table []
+          acquire_from_table cluster ~mode ~effective:resolution.effective ~session_auth
+            ~force_liveness ~force_auth resolution.table []
         with
-        | Acquired (conn, effective) -> Ok (conn, effective)
+        | Acquired (conn, effective) ->
+            (* A guessed home database must not run on a connection without
+               server-side routing (the server could not correct a wrong
+               guess): fall back to an explicit home-database resolution, like
+               the Python driver. *)
+            if resolution.guessed && not (Conn.ssr_enabled conn) then begin
+              release cluster conn;
+              attempt ~fallback:true refetches
+            end
+            else Ok (conn, effective)
         | Role_empty when refetches < max_refetches ->
-            with_lock cluster (fun () -> Hashtbl.remove cluster.tables effective);
-            attempt (refetches + 1)
+            with_lock cluster (fun () -> Hashtbl.remove cluster.tables resolution.table_key);
+            attempt ~fallback (refetches + 1)
         | Role_empty -> Error (Errors.Service_unavailable "routing table has no suitable address")
         | Failed error -> Error error
       in
       attempt 0)
-
-let release cluster conn =
-  match Hashtbl.find_opt cluster.pools (Addressing.to_string (Conn.address conn)) with
-  | Some pool -> Pool.release pool conn
-  | None -> Conn.close conn
 
 (* The cached routing table for [database], if any (no fetch; read under the
    lock). Test-support API for the TestKit backend's GetRoutingTable. *)
