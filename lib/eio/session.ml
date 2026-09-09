@@ -291,9 +291,7 @@ let run ?timeout ?metadata t ~query ~parameters =
       (if Conn.ssr_enabled conn then
          match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
       (match (!(t.database), run_metadata.db) with
-      | None, Some db ->
-          t.database := Some db;
-          t.on_home_db_reported db
+      | None, Some db -> t.on_home_db_reported db
       | _ -> ());
       let stream =
         Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary ->
@@ -343,9 +341,7 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
       in
       let report_actual_db reported_db =
         match (!(t.database), reported_db) with
-        | None, Some db ->
-            t.database := Some db;
-            t.on_home_db_reported db
+        | None, Some db -> t.on_home_db_reported db
         | _ -> ()
       in
       match Tx.begin_transaction conn ~extra ~fetch_size:t.config.fetch_size ~telemetry with
