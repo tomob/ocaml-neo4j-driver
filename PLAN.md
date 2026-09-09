@@ -240,6 +240,14 @@ its [+s]/[+ssc] variants) drivers now route:
   and BEGIN send it as `db` (TestKit homedb wire behaviour) and SSR `update_table` (`?imp_user`)
   seeds the cache too. Unit tests cover the resolution/caching, TTL expiry, per-user keys, the
   `imp_user` ROUTE extra and the session RUN db (mock).
+- **Guessed-database pinning is routed-only — Done** (commit "Scope home-db pinning to routed
+  sessions", 2026-09-09): a guessed (unpinned) default-database session still refreshes the routing
+  layer's cached home database when a RUN/BEGIN success reports the [db] it actually used, but pins
+  itself to it (so later RUN/BEGIN carry it) only when routed. `Session.create` gained
+  `pin_on_home_db_reported` (default [false]), wired [true] for `neo4j://` Cluster sessions and
+  [false] for direct `bolt://` Pool sessions. The two earlier extremes both broke stub suites:
+  pinning everywhere (64706ab) broke the direct-driver `single_server` flow, and pinning nowhere
+  (78956cc) broke the routed `reader_misbehaving` re-resolution flow.
 - **TestKit routing backend — Done** (the last deferred A7 item): the backend now reports
   `Backend:RTFetch` / `Backend:RTForceUpdate` and serves `GetRoutingTable` /
   `ForcedRoutingTableUpdate`. `Cluster.fetch_table` threads `~bookmarks` to the ROUTE request, and
@@ -464,6 +472,27 @@ Order of work (least → most effort):
 
 Final: `scripts/testkit_stub.sh` → `OK (skipped=<feature-skips>)`, 0 failures; `dune runtest`
 (167) stays green.
+
+**`homedb` fully green (2026-09-09)** — `tests.stub.homedb.test_homedb` passes **37/37 with 0
+skips** (at step 6 it was only "verify-only"; afterwards the WithCache classes had a skip plus stub
+flakes). Two driver-side changes and one harness note:
+
+- **Guessed-database pinning is routed-only** (see the A7 item above): direct `bolt://` sessions
+  stay unpinned while routed `neo4j://` sessions pin the reported database — the
+  `TestHomeDbWithCache*` classes (session-run 8/8, Tx 7/7, ExecuteQuery 7/7, incl. the formerly
+  erroring `used_for_routing` and `pinned resolved_from_cache=True`) and the WithoutCache/DirectDriver
+  flows all pass.
+- **`maxConnectionLifetimeMs`**: the TestKit backend honours it on `NewDriver` and advertises
+  `Feature:API:Driver:MaxConnectionLifetime`, unblocking
+  `TestHomeDbMixedCluster.test_warm_cache_during_cluster_upgrade` (the MockTime tick past the 2 s
+  lifetime lets the pool drop the pre-upgrade connection, so the "upgraded" SSR reader is used and
+  the cache stays warm). `TestHomeDbMixedCluster` is 6/6.
+- **Environment artifact (not a driver bug)**: the Python `boltstub` stub servers take ~7 s to
+  start on this machine (the lark/Earley grammar parse dominates startup), longer than the harness's
+  10 s "Listening" wait in `tests/stub/shared.py`; the data connection was then refused, the reader
+  address deactivated and the session failed with "routing table has no suitable address". The
+  testkit checkout's `tests/stub/shared.py` wait is raised to 90 s. When a stub test reports that
+  error, check the stub actually started before suspecting the driver.
 
 ---
 
