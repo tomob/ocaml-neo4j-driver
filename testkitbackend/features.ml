@@ -23,18 +23,9 @@ let features : string list =
     "Feature:Bolt:6.0";
     "Feature:Bolt:6.1";
     "Feature:Bolt:HandshakeManifestV1";
-    (* Implemented API surface (B0b). *)
     "Feature:API:Driver:GetServerInfo";
     "Feature:API:Driver.VerifyConnectivity";
-    (* The connection acquisition timeout covers the whole acquisition (waiting
-       for a free connection as well as establishing a new one: TCP connect +
-       Bolt handshake + HELLO/auth), and takes precedence over the socket
-       connection timeout. *)
     "Feature:API:ConnectionAcquisitionTimeout";
-    (* An idle connection is liveness-checked with a RESET when it has been
-       idle for at least the configured liveness_check_timeout (both pooled
-       data connections and a routed driver's routing connection); the RESET
-       is bounded by that timeout and a failure discards the connection. *)
     "Feature:API:Liveness.Check";
     "Feature:API:Result.List";
     "Feature:API:Result.Peek";
@@ -46,59 +37,25 @@ let features : string list =
     "Feature:API:Type.UnsupportedType";
     "Feature:API:Type.Vector";
     "Feature:API:Type.UUID";
-    (* BEGIN is sent eagerly when the transaction starts. *)
     "Optimization:EagerTransactionBegin";
-    (* A clean connection is released without a RESET (reset happens lazily on
-       reuse, or to recover a FAILED connection on release). *)
     "Optimization:MinimalResets";
-    (* The driver keeps a home-database cache keyed by the session identity and
-       guesses the cached home database for default-database sessions once an
-       SSR-capable connection has been seen (a wrong guess is correctable); the
-       cache entry is dropped when a guessed run reports a different database. *)
     "Optimization:HomeDatabaseCache";
-    (* On a Neo.ClientError.Security.AuthorizationExpired no connection is
-       reused for anything but finishing a started job: the driver marks every
-       connection unauthenticated and re-establishes auth on its next use. *)
+    "Optimization:HomeDbCacheBasicPrincipalIsImpersonatedUser";
     "AuthorizationExpiredTreatment";
-    (* Test-support commands for the stub routing suite. *)
     "Backend:RTFetch";
-    (* GetRoutingTable *)
     "Backend:RTForceUpdate";
-    (* ForcedRoutingTableUpdate *)
-    (* The backend can mock the system time (FakeTimeInstall / FakeTimeTick /
-       FakeTimeUninstall), used to test time-dependent behaviour. *)
     "Backend:MockTime";
-    (* The driver's verify_authentication API (a read connection is opened with
-       the given token; authentication errors answer false, others propagate). *)
     "Feature:API:Driver.VerifyAuthentication";
-    (* The server's [connection.recv_timeout_seconds] HELLO hint is honoured as
-       the connection's receive timeout. *)
     "ConfHint:connection.recv_timeout_seconds";
-    (* The Bolt 4.1+ "utc" patch (patch_bolt in HELLO on Bolt >= 4.3): after the
-       server confirms it, DateTimes use the Bolt 5 encoding. *)
     "Feature:Bolt:Patch:UTC";
-    (* Driver.execute_query (a query in a managed, retried transaction returning
-       an EagerResult), with an optional per-call auth token and bookmark
-       managers. *)
     "Feature:API:BookmarkManager";
     "Feature:API:Driver.ExecuteQuery";
     "Feature:API:Driver.ExecuteQuery:WithAuth";
-    (* Auth token managers (phase A8): NewAuthTokenManager /
-       NewBasicAuthTokenManager / NewBearerAuthTokenManager and the driver
-       authTokenManagerId. *)
     "Feature:Auth:Managed";
     "Feature:Auth:Bearer";
-    (* Auth token schemes carried verbatim in the HELLO/LOGON auth map:
-       custom (scheme + principal + credentials + realm + parameters) and
-       Kerberos (scheme + credentials). *)
     "Feature:Auth:Custom";
     "Feature:Auth:Kerberos";
-    (* Session-level auth (user switching): NewSession with authorizationToken,
-       CheckSessionAuthSupport. *)
     "Feature:API:Session:AuthConfig";
     "Feature:API:Driver.SupportsSessionAuth";
-    (* Sessions may impersonate another user: routed default-database sessions
-       resolve the home database per session over ROUTE (imp_user on the wire),
-       and RUN/BEGIN carry the impersonated user. *)
     "Feature:Impersonation";
   ]
