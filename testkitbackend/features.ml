@@ -24,6 +24,7 @@ let features : string list =
     "Feature:Bolt:6.1";
     "Feature:Bolt:HandshakeManifestV1";
     "Feature:API:Driver:GetServerInfo";
+    "Feature:API:Driver:MaxConnectionLifetime";
     "Feature:API:Driver.VerifyConnectivity";
     "Feature:API:ConnectionAcquisitionTimeout";
     "Feature:API:Liveness.Check";

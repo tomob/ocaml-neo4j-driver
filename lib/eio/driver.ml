@@ -144,7 +144,9 @@ let session ?config t =
             ~session_auth:config.auth db
     | Pool _ -> fun _ -> ()
   in
-  Session.create config ~clock:t.clock ~connect ~release ~on_rt ~on_home_db_reported ()
+  let pin_on_home_db_reported = match t.connection with Cluster _ -> true | Pool _ -> false in
+  Session.create config ~clock:t.clock ~connect ~release ~on_rt ~on_home_db_reported
+    ~pin_on_home_db_reported ()
 
 (* A connection for driver-level operations (e.g. verify connectivity); return
    it with [release]. [mode] selects the connection role for routed drivers

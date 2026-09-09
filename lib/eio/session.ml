@@ -55,6 +55,7 @@ type t = {
   release : Conn.t -> unit;
   on_rt : string option -> Packstream.value -> unit;
   on_home_db_reported : string -> unit;
+  pin_on_home_db_reported : bool;
   database : string option ref;
   conn : (Conn.t * Config.access_mode) option ref;
   (* The session's own bookmarks: the config's [bookmarks] until the first
@@ -74,7 +75,7 @@ type t = {
 }
 
 let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> ())
-    ?(on_home_db_reported = fun _ -> ()) () =
+    ?(on_home_db_reported = fun _ -> ()) ?(pin_on_home_db_reported = false) () =
   {
     config;
     clock;
@@ -82,6 +83,7 @@ let create config ~clock ~connect ?(release = Conn.close) ?(on_rt = fun _ _ -> (
     release;
     on_rt;
     on_home_db_reported;
+    pin_on_home_db_reported;
     database = ref config.database;
     conn = ref None;
     bookmarks = ref config.bookmarks;
@@ -291,7 +293,9 @@ let run ?timeout ?metadata t ~query ~parameters =
       (if Conn.ssr_enabled conn then
          match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
       (match (!(t.database), run_metadata.db) with
-      | None, Some db -> t.on_home_db_reported db
+      | None, Some db ->
+          t.on_home_db_reported db;
+          if t.pin_on_home_db_reported then t.database := Some db
       | _ -> ());
       let stream =
         Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary ->
@@ -341,7 +345,9 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
       in
       let report_actual_db reported_db =
         match (!(t.database), reported_db) with
-        | None, Some db -> t.on_home_db_reported db
+        | None, Some db ->
+            t.on_home_db_reported db;
+            if t.pin_on_home_db_reported then t.database := Some db
         | _ -> ()
       in
       match Tx.begin_transaction conn ~extra ~fetch_size:t.config.fetch_size ~telemetry with

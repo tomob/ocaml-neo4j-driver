@@ -546,12 +546,21 @@ let new_driver ctx fields =
           match float_of_string_opt ms with Some f -> Some (f /. 1000.0) | None -> None)
       | _ -> None
     in
+    let max_connection_lifetime =
+      match List.assoc_opt "maxConnectionLifetimeMs" fields with
+      | Some (`Int ms) -> float_of_int ms /. 1000.0
+      | Some (`Intlit ms) -> (
+          match float_of_string_opt ms with
+          | Some f -> f /. 1000.0
+          | None -> Config.default_pool_config.max_connection_lifetime)
+      | _ -> Config.default_pool_config.max_connection_lifetime
+    in
     let telemetry_disabled =
       match List.assoc_opt "telemetryDisabled" fields with Some (`Bool b) -> b | _ -> false
     in
     match
       Config.make_pool_config ~max_connection_pool_size ~connection_acquisition_timeout
-        ~liveness_check_timeout ~telemetry_disabled ()
+        ~liveness_check_timeout ~max_connection_lifetime ~telemetry_disabled ()
     with
     | Ok pool_config -> pool_config
     | Error error -> raise (Driver_error error)
