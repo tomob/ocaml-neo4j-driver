@@ -18,6 +18,8 @@ let config host port scheme =
       auth = auth ();
       routing_context = None;
       telemetry_disabled = false;
+      notifications_min_severity = None;
+      notifications_disabled_categories = None;
     }
 
 let unpack_message bytes =

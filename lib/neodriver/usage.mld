@@ -424,15 +424,19 @@ records with validation (a [Configuration_error] on out-of-range values):
 - [make_pool_config]: [max_connection_lifetime], [liveness_check_timeout],
   [max_connection_pool_size], [connection_acquisition_timeout],
   [connection_timeout], [connection_write_timeout], [keep_alive],
-  [telemetry_disabled], [home_db_cache_ttl] (how long a routed driver
-  remembers a resolved home database; default [infinity]).
+  [telemetry_disabled], [notifications_min_severity],
+  [notifications_disabled_categories], [home_db_cache_ttl] (how long a routed
+  driver remembers a resolved home database; default [infinity]).
 
 The pool honors [max_connection_pool_size], [connection_acquisition_timeout],
 [max_connection_lifetime] and [liveness_check_timeout] (a RESET on reuse).
 [telemetry_disabled] disables the Bolt 5.4+ TELEMETRY notifications (which also
-require the server to advertise [telemetry.enabled]); [connection_timeout],
-[connection_write_timeout] and [keep_alive] are not wired yet.
-[disable_auto_commit_retries] turns off
+require the server to advertise [telemetry.enabled]);
+[notifications_min_severity] and [notifications_disabled_categories] are the
+driver-level notification filtering settings sent in HELLO (Bolt >= 5.2;
+[None] omits the field, [Some []] sends an empty category list).
+[connection_timeout], [connection_write_timeout] and [keep_alive] are not wired
+yet. [disable_auto_commit_retries] turns off
 the automatic one-shot retry of an auto-commit [Session.run] after a server
 failure marked idempotent — the Bolt >= 6.0 [diagnostic_record._idempotent]
 flag — which is on by default (like the Python driver).
@@ -481,7 +485,8 @@ the data.
 
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
-- Notification filtering.
+- Session-level notification filtering (the driver-level notification config is
+  sent in HELLO).
 - The high-level API ([execute_query], [verify_connectivity],
   [supports_multi_db]) is not exposed by the library yet (backend-only,
   TestKit).

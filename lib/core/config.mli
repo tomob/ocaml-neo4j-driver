@@ -25,13 +25,17 @@ type pool_config = {
   connection_write_timeout : float;
   keep_alive : bool;
   telemetry_disabled : bool;
+  notifications_min_severity : string option;
+  notifications_disabled_categories : string list option;
   home_db_cache_ttl : float;
 }
 (** Connection pool settings. [home_db_cache_ttl] is how long a routed driver remembers a resolved
     home database (default [Float.infinity], i.e. the cache is on — a default-database session
     guesses the cached home database only when a server-side-routing capable connection has been
     seen); a TTL <= [0.0] disables the cache and every default-database session re-fetches the home
-    database over ROUTE. *)
+    database over ROUTE. [notifications_min_severity] and [notifications_disabled_categories] are
+    the driver-level notification filtering settings sent in HELLO (Bolt >= 5.2; [None] omits the
+    field, [Some []] sends an empty category list). *)
 
 val default_access_mode : access_mode
 (** Default access mode ([Write]). *)
@@ -66,6 +70,8 @@ val make_pool_config :
   ?connection_write_timeout:float ->
   ?keep_alive:bool ->
   ?telemetry_disabled:bool ->
+  ?notifications_min_severity:string option ->
+  ?notifications_disabled_categories:string list option ->
   ?home_db_cache_ttl:float ->
   unit ->
   (pool_config, Errors.t) result

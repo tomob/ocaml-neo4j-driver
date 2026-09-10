@@ -19,13 +19,17 @@ type config = {
   auth : auth;
   routing_context : (string * string) list option;
   telemetry_disabled : bool;
+  notifications_min_severity : string option;
+  notifications_disabled_categories : string list option;
 }
 (** Target connection settings. The scheme selects TLS: [Bolt] plain, [Bolt_secure] TLS with
     certificate validation, [Bolt_self_signed] TLS without validation. [routing_context] is sent as
     the [routing] field of HELLO (server-side routing) for routed ([neo4j*]) drivers: [None] for
     direct [bolt*] drivers, [Some ctx] for routed ones (an empty list sends [routing: {}]). The
     field is only sent on Bolt >= 4.1. [telemetry_disabled] suppresses the Bolt 5.4+ TELEMETRY
-    notifications. *)
+    notifications. [notifications_min_severity] and [notifications_disabled_categories] are the
+    driver-level notification filtering settings carried in HELLO on Bolt >= 5.2 ([None] omits the
+    field; [Some []] sends an empty category list). *)
 
 type t
 (** An established, authenticated Bolt connection: the transport, the negotiated protocol version

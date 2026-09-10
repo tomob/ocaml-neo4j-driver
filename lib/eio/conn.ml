@@ -21,6 +21,8 @@ type config = {
   auth : auth;
   routing_context : (string * string) list option;
   telemetry_disabled : bool;
+  notifications_min_severity : string option;
+  notifications_disabled_categories : string list option;
 }
 
 type t = {
@@ -84,6 +86,30 @@ let bolt_agent () =
 
 let auth_map (auth : auth) = Auth_manager.to_map auth
 
+(* The HELLO notification filtering fields (Bolt >= 5.2). From Bolt 5.5 the
+   disabled-categories field is named [notifications_disabled_classifications]. *)
+let notification_headers (config : config) major minor =
+  if not (Capabilities.of_version major minor).supports_notification_filtering then []
+  else
+    let severity =
+      match config.notifications_min_severity with
+      | Some severity -> [ ("notifications_minimum_severity", Packstream.String severity) ]
+      | None -> []
+    in
+    let disabled =
+      match config.notifications_disabled_categories with
+      | Some categories ->
+          let key =
+            if major > 5 || (major = 5 && minor >= 5) then "notifications_disabled_classifications"
+            else "notifications_disabled_categories"
+          in
+          [
+            (key, Packstream.List (List.map (fun category -> Packstream.String category) categories));
+          ]
+      | None -> []
+    in
+    severity @ disabled
+
 let hello_headers (config : config) major minor =
   let base = [ ("user_agent", Packstream.String config.user_agent) ] in
   let routing =
@@ -103,7 +129,8 @@ let hello_headers (config : config) major minor =
     if re_auth_of major minor then []
     else match Auth_manager.to_map config.auth with Packstream.Map fields -> fields | _ -> []
   in
-  Packstream.Map (base @ routing @ patch_bolt @ bolt_agent @ auth)
+  Packstream.Map
+    (base @ routing @ patch_bolt @ bolt_agent @ notification_headers config major minor @ auth)
 
 let version t = (t.major, t.minor)
 let server_state t = !(t.state)

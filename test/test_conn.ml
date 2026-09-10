@@ -18,6 +18,8 @@ let config host port scheme =
       auth = auth ();
       routing_context = None;
       telemetry_disabled = false;
+      notifications_min_severity = None;
+      notifications_disabled_categories = None;
     }
 
 let unpack_message bytes =
@@ -873,6 +875,61 @@ let hello_sends_routing_context () =
           check bool "no routing field for None" true (Option.is_none (hello_routing fields));
           Conn.close conn)
 
+(* The HELLO carries the driver-level notification filtering configuration on
+   Bolt >= 5.2: [notifications_minimum_severity] when set and
+   [notifications_disabled_categories] (renamed [_classifications] on Bolt >=
+   5.5) — [None] omits the field, [Some []] sends an empty list. *)
+let hello_notification_config () =
+  let check_hello version min_severity disabled_categories expected_key expected_categories =
+    let received = ref [] in
+    Test_mock.with_mock
+      (Test_mock.Session (version, received, [ Test_mock.Success; Test_mock.Success ]))
+      (fun net clock sw port ->
+        let config =
+          {
+            (config "127.0.0.1" port Addressing.Bolt) with
+            notifications_min_severity = min_severity;
+            notifications_disabled_categories = disabled_categories;
+          }
+        in
+        match Conn.connect net clock sw config with
+        | Error error -> fail (Errors.to_string error)
+        | Ok conn ->
+            let hello =
+              List.find (fun bytes -> fst (unpack_message bytes) = 0x01) (List.rev !received)
+            in
+            let _, fields = unpack_message hello in
+            (match min_severity with
+            | Some severity ->
+                check string "min severity" severity
+                  (map_value fields "notifications_minimum_severity")
+            | None ->
+                check bool "min severity omitted" true
+                  (not (List.mem_assoc "notifications_minimum_severity" fields)));
+            (match expected_categories with
+            | Some categories -> (
+                match List.assoc_opt expected_key fields with
+                | Some (Packstream.List values) ->
+                    check (list string) "categories" categories
+                      (List.map
+                         (function Packstream.String s -> s | _ -> fail "expected a string")
+                         values)
+                | _ -> fail ("expected " ^ expected_key))
+            | None ->
+                check bool "categories omitted" true
+                  ((not (List.mem_assoc "notifications_disabled_categories" fields))
+                  && not (List.mem_assoc "notifications_disabled_classifications" fields)));
+            Conn.close conn)
+  in
+  check_hello (5, 2) (Some "WARNING")
+    (Some [ "UNRECOGNIZED"; "UNSUPPORTED" ])
+    "notifications_disabled_categories"
+    (Some [ "UNRECOGNIZED"; "UNSUPPORTED" ]);
+  check_hello (5, 2) None (Some []) "notifications_disabled_categories" (Some []);
+  check_hello (5, 2) None None "notifications_disabled_categories" None;
+  check_hello (5, 5) (Some "OFF") (Some [ "SCHEMA" ]) "notifications_disabled_classifications"
+    (Some [ "SCHEMA" ])
+
 (* The server's [ssr.enabled] hint in HELLO turns on server-side routing. The
    mock answers with a [server] entry too (like a real server), so the hints
    parsing is exercised even when the agent is present. *)
@@ -981,6 +1038,8 @@ let tests =
     ("[Conn] hello_failure", [ test_case "auth failure maps to Neo4j error" `Quick hello_failure ]);
     ( "[Conn] hello_sends_routing_context",
       [ test_case "routing field gated on Bolt 4.1+" `Quick hello_sends_routing_context ] );
+    ( "[Conn] hello_notification_config",
+      [ test_case "notification config in HELLO" `Quick hello_notification_config ] );
     ("[Conn] ssr_enabled_hint", [ test_case "ssr.enabled hint parsed" `Quick ssr_enabled_hint ]);
     ("[Conn] run_captures_rt", [ test_case "rt metadata captured" `Quick run_captures_rt ]);
     ("[Conn] logoff_logon", [ test_case "LOGOFF/LOGON round trip" `Quick logoff_logon ]);

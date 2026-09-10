@@ -564,9 +564,26 @@ let new_driver ctx fields =
     let telemetry_disabled =
       match List.assoc_opt "telemetryDisabled" fields with Some (`Bool b) -> b | _ -> false
     in
+    let notifications_min_severity =
+      match List.assoc_opt "notificationsMinSeverity" fields with
+      | Some (`String severity) -> Some severity
+      | _ -> None
+    in
+    let notifications_disabled_categories =
+      match List.assoc_opt "notificationsDisabledCategories" fields with
+      | Some (`List categories) ->
+          Some
+            (List.map
+               (function
+                 | `String category -> category
+                 | _ -> raise (Backend_error "bad notification category"))
+               categories)
+      | _ -> None
+    in
     match
       Config.make_pool_config ~max_connection_pool_size ~connection_acquisition_timeout
-        ~liveness_check_timeout ~max_connection_lifetime ~telemetry_disabled ()
+        ~liveness_check_timeout ~max_connection_lifetime ~telemetry_disabled
+        ~notifications_min_severity ~notifications_disabled_categories ()
     with
     | Ok pool_config -> pool_config
     | Error error -> raise (Driver_error error)

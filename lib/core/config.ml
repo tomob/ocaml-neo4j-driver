@@ -29,6 +29,8 @@ type pool_config = {
   connection_write_timeout : float;
   keep_alive : bool;
   telemetry_disabled : bool;
+  notifications_min_severity : string option;
+  notifications_disabled_categories : string list option;
   home_db_cache_ttl : float;
 }
 
@@ -56,6 +58,8 @@ let default_pool_config =
     connection_write_timeout = 30.0;
     keep_alive = true;
     telemetry_disabled = false;
+    notifications_min_severity = None;
+    notifications_disabled_categories = None;
     (* The home-database cache is on (the Optimization:HomeDatabaseCache feature
        is advertised): a default-database session may reuse the cached home
        database of its identity — guessed only when a server-side-routing
@@ -112,6 +116,8 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
     ?(connection_write_timeout = default_pool_config.connection_write_timeout)
     ?(keep_alive = default_pool_config.keep_alive)
     ?(telemetry_disabled = default_pool_config.telemetry_disabled)
+    ?(notifications_min_severity = default_pool_config.notifications_min_severity)
+    ?(notifications_disabled_categories = default_pool_config.notifications_disabled_categories)
     ?(home_db_cache_ttl = default_pool_config.home_db_cache_ttl) () =
   checked "Invalid pool config: "
     [
@@ -132,5 +138,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
         connection_write_timeout;
         keep_alive;
         telemetry_disabled;
+        notifications_min_severity;
+        notifications_disabled_categories;
         home_db_cache_ttl;
       })

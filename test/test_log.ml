@@ -104,6 +104,8 @@ let config host port =
       auth = Conn.basic_auth ~credentials:"password" ();
       routing_context = None;
       telemetry_disabled = false;
+      notifications_min_severity = None;
+      notifications_disabled_categories = None;
     }
 
 (* The connection id prefix format. *)
