@@ -388,7 +388,8 @@ let mark_tx_ended t ~bookmark =
   (match bookmark with Some b -> record_bookmarks t (Bookmarks.singleton b) | None -> ());
   t.current_tx := None
 
-let execute t ~mode ?metadata ?timeout work =
+let execute t ~mode ?metadata ?timeout ?telemetry work =
+  let telemetry = Option.value ~default:0 telemetry in
   let* () = validate_execute_timeout timeout in
   let t0 = now t in
   let delay = retry_delay_generator t.config in
@@ -403,7 +404,7 @@ let execute t ~mode ?metadata ?timeout work =
       raise exn
   in
   let begin_tx () =
-    match begin_transaction_mode ?metadata ?timeout ~telemetry:0 t ~mode with
+    match begin_transaction_mode ?metadata ?timeout ~telemetry t ~mode with
     | Ok tx -> Ok tx
     | Error error -> Error (Driver error)
   in

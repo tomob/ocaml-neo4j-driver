@@ -766,6 +766,49 @@ let failure_idempotent_flag () =
               | _ -> fail "expected a server error"));
           Conn.close conn)
 
+(* On a telemetry-enabled connection a RUN is batched with a TELEMETRY
+   notification; the server answers both (SUCCESS + SUCCESS) and the driver must
+   read exactly those two (a third read would block until the receive timeout). *)
+let telemetry_batches_run () =
+  let received = ref [] in
+  let telemetry_feature bytes =
+    match Packstream.unpack bytes with
+    | Ok (Packstream.Structure (0x54, [ Packstream.Int n ])) -> Int64.to_int n
+    | _ -> fail "expected a TELEMETRY message"
+  in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success_meta
+             [
+               ("server", Packstream.String "Neo4j/5.14.0");
+               ("hints", Packstream.Map [ ("telemetry.enabled", Packstream.Bool true) ]);
+             ];
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          (match
+             Conn.run conn ~hydration:(Conn.hydration conn) ~query:"RETURN 1" ~parameters:[]
+               ~telemetry:2
+           with
+          | Ok _ -> ()
+          | Error error -> fail (Errors.to_string error));
+          let messages = List.rev !received in
+          check (list int) "wire sequence" [ 0x01; 0x6A; 0x54; 0x10 ]
+            (List.map message_tag messages);
+          (match List.filter (fun bytes -> message_tag bytes = 0x54) messages with
+          | [ telemetry ] -> check int "telemetry feature" 2 (telemetry_feature telemetry)
+          | _ -> fail "expected exactly one TELEMETRY message");
+          Conn.close conn)
+
 (* Conn.run records the database it last ran on. *)
 let last_database_recorded () =
   Test_mock.with_mock
@@ -965,6 +1008,8 @@ let tests =
     ("[Conn] failure_gql_code", [ test_case "FAILURE neo4j_code extracted" `Quick failure_gql_code ]);
     ( "[Conn] failure_idempotent",
       [ test_case "FAILURE idempotent flag parsed" `Quick failure_idempotent_flag ] );
+    ( "[Conn] telemetry_batches_run",
+      [ test_case "TELEMETRY + RUN reads two responses" `Quick telemetry_batches_run ] );
     ( "[Conn] last_database_recorded",
       [ test_case "run records the database" `Quick last_database_recorded ] );
   ]

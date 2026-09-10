@@ -122,13 +122,17 @@ val execute :
   mode:Config.access_mode ->
   ?metadata:(string * Values.t) list ->
   ?timeout:float ->
+  ?telemetry:int ->
   (Tx.t -> (unit, failure) result) ->
   (unit, failure) result
 (** Run the unit of work [work] in a managed transaction with retry. [work] is invoked on a fresh
     transaction each attempt. On [Ok] the transaction is committed and the session's bookmarks
     updated. On [Error (Driver e)] the transaction is rolled back; if [Errors.is_retryable e] and
     the [max_transaction_retry_time] budget remains, [work] is retried after a jittered backoff. On
-    [Error Client] the transaction is rolled back without retrying. *)
+    [Error Client] the transaction is rolled back without retrying. [telemetry] is the TELEMETRY
+    feature code reported for the API (0, the transaction-function default, matching
+    [Session.execute_read]/[execute_write]; high-level callers such as [execute_query] pass their
+    own code). *)
 
 val last_bookmarks : t -> Bookmarks.t
 (** The session's last known bookmarks (seeded from the config, updated on every successful commit).

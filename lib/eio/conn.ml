@@ -232,8 +232,8 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
       Error error
 
 (* Like [request], but batches a TELEMETRY notification for [feature] before the
-   request and reads the telemetry's SUCCESS before the request's own response
-   (the server answers both in order). [action] must only SEND the request
+   request: the server answers the TELEMETRY with a SUCCESS and then the request
+   itself with its own SUCCESS/FAILURE. [action] must only SEND the request
    message (no read); only RUN/BEGIN use this. The state transitions as usual
    (a RUN enters [Streaming] until the follow-up PULL/DISCARD). *)
 let request_telemetry t ~message ~re_auth feature action =
@@ -252,9 +252,7 @@ let request_telemetry t ~message ~re_auth feature action =
            auto-commit retry never re-sends the query over it. *)
         ignore (Bolt.respond t.transport);
         Error (Errors.clear_idempotent error)
-    | Ok _ ->
-        let* _ = Bolt.respond t.transport in
-        Bolt.respond t.transport
+    | Ok _ -> Bolt.respond t.transport
   in
   match outcome with
   | Ok response ->

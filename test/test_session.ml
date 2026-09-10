@@ -553,6 +553,43 @@ let run_second_error_surfaced () =
         [ 0x01; 0x6A; 0x10; 0x0F; 0x10; 0x0F ]
         (message_tags received))
 
+(* A managed transaction reports its own TELEMETRY feature code: execute_query
+   (backend) passes 3, while execute_read/execute_write keep the default 0. *)
+let execute_telemetry_code () =
+  let received = ref [] in
+  let telemetry_feature bytes =
+    match Packstream.unpack bytes with
+    | Ok (Packstream.Structure (0x54, [ Packstream.Int n ])) -> Int64.to_int n
+    | _ -> fail "expected a TELEMETRY message"
+  in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success_meta
+             [
+               ("server", Packstream.String "Neo4j/5.14.0");
+               ("hints", Packstream.Map [ ("telemetry.enabled", Packstream.Bool true) ]);
+             ];
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let session = session net clock sw port in
+      (match Session.execute session ~mode:Config.Read ~telemetry:3 (fun _tx -> Ok ()) with
+      | Ok () -> ()
+      | Error (Session.Driver error) -> fail (Errors.to_string error)
+      | Error Session.Client -> fail "unexpected client error");
+      let messages = List.rev !received in
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x54; 0x11; 0x12 ]
+        (List.map (fun b -> fst (unpack_message b)) messages);
+      match List.filter (fun b -> fst (unpack_message b) = 0x54) messages with
+      | [ telemetry ] -> check int "telemetry feature" 3 (telemetry_feature telemetry)
+      | _ -> fail "expected exactly one TELEMETRY message")
+
 let tests =
   [
     ("[Session] execute_ok", [ test_case "commit + bookmark" `Quick execute_ok ]);
@@ -570,6 +607,8 @@ let tests =
       [ test_case "disable_auto_commit_retries" `Quick run_disabled_no_idempotent_retry ] );
     ( "[Session] run_second_error_surfaced",
       [ test_case "second failure surfaces" `Quick run_second_error_surfaced ] );
+    ( "[Session] execute_telemetry_code",
+      [ test_case "managed tx telemetry feature code" `Quick execute_telemetry_code ] );
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
     ("[Session] negative_timeout", [ test_case "negative tx/query timeout" `Quick negative_timeout ]);
     ( "[Session] manager_seeds_run_and_updates",
