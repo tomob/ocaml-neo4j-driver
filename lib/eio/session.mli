@@ -32,6 +32,7 @@ type config = {
   initial_retry_delay : float;
   retry_delay_multiplier : float;
   retry_delay_jitter_factor : float;
+  disable_auto_commit_retries : bool;
 }
 (** Session settings. [bookmarks] seeds the session's bookmarks: without a [bookmark_manager] they
     are sent with every transaction and replaced by a commit's bookmark (the [last_bookmarks] causal
@@ -42,7 +43,9 @@ type config = {
     (default) uses the driver's auth manager, [Some token] replaces it for this session (the
     connection is opened with — or re-authenticated to — that token). The retry parameters mirror
     the Python driver defaults ([max_transaction_retry_time] is configurable via the TestKit driver
-    request). *)
+    request). [disable_auto_commit_retries] (default [false]) turns off the automatic one-shot retry
+    of an auto-commit [run] after a server failure marked idempotent (Bolt >= 6.0
+    [diagnostic_record._idempotent]). *)
 
 val default_config : config
 (** Session configuration with the driver defaults: write access, no database or impersonation, and
@@ -102,7 +105,10 @@ val run :
 (** Run an auto-commit query: send RUN only (the result streams on demand via [Result]). The
     session's bookmarks, database and access mode go into the RUN extra. Any previously pending
     auto-commit result is drained first. Once the result ends normally, the session's bookmarks are
-    updated from its final summary. *)
+    updated from its final summary. A server failure that answered the RUN and is marked idempotent
+    (Bolt >= 6.0) is retried once (without re-sending the TELEMETRY notification), unless
+    [disable_auto_commit_retries]; failures answering the PULL surface from the result and are never
+    retried. *)
 
 val begin_transaction :
   ?metadata:(string * Values.t) list -> ?timeout:float -> t -> (Tx.t, Errors.t) result

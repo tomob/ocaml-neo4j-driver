@@ -14,9 +14,12 @@ type server_error = {
   classification : classification;
   retryable : bool;
   gql_status : string option;
+  idempotent : bool;
 }
 (** A server (Neo4j) error as reported over the wire. [gql_status] is the GQL status code from the
-    FAILURE metadata (Bolt >= 5.2), when the server provides one. *)
+    FAILURE metadata (Bolt >= 5.2), when the server provides one. [idempotent] is the Bolt >= 6.0
+    [diagnostic_record._idempotent] flag: the server guarantees the failed request did not alter any
+    database state, so an auto-commit RUN failing with such an error may be retried safely. *)
 
 type specific =
   | Constraint
@@ -72,6 +75,18 @@ val of_neo4j_code : code:string -> message:string -> t
 val of_neo4j_code_with_gql_status : gql_status:string option -> code:string -> message:string -> t
 (** Like {!of_neo4j_code}, but also records the [gql_status] from the Bolt >= 5.2 FAILURE metadata.
 *)
+
+val idempotent : t -> bool
+(** Whether the server marked the failure idempotent (an auto-commit RUN failing with it may be
+    retried); [false] for driver errors and unmarked server errors. *)
+
+val mark_idempotent : t -> t
+(** [mark_idempotent error] returns [error] with its idempotent marker set (used when the Bolt >= 6
+    [diagnostic_record._idempotent] flag is present); driver errors are returned unchanged. *)
+
+val clear_idempotent : t -> t
+(** [clear_idempotent error] returns [error] without its idempotent marker (used for a failure that
+    answered a TELEMETRY rather than the RUN itself); driver errors are returned unchanged. *)
 
 val code : t -> string option
 (** The neo4j code of a server error, or [None] for driver errors. *)

@@ -19,6 +19,7 @@ type server_error = {
   classification : classification;
   retryable : bool;
   gql_status : string option;
+  idempotent : bool;
 }
 
 (* Well-known server errors, recognised by their neo4j code. *)
@@ -153,10 +154,22 @@ let of_neo4j_code_with_gql_status ~gql_status ~code ~message =
   let classification = classification_of_code code in
   let classification, code = rewrite code classification in
   let retryable = classification = Transient in
-  Neo4j { code; message; classification; retryable; gql_status }
+  Neo4j { code; message; classification; retryable; gql_status; idempotent = false }
 
 let of_neo4j_code ~code ~message = of_neo4j_code_with_gql_status ~gql_status:None ~code ~message
 let code = function Neo4j server -> Some server.code | _ -> None
+
+(* Whether the server marked the failure idempotent (safe to retry an auto-commit
+   RUN after it). *)
+let idempotent = function Neo4j server -> server.idempotent | _ -> false
+
+let mark_idempotent = function
+  | Neo4j server -> Neo4j { server with idempotent = true }
+  | error -> error
+
+let clear_idempotent = function
+  | Neo4j server -> Neo4j { server with idempotent = false }
+  | error -> error
 
 let message = function
   | Neo4j server -> server.message

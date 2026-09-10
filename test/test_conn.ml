@@ -739,6 +739,33 @@ let failure_gql_code () =
           | Error error -> fail (Errors.to_string error));
           Conn.close conn)
 
+(* A FAILURE whose diagnostic_record marks it idempotent (Bolt 6) is parsed into
+   the error's idempotent flag (an auto-commit RUN answering it may be retried). *)
+let failure_idempotent_flag () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         ref [],
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure_idempotent ("Neo.ClientError.MadeUp.Idempotent", "idem");
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let config = config "127.0.0.1" port Addressing.Bolt in
+      match Conn.connect net clock sw config with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          let hydration = Conn.hydration conn in
+          (match Conn.run conn ~hydration ~query:"RETURN 1" ~parameters:[] with
+          | Ok _ -> fail "query should fail"
+          | Error error -> (
+              match error with
+              | Errors.Neo4j server -> check bool "idempotent flag parsed" true server.idempotent
+              | _ -> fail "expected a server error"));
+          Conn.close conn)
+
 (* Conn.run records the database it last ran on. *)
 let last_database_recorded () =
   Test_mock.with_mock
@@ -936,6 +963,8 @@ let tests =
       [ test_case "auth manager stored on the connection" `Quick auth_manager_get_set ] );
     ("[Conn] re_auth_force", [ test_case "force re-authenticates" `Quick re_auth_force ]);
     ("[Conn] failure_gql_code", [ test_case "FAILURE neo4j_code extracted" `Quick failure_gql_code ]);
+    ( "[Conn] failure_idempotent",
+      [ test_case "FAILURE idempotent flag parsed" `Quick failure_idempotent_flag ] );
     ( "[Conn] last_database_recorded",
       [ test_case "run records the database" `Quick last_database_recorded ] );
   ]

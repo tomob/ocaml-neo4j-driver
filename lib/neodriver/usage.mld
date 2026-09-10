@@ -430,8 +430,10 @@ records with validation (a [Configuration_error] on out-of-range values):
 The pool honors [max_connection_pool_size], [connection_acquisition_timeout],
 [max_connection_lifetime] and [liveness_check_timeout] (a RESET on reuse);
 [connection_timeout], [connection_write_timeout], [keep_alive] and
-[telemetry_disabled] are not wired yet, and [disable_auto_commit_retries] has
-no effect for now.
+[telemetry_disabled] are not wired yet. [disable_auto_commit_retries] turns off
+the automatic one-shot retry of an auto-commit [Session.run] after a server
+failure marked idempotent — the Bolt >= 6.0 [diagnostic_record._idempotent]
+flag — which is on by default (like the Python driver).
 
 {1 Logging}
 

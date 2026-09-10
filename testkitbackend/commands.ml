@@ -65,6 +65,9 @@ type driver = {
   resolver_registered : bool;
   (* The driver-level default fetch size: used by sessions that do not set one. *)
   fetch_size : int option;
+  (* Disables the auto-commit retry after an idempotent server failure (Bolt >= 6.0); sessions may
+     override it. *)
+  disable_auto_commit_retries : bool;
   (* The driver's implicit (Neo4j-style) bookmark manager, used by
      driver.execute_query when no bookmark manager is configured (the analogue
      of the Python [execute_query_bookmark_manager]). *)
@@ -520,6 +523,9 @@ let new_driver ctx fields =
     | Some (`Intlit n) -> int_of_string_opt n
     | _ -> None
   in
+  let disable_auto_commit_retries =
+    match List.assoc_opt "disableAutoCommitRetries" fields with Some (`Bool b) -> b | _ -> false
+  in
   let custom = if resolver_registered then Some (resolver ctx) else None in
   let custom_domain_name =
     if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
@@ -581,6 +587,7 @@ let new_driver ctx fields =
           max_transaction_retry_time;
           resolver_registered;
           fetch_size;
+          disable_auto_commit_retries;
           default_manager = Bookmark_manager.neo4j_bookmark_manager ();
           driver;
         };
@@ -667,6 +674,13 @@ let new_session fields =
     match opt_string "accessMode" fields with Some "r" -> Config.Read | _ -> Config.Write
   in
   let impersonated_user = opt_string "impersonatedUser" fields in
+  (* The session may override the driver's [disable_auto_commit_retries]; an
+     absent value applies the driver-level one (default [false] — retries on). *)
+  let disable_auto_commit_retries =
+    match List.assoc_opt "disableAutoCommitRetries" fields with
+    | Some (`Bool b) -> b
+    | _ -> driver.disable_auto_commit_retries
+  in
   let fetch_size =
     match List.assoc_opt "fetchSize" fields with
     | Some (`Int n) -> Some n
@@ -702,6 +716,7 @@ let new_session fields =
         initial_retry_delay = 1.0;
         retry_delay_multiplier = 2.0;
         retry_delay_jitter_factor = 0.2;
+        disable_auto_commit_retries;
       }
   in
   let id = new_id () in
@@ -1382,6 +1397,7 @@ let execute_query _ctx fields =
         initial_retry_delay = 1.0;
         retry_delay_multiplier = 2.0;
         retry_delay_jitter_factor = 0.2;
+        disable_auto_commit_retries = driver.disable_auto_commit_retries;
       }
   in
   let session = Driver.session ~config:session_config driver.driver in

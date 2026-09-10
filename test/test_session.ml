@@ -463,6 +463,96 @@ let manager_chains_across_sessions () =
           check (list string) "second session seeded by the manager" [ "bm1" ]
             (last_run_bookmarks second_received)))
 
+(* An auto-commit RUN that fails with an idempotent (Bolt 6) server failure is
+   retried once on the same connection; the retry does not re-send TELEMETRY
+   (none was sent here: the mock HELLO advertises no telemetry). *)
+let run_retries_idempotent () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure_idempotent ("Neo.ClientError.MadeUp.Idempotent", "idem");
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let session = session net clock sw port in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok result -> (
+          match Neo4jResult.consume result with
+          | Ok _ -> ()
+          | Error error -> fail (Errors.to_string error))
+      | Error error -> fail (Errors.to_string error));
+      check (list int) "wire sequence"
+        [ 0x01; 0x6A; 0x10; 0x0F; 0x10; 0x2F ]
+        (message_tags received))
+
+(* [disable_auto_commit_retries] turns the idempotent retry off: the failure
+   surfaces without a second RUN. *)
+let run_disabled_no_idempotent_retry () =
+  let received = ref [] in
+  let session_config = { Session.default_config with disable_auto_commit_retries = true } in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure_idempotent ("Neo.ClientError.MadeUp.Idempotent", "idem");
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let session =
+        Session.create session_config ~clock
+          ~connect:(fun ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ ->
+            match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+            | Ok conn -> Ok (conn, None)
+            | Error error -> Error error)
+          ()
+      in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok _ -> fail "query should fail"
+      | Error error -> (
+          match error with
+          | Errors.Neo4j server ->
+              check string "code" "Neo.ClientError.MadeUp.Idempotent" server.code
+          | _ -> fail "expected a server error"));
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x0F ] (message_tags received))
+
+(* A second failure after the idempotent retry surfaces as-is (no further
+   retry), whatever its idempotency. *)
+let run_second_error_surfaced () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Failure_idempotent ("Neo.ClientError.MadeUp.Idempotent", "idem");
+           Test_mock.Success;
+           Test_mock.Failure ("Neo.ClientError.MadeUp.Code", "boom");
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let session = session net clock sw port in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok _ -> fail "query should fail"
+      | Error error -> (
+          match error with
+          | Errors.Neo4j server -> check string "code" "Neo.ClientError.MadeUp.Code" server.code
+          | _ -> fail "expected a server error"));
+      check (list int) "wire sequence"
+        [ 0x01; 0x6A; 0x10; 0x0F; 0x10; 0x0F ]
+        (message_tags received))
+
 let tests =
   [
     ("[Session] execute_ok", [ test_case "commit + bookmark" `Quick execute_ok ]);
@@ -474,6 +564,12 @@ let tests =
     ( "[Session] run_uses_effective_database",
       [ test_case "resolved home db in RUN" `Quick run_uses_effective_database ] );
     ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
+    ( "[Session] run_retries_idempotent",
+      [ test_case "idempotent RUN failure retried once" `Quick run_retries_idempotent ] );
+    ( "[Session] run_disabled_no_idempotent_retry",
+      [ test_case "disable_auto_commit_retries" `Quick run_disabled_no_idempotent_retry ] );
+    ( "[Session] run_second_error_surfaced",
+      [ test_case "second failure surfaces" `Quick run_second_error_surfaced ] );
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
     ("[Session] negative_timeout", [ test_case "negative tx/query timeout" `Quick negative_timeout ]);
     ( "[Session] manager_seeds_run_and_updates",

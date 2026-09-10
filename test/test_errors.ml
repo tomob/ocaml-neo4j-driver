@@ -50,6 +50,21 @@ let make_retryable () =
   check bool "driver errors unchanged" false
     (Errors.is_retryable (Errors.make_retryable driver_error))
 
+let idempotent () =
+  let plain = Errors.of_neo4j_code ~code:"Neo.ClientError.MadeUp.Code" ~message:"boom" in
+  check bool "unmarked error not idempotent" false (Errors.idempotent plain);
+  let marked = Errors.mark_idempotent plain in
+  check bool "mark_idempotent sets the flag" true (Errors.idempotent marked);
+  check (option string) "code preserved" (Some "Neo.ClientError.MadeUp.Code") (Errors.code marked);
+  check bool "original untouched" false (Errors.idempotent plain);
+  check bool "clear_idempotent removes the flag" false
+    (Errors.idempotent (Errors.clear_idempotent marked));
+  let driver_error = Errors.Configuration_error "x" in
+  check bool "driver errors unchanged by mark" false
+    (Errors.idempotent (Errors.mark_idempotent driver_error));
+  check bool "driver errors unchanged by clear" false
+    (Errors.idempotent (Errors.clear_idempotent driver_error))
+
 let rewrite () =
   let terminated =
     Errors.of_neo4j_code ~code:"Neo.TransientError.Transaction.Terminated" ~message:""
@@ -131,6 +146,7 @@ let tests =
       [
         test_case "retryability" `Quick retryable; test_case "make_retryable" `Quick make_retryable;
       ] );
+    ("[Errors] idempotent", [ test_case "idempotent marker" `Quick idempotent ]);
     ("[Errors] rewrite", [ test_case "rewrite map" `Quick rewrite ]);
     ("[Errors] security", [ test_case "security codes" `Quick security ]);
     ( "[Errors] fatal_discovery",

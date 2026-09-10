@@ -247,9 +247,11 @@ let request_telemetry t ~message ~re_auth feature action =
     | Error error ->
         (* TELEMETRY failed: the server IGNOREs the already-sent request, so
            its response is still on the wire — drain it to keep the message
-           stream in sync for the follow-up RESET. *)
+           stream in sync for the follow-up RESET. The failure answered the
+           TELEMETRY, not the RUN: clear any idempotent marker so an
+           auto-commit retry never re-sends the query over it. *)
         ignore (Bolt.respond t.transport);
-        Error error
+        Error (Errors.clear_idempotent error)
     | Ok _ ->
         let* _ = Bolt.respond t.transport in
         Bolt.respond t.transport

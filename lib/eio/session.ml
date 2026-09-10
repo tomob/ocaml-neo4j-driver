@@ -20,6 +20,7 @@ type config = {
   initial_retry_delay : float;
   retry_delay_multiplier : float;
   retry_delay_jitter_factor : float;
+  disable_auto_commit_retries : bool;
 }
 
 let default_config =
@@ -35,6 +36,7 @@ let default_config =
     initial_retry_delay = 1.0;
     retry_delay_multiplier = 2.0;
     retry_delay_jitter_factor = 0.2;
+    disable_auto_commit_retries = false;
   }
 
 (* A session: its lazy connection, bookmarks, current transaction and the
@@ -268,41 +270,55 @@ let run ?timeout ?metadata t ~query ~parameters =
   match !(t.current_tx) with
   | Some tx when not (Tx.closed tx) ->
       Error (Errors.Transaction_error "Explicit transaction already open")
-  | _ ->
-      let* conn = conn t in
-      (* A new auto-commit query cannot start while the previous result is still
-         streaming on the connection: drain it first. *)
-      drain_auto_result t;
-      let hydration = Conn.hydration conn in
-      let* run_metadata =
+  | _ -> (
+      let run_once telemetry =
+        let* conn = conn t in
+        drain_auto_result t;
+        let hydration = Conn.hydration conn in
         match
-          Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ~telemetry:2
+          Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ?telemetry
             ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
             ?imp_user:t.config.impersonated_user ?db:!(t.database) ?timeout ?metadata
         with
-        | Ok run_metadata -> Ok run_metadata
-        | Error _ as error ->
+        | Ok run_metadata -> Ok (conn, run_metadata)
+        | Error error ->
             (if Conn.is_failed conn then
                match Conn.reset conn with
                | Ok () -> ()
                | Error _ ->
                    t.conn := None;
                    t.release conn);
-            error
+            Error error
       in
-      (if Conn.ssr_enabled conn then
-         match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
-      (match (!(t.database), run_metadata.db) with
-      | None, Some db ->
-          t.on_home_db_reported db;
-          if t.pin_on_home_db_reported then t.database := Some db
-      | _ -> ());
-      let stream =
-        Conn.stream conn ~hydration ~run_metadata ~on_complete:(fun summary ->
-            mark_bookmark t summary)
+      let finish ((conn : Conn.t), (run_metadata : Conn.run_metadata)) =
+        (if Conn.ssr_enabled conn then
+           match run_metadata.rt with Some rt -> t.on_rt !(t.database) rt | None -> ());
+        (match (!(t.database), run_metadata.db) with
+        | None, Some db ->
+            t.on_home_db_reported db;
+            if t.pin_on_home_db_reported then t.database := Some db
+        | _ -> ());
+        let stream =
+          Conn.stream conn ~hydration:(Conn.hydration conn) ~run_metadata
+            ~on_complete:(fun summary -> mark_bookmark t summary)
+        in
+        t.auto_result := Some stream;
+        Ok (Neo4j_result.make ?fetch_size:t.config.fetch_size ~query ~parameters stream)
       in
-      t.auto_result := Some stream;
-      Ok (Neo4j_result.make ?fetch_size:t.config.fetch_size ~query ~parameters stream)
+      let auto_commit_retry = function
+        | Errors.Neo4j server when server.idempotent -> not t.config.disable_auto_commit_retries
+        | _ -> false
+      in
+      match run_once (Some 2) with
+      | Ok (conn, run_metadata) -> finish (conn, run_metadata)
+      | Error error ->
+          if auto_commit_retry error then (
+            Log.debug Log.session (fun m ->
+                m "auto-commit retry after idempotent error: %s" (Errors.to_string error));
+            match run_once None with
+            | Ok (conn, run_metadata) -> finish (conn, run_metadata)
+            | Error second_error -> Error second_error)
+          else Error error)
 
 let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
   let* () = validate_timeout timeout in

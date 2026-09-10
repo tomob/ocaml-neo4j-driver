@@ -97,6 +97,18 @@ let field_string key = function
       | _ -> None)
   | _ -> None
 
+let field_map_entries key = function
+  | Packstream.Map fields -> (
+      match List.assoc_opt key fields with
+      | Some (Packstream.Map entries) -> Some entries
+      | _ -> None)
+  | _ -> None
+
+let failure_is_idempotent metadata =
+  match field_map_entries "diagnostic_record" metadata with
+  | Some entries -> List.assoc_opt "_idempotent" entries = Some (Packstream.Bool true)
+  | None -> false
+
 (* Bolt 6 renamed the FAILURE code key to [neo4j_code]; older versions use
    [code]. *)
 let failure_code payload =
@@ -113,7 +125,8 @@ let failure_error metadata =
   let code = failure_code metadata in
   let message = Option.value ~default:"" (field_string "message" metadata) in
   let gql_status = field_string "gql_status" metadata in
-  Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message
+  let error = Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message in
+  if failure_is_idempotent metadata then Errors.mark_idempotent error else error
 
 let respond transport =
   let* tag, payload = recv transport in

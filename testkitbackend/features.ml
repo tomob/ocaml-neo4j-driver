@@ -59,4 +59,5 @@ let features : string list =
     "Feature:API:Session:AuthConfig";
     "Feature:API:Driver.SupportsSessionAuth";
     "Feature:Impersonation";
+    "Feature:IdempotentRetries";
   ]

@@ -8,6 +8,7 @@ type response =
   | Success_meta of (string * Neodriver.Packstream.value) list
   | Failure of string * string
   | Failure_gql of string * string
+  | Failure_idempotent of string * string
   | Ignored
   | Records of Neodriver.Packstream.value list list * bool
 
@@ -99,6 +100,24 @@ let reply_message flow = function
                        [
                          ("neo4j_code", Neodriver.Packstream.String code);
                          ("message", Neodriver.Packstream.String message);
+                       ];
+                   ] ))))
+  | Failure_idempotent (code, message) ->
+      (* A Bolt 6 FAILURE whose diagnostic_record marks the failure idempotent
+         (an auto-commit RUN answering it may be retried safely). *)
+      write_message flow
+        (Bytes.to_string
+           (Neodriver.Packstream.pack
+              (Neodriver.Packstream.Structure
+                 ( 0x7F,
+                   [
+                     Neodriver.Packstream.Map
+                       [
+                         ("neo4j_code", Neodriver.Packstream.String code);
+                         ("message", Neodriver.Packstream.String message);
+                         ( "diagnostic_record",
+                           Neodriver.Packstream.Map
+                             [ ("_idempotent", Neodriver.Packstream.Bool true) ] );
                        ];
                    ] ))))
   | Ignored ->
