@@ -29,6 +29,19 @@ let unpack_message bytes =
 
 let message_tags received = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received)
 
+(* The [n] of every PULL message, in order. *)
+let pull_sizes received =
+  List.filter_map
+    (fun bytes ->
+      let tag, fields = unpack_message bytes in
+      if tag = 0x3F then
+        Some
+          (match List.assoc_opt "n" fields with
+          | Some (Packstream.Int n) -> Int64.to_int n
+          | _ -> 0)
+      else None)
+    (List.rev !received)
+
 (* The [bookmarks] list of the most recent RUN message. *)
 let last_run_bookmarks received =
   let rec find = function
@@ -321,6 +334,97 @@ let run_fetch_streams () =
       in
       check (list int) "pull batch sizes" [ 2; 2; 2 ] pull_sizes)
 
+(* [list] fetches all remaining records with a single PULL n = -1, unlike
+   [values]/[next] which pull batch by batch with the fetch size (the TestKit
+   ResultListFetchAll optimisation). *)
+let run_list_fetches_all_at_once () =
+  let received = ref [] in
+  let session_config = { Session.default_config with fetch_size = Some 1 } in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records
+             ( [
+                 [ Packstream.Int (Int64.of_int 1) ];
+                 [ Packstream.Int (Int64.of_int 2) ];
+                 [ Packstream.Int (Int64.of_int 3) ];
+               ],
+               false );
+         ] ))
+    (fun net clock sw port ->
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
+      in
+      let session = Session.create session_config ~clock ~connect () in
+      let result =
+        match Session.run session ~query:"RETURN 1" ~parameters:[] with
+        | Ok result -> result
+        | Error error -> fail (Errors.to_string error)
+      in
+      let record_int = function
+        | [ Values.Int n ] -> Int64.to_int n
+        | _ -> fail "expected a single-Int record"
+      in
+      (match Neo4jResult.list result with
+      | Ok records -> check (list int) "list" [ 1; 2; 3 ] (List.map record_int records)
+      | Error error -> fail (Errors.to_string error));
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received);
+      check (list int) "pull sizes" [ -1 ] (pull_sizes received))
+
+(* [list] keeps records already buffered by a prior [next] and fetches the rest
+   at once. *)
+let run_list_after_next_fetches_all_at_once () =
+  let received = ref [] in
+  let session_config = { Session.default_config with fetch_size = Some 2 } in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records
+             ([ [ Packstream.Int (Int64.of_int 1) ]; [ Packstream.Int (Int64.of_int 2) ] ], true);
+           Test_mock.Records
+             ( [
+                 [ Packstream.Int (Int64.of_int 3) ];
+                 [ Packstream.Int (Int64.of_int 4) ];
+                 [ Packstream.Int (Int64.of_int 5) ];
+               ],
+               false );
+         ] ))
+    (fun net clock sw port ->
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
+      in
+      let session = Session.create session_config ~clock ~connect () in
+      let result =
+        match Session.run session ~query:"RETURN 1" ~parameters:[] with
+        | Ok result -> result
+        | Error error -> fail (Errors.to_string error)
+      in
+      let record_int = function
+        | [ Values.Int n ] -> Int64.to_int n
+        | _ -> fail "expected a single-Int record"
+      in
+      (match Neo4jResult.next result with
+      | Ok (Some record) -> check int "first next" 1 (record_int record)
+      | _ -> fail "expected the first record");
+      (match Neo4jResult.list result with
+      | Ok records -> check (list int) "list" [ 2; 3; 4; 5 ] (List.map record_int records)
+      | Error error -> fail (Errors.to_string error));
+      check (list int) "pull sizes" [ 2; -1 ] (pull_sizes received))
+
 (* The effective database the connect callback reports is used for the
    auto-commit RUN: a default-database session whose connection resolves the
    home database sends it in the RUN extra. *)
@@ -601,6 +705,10 @@ let tests =
     ( "[Session] run_uses_effective_database",
       [ test_case "resolved home db in RUN" `Quick run_uses_effective_database ] );
     ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
+    ( "[Session] run_list_fetches_all_at_once",
+      [ test_case "list pulls all in one PULL" `Quick run_list_fetches_all_at_once ] );
+    ( "[Session] run_list_after_next_fetches_all_at_once",
+      [ test_case "list after next pulls all" `Quick run_list_after_next_fetches_all_at_once ] );
     ( "[Session] run_retries_idempotent",
       [ test_case "idempotent RUN failure retried once" `Quick run_retries_idempotent ] );
     ( "[Session] run_disabled_no_idempotent_retry",

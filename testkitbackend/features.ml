@@ -42,6 +42,7 @@ let features : string list =
     "Optimization:MinimalResets";
     "Optimization:HomeDatabaseCache";
     "Optimization:HomeDbCacheBasicPrincipalIsImpersonatedUser";
+    "Optimization:ResultListFetchAll";
     "AuthorizationExpiredTreatment";
     "Backend:RTFetch";
     "Backend:RTForceUpdate";

@@ -77,6 +77,22 @@ let rec fetch_loop n acc t =
 let fetch ?n t = match n with Some n -> fetch_loop n [] t | None -> fetch_loop max_int [] t
 let values t = fetch_loop max_int [] t
 
+(* All remaining records in a single PULL (the TestKit [ResultListFetchAll]
+   optimisation for [list()]): consume whatever is already buffered, pull the
+   rest with [n = -1] (all), then drain the now-complete buffer. Unlike
+   [values], this never pulls batch by batch with [fetch_size]. *)
+let list t =
+  let* () = check_open t in
+  let rec drain acc =
+    match Conn.next_record t.stream with
+    | Some record -> drain (record :: acc)
+    | None -> List.rev acc
+  in
+  let buffered = drain [] in
+  let* _ = if Conn.has_more t.stream then Conn.pull_stream t.stream else Ok [] in
+  let fetched = drain [] in
+  match Conn.error t.stream with Some error -> Error error | None -> Ok (buffered @ fetched)
+
 let data t =
   let ks = keys t in
   let* records = values t in

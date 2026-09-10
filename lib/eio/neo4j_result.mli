@@ -33,6 +33,12 @@ val fetch : ?n:int -> t -> (Values.t list list, Errors.t) result
 val values : t -> (Values.t list list, Errors.t) result
 (** All remaining records. *)
 
+val list : t -> (Values.t list list, Errors.t) result
+(** All remaining records, fetched in a single PULL ([n = -1]) — the TestKit
+    [Optimization:ResultListFetchAll] behaviour of the idiomatic [list()]: any already-buffered
+    records are consumed first and the rest pulled at once, instead of batch by batch with the
+    configured fetch size. *)
+
 val data : t -> ((string * Values.t) list list, Errors.t) result
 (** All remaining records, each paired with its field names. *)
 

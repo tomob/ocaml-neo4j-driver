@@ -931,7 +931,7 @@ let result_peek fields =
 
 let result_list fields =
   let r = get_result (int "resultId" fields) in
-  match Neo4jResult.values r.res with
+  match Neo4jResult.list r.res with
   | Error error -> raise (Driver_error error)
   | Ok records -> ("RecordList", `Assoc [ ("records", `List (List.map record_json records)) ])
 
