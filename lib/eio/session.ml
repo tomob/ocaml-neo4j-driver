@@ -21,6 +21,8 @@ type config = {
   retry_delay_multiplier : float;
   retry_delay_jitter_factor : float;
   disable_auto_commit_retries : bool;
+  notifications_min_severity : string option;
+  notifications_disabled_categories : string list option;
 }
 
 let default_config =
@@ -37,6 +39,8 @@ let default_config =
     retry_delay_multiplier = 2.0;
     retry_delay_jitter_factor = 0.2;
     disable_auto_commit_retries = false;
+    notifications_min_severity = None;
+    notifications_disabled_categories = None;
   }
 
 (* A session: its lazy connection, bookmarks, current transaction and the
@@ -279,6 +283,8 @@ let run ?timeout ?metadata t ~query ~parameters =
           Conn.run conn ~mode:t.config.access_mode ~hydration ~query ~parameters ?telemetry
             ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
             ?imp_user:t.config.impersonated_user ?db:!(t.database) ?timeout ?metadata
+            ?notifications_min_severity:t.config.notifications_min_severity
+            ?notifications_disabled_categories:t.config.notifications_disabled_categories
         with
         | Ok run_metadata -> Ok (conn, run_metadata)
         | Error error ->
@@ -357,7 +363,9 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
         Conn.build_extra ~mode ?db:!(t.database) ?imp_user:t.config.impersonated_user ?timeout
           ?metadata
           ~bookmarks:(Bookmarks.to_list (bookmarks_to_send t))
-          ()
+          ~version:(Conn.version conn)
+          ?notifications_min_severity:t.config.notifications_min_severity
+          ?notifications_disabled_categories:t.config.notifications_disabled_categories ()
       in
       let report_actual_db reported_db =
         match (!(t.database), reported_db) with

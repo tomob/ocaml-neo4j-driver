@@ -407,6 +407,8 @@ Driver.session ~config driver
 | `retry_delay_multiplier`     | backoff growth (default 2.0)                                  | yes      |
 | `retry_delay_jitter_factor`  | backoff jitter (default 0.2)                                  | yes      |
 | `fetch_size`                 | stream batch size hint                                        | accepted, not yet applied |
+| `notifications_min_severity` / `notifications_disabled_categories` | session-level notification filtering, sent in RUN/BEGIN (Bolt >= 5.2; `None` omits, empty list sends `[]`) | yes |
+| `disable_auto_commit_retries` | turns off the one-shot idempotent auto-commit retry (Bolt >= 6.0) | yes |
 
 How bookmarks are used (what they are, the `Bookmarks.t` values, manual
 chaining and `Bookmark_manager`s) is covered in the [Bookmarks and causal
@@ -498,8 +500,6 @@ the data.
 
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
-- Session-level notification filtering (the driver-level notification config is
-  sent in HELLO).
 - The high-level API (`execute_query`, `verify_connectivity`,
   `supports_multi_db`) is not exposed by the library yet (backend-only,
   TestKit).

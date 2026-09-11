@@ -704,6 +704,26 @@ let new_session fields =
     | Some (`Intlit n) -> int_of_string_opt n
     | _ -> driver.fetch_size
   in
+  (* The session-level notification filtering settings (sent in every RUN/BEGIN
+     extra). The driver-level settings in [driver] only travel in HELLO, so a
+     session that does not specify any sends none. A session that specifies at
+     least one replaces the driver-level settings entirely for its RUN/BEGIN. *)
+  let notifications_min_severity =
+    match List.assoc_opt "notificationsMinSeverity" fields with
+    | Some (`String severity) -> Some severity
+    | _ -> None
+  in
+  let notifications_disabled_categories =
+    match List.assoc_opt "notificationsDisabledCategories" fields with
+    | Some (`List categories) ->
+        Some
+          (List.map
+             (function
+               | `String category -> category
+               | _ -> raise (Backend_error "bad notification category"))
+             categories)
+    | _ -> None
+  in
   let bookmarks = Bookmarks.of_list (bookmarks_json (List.assoc_opt "bookmarks" fields)) in
   (* A session may carry its own bookmark manager: its bookmarks are merged
      with the session's [bookmarks] for the first transaction and the manager
@@ -734,6 +754,8 @@ let new_session fields =
         retry_delay_multiplier = 2.0;
         retry_delay_jitter_factor = 0.2;
         disable_auto_commit_retries;
+        notifications_min_severity;
+        notifications_disabled_categories;
       }
   in
   let id = new_id () in
@@ -1415,6 +1437,8 @@ let execute_query _ctx fields =
         retry_delay_multiplier = 2.0;
         retry_delay_jitter_factor = 0.2;
         disable_auto_commit_retries = driver.disable_auto_commit_retries;
+        notifications_min_severity = None;
+        notifications_disabled_categories = None;
       }
   in
   let session = Driver.session ~config:session_config driver.driver in

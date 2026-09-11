@@ -554,33 +554,64 @@ let run_metadata_of metadata =
   let db = map_fields "db" metadata |> string_opt in
   { fields; qid; bookmark; t_first; rt; db }
 
+(* The notification filtering fields of a RUN/BEGIN extra (Bolt >= 5.2): the
+   minimum severity when set and the disabled categories (renamed
+   [notifications_disabled_classifications] on Bolt >= 5.5) when set. [version]
+   gates them on the protocol capability. *)
+let notification_extra ~version notifications_min_severity notifications_disabled_categories =
+  match version with
+  | Some (major, minor) when (Capabilities.of_version major minor).supports_notification_filtering
+    ->
+      let severity =
+        Option.map
+          (fun severity -> ("notifications_minimum_severity", Packstream.String severity))
+          notifications_min_severity
+      in
+      let disabled =
+        Option.map
+          (fun categories ->
+            let key =
+              if major > 5 || (major = 5 && minor >= 5) then
+                "notifications_disabled_classifications"
+              else "notifications_disabled_categories"
+            in
+            (key, Packstream.List (List.map (fun category -> Packstream.String category) categories)))
+          notifications_disabled_categories
+      in
+      [ severity; disabled ]
+  | _ -> []
+
 (* The extra map shared by BEGIN and auto-commit RUN: mode, db, impersonation,
-   bookmarks, tx_metadata and tx_timeout (milliseconds). *)
-let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () =
+   bookmarks, tx_metadata, tx_timeout (milliseconds) and the session-level
+   notification filtering settings. *)
+let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?version
+    ?notifications_min_severity ?notifications_disabled_categories () =
   let items =
     List.filter_map Fun.id
-      [
-        Option.bind mode (function
-          | Config.Read -> Some ("mode", Packstream.String "r")
-          | Config.Write -> None);
-        Option.map (fun db -> ("db", Packstream.String db)) db;
-        Option.map (fun user -> ("imp_user", Packstream.String user)) imp_user;
-        (* Like the Python driver, an empty bookmark list is omitted from the
-           extra map (the server defaults to no bookmarks). *)
-        Option.bind bookmarks (function
-          | [] -> None
-          | bookmarks ->
-              Some ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)));
-        Option.map
-          (fun seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))))
-          timeout;
-        Option.map (fun metadata -> ("tx_metadata", Packstream.Map metadata)) metadata;
-      ]
+      ([
+         Option.bind mode (function
+           | Config.Read -> Some ("mode", Packstream.String "r")
+           | Config.Write -> None);
+         Option.map (fun db -> ("db", Packstream.String db)) db;
+         Option.map (fun user -> ("imp_user", Packstream.String user)) imp_user;
+         (* Like the Python driver, an empty bookmark list is omitted from the
+            extra map (the server defaults to no bookmarks). *)
+         Option.bind bookmarks (function
+           | [] -> None
+           | bookmarks ->
+               Some
+                 ("bookmarks", Packstream.List (List.map (fun b -> Packstream.String b) bookmarks)));
+         Option.map
+           (fun seconds -> ("tx_timeout", Packstream.Int (Int64.of_float (seconds *. 1000.0))))
+           timeout;
+         Option.map (fun metadata -> ("tx_metadata", Packstream.Map metadata)) metadata;
+       ]
+      @ notification_extra ~version notifications_min_severity notifications_disabled_categories)
   in
   Packstream.Map items
 
-let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry t ~hydration ~query ~parameters
-    =
+let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notifications_min_severity
+    ?notifications_disabled_categories t ~hydration ~query ~parameters =
   (* Like the Python driver, the connection's last database is only updated
      outside a transaction: inside one the BEGIN's database stays authoritative
      (a tx RUN does not carry [db]). *)
@@ -597,7 +628,10 @@ let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry t ~hydratio
         Result.map (fun items -> Some items) (Hydration.dehydrate_assoc_list hydration entries)
   in
   let re_auth = re_auth_of t.major t.minor in
-  let extra = build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata () in
+  let extra =
+    build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ~version:(t.major, t.minor)
+      ?notifications_min_severity ?notifications_disabled_categories ()
+  in
   let* metadata_response =
     match telemetry with
     | Some feature when telemetry_wanted t ->

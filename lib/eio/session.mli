@@ -33,6 +33,8 @@ type config = {
   retry_delay_multiplier : float;
   retry_delay_jitter_factor : float;
   disable_auto_commit_retries : bool;
+  notifications_min_severity : string option;
+  notifications_disabled_categories : string list option;
 }
 (** Session settings. [bookmarks] seeds the session's bookmarks: without a [bookmark_manager] they
     are sent with every transaction and replaced by a commit's bookmark (the [last_bookmarks] causal
@@ -45,7 +47,11 @@ type config = {
     the Python driver defaults ([max_transaction_retry_time] is configurable via the TestKit driver
     request). [disable_auto_commit_retries] (default [false]) turns off the automatic one-shot retry
     of an auto-commit [run] after a server failure marked idempotent (Bolt >= 6.0
-    [diagnostic_record._idempotent]). *)
+    [diagnostic_record._idempotent]). [notifications_min_severity] and
+    [notifications_disabled_categories] are the session-level notification filtering settings sent
+    in every RUN/BEGIN extra (Bolt >= 5.2; [None] omits the field, [Some []] sends an empty category
+    list); the driver-level settings (carried in HELLO) apply when the session does not specify any.
+*)
 
 val default_config : config
 (** Session configuration with the driver defaults: write access, no database or impersonation, and

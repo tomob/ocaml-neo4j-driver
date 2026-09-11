@@ -569,6 +569,105 @@ let manager_chains_across_sessions () =
           check (list string) "second session seeded by the manager" [ "bm1" ]
             (last_run_bookmarks second_received)))
 
+(* The session-level notification filtering settings go into every RUN and
+   BEGIN extra on Bolt >= 5.2 (renamed to [_classifications] from Bolt 5.5);
+   [None] omits them. *)
+let session_notification_extras () =
+  let extra_of received tag =
+    match
+      List.rev !received
+      |> List.find_map (fun bytes ->
+          match Packstream.unpack bytes with
+          | Ok (Packstream.Structure (t, fields)) when t = tag -> (
+              match List.rev fields with Packstream.Map extra :: _ -> Some extra | _ -> None)
+          | _ -> None)
+    with
+    | Some extra -> extra
+    | None -> []
+  in
+  let string_of extra key =
+    match List.assoc_opt key extra with Some (Packstream.String s) -> s | _ -> ""
+  in
+  let cats_of extra key =
+    match List.assoc_opt key extra with
+    | Some (Packstream.List values) ->
+        List.map (function Packstream.String s -> s | _ -> "") values
+    | _ -> []
+  in
+  let connect net clock sw port ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+    match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+    | Ok conn -> Ok (conn, None)
+    | Error error -> Error error
+  in
+  let check_run version min_severity categories severity_key categories_key =
+    let received = ref [] in
+    Test_mock.with_mock
+      (Test_mock.Session
+         (version, received, [ Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false) ]))
+      (fun net clock sw port ->
+        let session_config =
+          {
+            Session.default_config with
+            notifications_min_severity = min_severity;
+            notifications_disabled_categories = categories;
+          }
+        in
+        let session =
+          Session.create session_config ~clock ~connect:(connect net clock sw port) ()
+        in
+        (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+        | Ok _ -> ()
+        | Error error -> fail (Errors.to_string error));
+        Session.close session;
+        let extra = extra_of received 0x10 in
+        check string "RUN min severity"
+          (Option.value ~default:"" min_severity)
+          (string_of extra severity_key);
+        check (list string) "RUN categories"
+          (Option.value ~default:[] categories)
+          (cats_of extra categories_key))
+  in
+  let check_begin version min_severity categories severity_key categories_key =
+    let received = ref [] in
+    Test_mock.with_mock
+      (Test_mock.Session
+         ( version,
+           received,
+           [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Success ] ))
+      (fun net clock sw port ->
+        let session_config =
+          {
+            Session.default_config with
+            notifications_min_severity = min_severity;
+            notifications_disabled_categories = categories;
+          }
+        in
+        let session =
+          Session.create session_config ~clock ~connect:(connect net clock sw port) ()
+        in
+        let tx =
+          match Session.begin_transaction session with
+          | Ok tx -> tx
+          | Error error -> fail (Errors.to_string error)
+        in
+        (match Tx.rollback tx with Ok () -> () | Error error -> fail (Errors.to_string error));
+        Session.close session;
+        let extra = extra_of received 0x11 in
+        check string "BEGIN min severity"
+          (Option.value ~default:"" min_severity)
+          (string_of extra severity_key);
+        check (list string) "BEGIN categories"
+          (Option.value ~default:[] categories)
+          (cats_of extra categories_key))
+  in
+  check_run (5, 2) (Some "WARNING") (Some [ "SCHEMA" ]) "notifications_minimum_severity"
+    "notifications_disabled_categories";
+  check_run (5, 2) None None "notifications_minimum_severity" "notifications_disabled_categories";
+  check_begin (5, 2) (Some "WARNING") (Some [ "SCHEMA" ]) "notifications_minimum_severity"
+    "notifications_disabled_categories";
+  check_run (5, 5) (Some "OFF") (Some [ "SCHEMA" ]) "notifications_minimum_severity"
+    "notifications_disabled_classifications"
+
 (* An auto-commit RUN that fails with an idempotent (Bolt 6) server failure is
    retried once on the same connection; the retry does not re-send TELEMETRY
    (none was sent here: the mock HELLO advertises no telemetry). *)
@@ -707,6 +806,8 @@ let tests =
     ( "[Session] run_uses_effective_database",
       [ test_case "resolved home db in RUN" `Quick run_uses_effective_database ] );
     ("[Session] run_fetch_streams", [ test_case "batched fetch stream" `Quick run_fetch_streams ]);
+    ( "[Session] session_notification_extras",
+      [ test_case "session notification config in RUN/BEGIN" `Quick session_notification_extras ] );
     ( "[Session] run_list_fetches_all_at_once",
       [ test_case "list pulls all in one PULL" `Quick run_list_fetches_all_at_once ] );
     ( "[Session] run_list_after_next_fetches_all_at_once",

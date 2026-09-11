@@ -398,6 +398,13 @@ v}
 - [retry_delay_multiplier] — backoff growth (default 2.0, honored).
 - [retry_delay_jitter_factor] — backoff jitter (default 0.2, honored).
 - [fetch_size] — stream batch size hint (accepted, not yet applied).
+- [notifications_min_severity] / [notifications_disabled_categories] —
+  session-level notification filtering, sent in every RUN/BEGIN extra (Bolt >=
+  5.2; [None] omits the field, an empty list sends `[]`). The driver-level
+  settings travel in HELLO; a session only sends what it specifies.
+- [disable_auto_commit_retries] — turns off the automatic one-shot retry of an
+  auto-commit [Session.run] after an idempotent server failure (Bolt >= 6.0;
+  default [false]).
 
 How bookmarks are used (what they are, the [Bookmarks.t] values, manual
 chaining and [Bookmark_manager]s) is covered in the "Bookmarks and causal
@@ -485,8 +492,6 @@ the data.
 
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN
   extra).
-- Session-level notification filtering (the driver-level notification config is
-  sent in HELLO).
 - The high-level API ([execute_query], [verify_connectivity],
   [supports_multi_db]) is not exposed by the library yet (backend-only,
   TestKit).

@@ -154,6 +154,8 @@ val run :
   ?timeout:float ->
   ?metadata:(string * Values.t) list ->
   ?telemetry:int ->
+  ?notifications_min_severity:string ->
+  ?notifications_disabled_categories:string list ->
   t ->
   hydration:Hydration.t ->
   query:string ->
@@ -162,6 +164,8 @@ val run :
 (** Send a RUN message for [query]. [parameters] are dehydrated with [hydration]. The optional
     [mode], [db], [bookmarks], [timeout] (seconds) and [metadata] ([tx_metadata]) go into the
     request's [extra] map. [telemetry] batches a TELEMETRY notification (Bolt 5.4+) with the RUN.
+    [notifications_min_severity] and [notifications_disabled_categories] are the session-level
+    notification filtering settings, sent in the extra map on Bolt >= 5.2.
     @return
       [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
       the next request). *)
@@ -179,11 +183,17 @@ val build_extra :
   ?bookmarks:string list ->
   ?timeout:float ->
   ?metadata:(string * Packstream.value) list ->
+  ?version:int * int ->
+  ?notifications_min_severity:string ->
+  ?notifications_disabled_categories:string list ->
   unit ->
   Packstream.value
 (** The [extra] map for BEGIN (and auto-commit RUN): [mode] ([Read] -> "r"), [db], [imp_user],
     [bookmarks], [timeout] (seconds, sent as [tx_timeout] milliseconds) and [metadata]
-    ([tx_metadata], already dehydrated). *)
+    ([tx_metadata], already dehydrated). [version] (the connection's protocol version) gates the
+    session-level notification settings ([notifications_min_severity] and
+    [notifications_disabled_categories]) on the Bolt >= 5.2 capability; from Bolt 5.5 the categories
+    field is named [notifications_disabled_classifications]. *)
 
 val commit : t -> (Packstream.value, Errors.t) result
 (** Send a COMMIT message (end the transaction, applying its writes). Returns the full response
