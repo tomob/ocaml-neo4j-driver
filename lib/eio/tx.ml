@@ -50,7 +50,7 @@ let drain_pending t =
 
 let run t ~hydration ~query ~parameters =
   let* () = check_open t in
-  match Conn.run t.conn ~hydration ~query ~parameters with
+  match Conn.run t.conn ~hydration ~query ~parameters ?fetch_size:t.fetch_size with
   | Error error ->
       t.state <- Failed;
       (* A failed RUN terminates every result of the transaction: they surface

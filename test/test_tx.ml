@@ -116,7 +116,7 @@ let rollback_round_trip () =
       | Error e -> fail (Errors.to_string e));
       (match Tx.rollback tx with Ok () -> () | Error e -> fail (Errors.to_string e));
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x13 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x13 ]
         (message_tags received);
       check bool "closed" true (Tx.closed tx);
       Conn.close conn)
@@ -157,6 +157,7 @@ let failure_recovers () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Success;
+           Test_mock.Success;
            Test_mock.Records ([], false);
            Test_mock.Success_meta [ ("bookmark", Packstream.String "bookmark-2") ];
          ] ))
@@ -180,7 +181,7 @@ let failure_recovers () =
       | Ok b -> check (option string) "bookmark" (Some "bookmark-2") b
       | Error e -> fail (Errors.to_string e));
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x11; 0x10; 0x2F; 0x12 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x0F; 0x11; 0x10; 0x3F; 0x12 ]
         (message_tags received);
       Conn.close conn)
 

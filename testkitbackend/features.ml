@@ -40,10 +40,12 @@ let features : string list =
     "Feature:API:Type.UnsupportedType";
     "Feature:API:Type.Vector";
     "Feature:API:Type.UUID";
+    "Optimization:ConnectionReuse";
     "Optimization:EagerTransactionBegin";
     "Optimization:MinimalResets";
     "Optimization:HomeDatabaseCache";
     "Optimization:HomeDbCacheBasicPrincipalIsImpersonatedUser";
+    "Optimization:PullPipelining";
     "Optimization:ResultListFetchAll";
     "AuthorizationExpiredTreatment";
     "Backend:RTFetch";

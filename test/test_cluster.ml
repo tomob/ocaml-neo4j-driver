@@ -1476,6 +1476,7 @@ let routed_security_error_retryable () =
               Test_mock.Success;
               Test_mock.Success;
               Test_mock.Success;
+              Test_mock.Success;
               Test_mock.Success_meta [ ("has_more", Packstream.Bool false) ];
             ] );
         ];
@@ -1520,7 +1521,7 @@ let routed_security_error_retryable () =
       Cluster.release cluster conn2;
       check (list int) "router wire" [ 0x01; 0x6A; 0x66 ] (tags (List.nth received 0));
       check (list int) "reader wire"
-        [ 0x01; 0x6A; 0x10; 0x0F; 0x6B; 0x6A; 0x10; 0x3F ]
+        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x6B; 0x6A; 0x10; 0x3F ]
         (tags (List.nth received 1));
       Cluster.close cluster)
 

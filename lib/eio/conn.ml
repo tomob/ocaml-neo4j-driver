@@ -195,6 +195,17 @@ let ensure_ready t =
   if State.failed !(t.state) then reset t |> Result.map_error (fun error -> report t error)
   else Ok ()
 
+(* The PULL/DISCARD payload: Bolt 4+ carries the [n] and (when targeting an
+   older stream) the [qid]; Bolt 3's PULL_ALL/DISCARD_ALL take no fields. *)
+let pull_extra ?(n = -1) ?qid () =
+  let extra = [ ("n", Packstream.Int (Int64.of_int n)) ] in
+  let extra =
+    match qid with Some qid -> ("qid", Packstream.Int (Int64.of_int qid)) :: extra | None -> extra
+  in
+  Packstream.Map extra
+
+let pull_payload t ?n ?qid () = if t.major = 3 then None else Some (pull_extra ?n ?qid ())
+
 (* Recover a connection after a server FAILURE, like the Python driver's
    [Response.on_failure]: the RESET is sent eagerly instead of being deferred to
    the next request, so the connection is immediately reusable. Only FAILURE
@@ -215,16 +226,17 @@ let recover_after_failure t error =
                 (Errors.to_string reset_error)))
   | _ -> ()
 
-(* Drain a still-pending pipelined PULL response (Bolt 3) before the connection
-   is used for something else: the PULL_ALL was already sent by [run], and its
-   RECORD/SUCCESS messages must be consumed to keep the response stream in
-   sync. The records are dropped — this only happens when the abandoned stream
-   is not pulled again. *)
+(* Drain a still-pending pipelined PULL response before the connection is used
+   for something else: the PULL was already sent by [run], and its
+   RECORD/SUCCESS messages must be consumed to keep the response stream in sync.
+   The records are dropped; any remainder (Bolt 4+ [has_more]) is left to be
+   implicitly discarded by the next RUN/BEGIN/RESET/COMMIT. *)
 let drain_pending_pull t =
   if !(t.pipelined_pull) then begin
     t.pipelined_pull := false;
     match Bolt.collect_records [] t.transport with
-    | Ok (_, outcome) -> ( match outcome with Error _ -> t.state := State.Failed | Ok _ -> ())
+    | Ok (_, Error _) -> t.state := State.Failed
+    | Ok (_, Ok _) -> ()
     | Error _ -> ()
   end
 
@@ -261,9 +273,16 @@ let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
 (* Like [request], but batches a TELEMETRY notification for [feature] before the
    request: the server answers the TELEMETRY with a SUCCESS and then the request
    itself with its own SUCCESS/FAILURE. [action] must only SEND the request
-   message (no read); only RUN/BEGIN use this. The state transitions as usual
+   message(s) (no read); only RUN/BEGIN use this. [pending_pulls] is the number
+   of extra messages sent with the request whose IGNORED responses must be
+   drained on a failure (RUN's pipelined PULL). The state transitions as usual
    (a RUN enters [Streaming] until the follow-up PULL/DISCARD). *)
-let request_telemetry t ~message ~re_auth feature action =
+let request_telemetry ?(pending_pulls = 0) t ~message ~re_auth feature action =
+  let drain_pull_responses count =
+    for _ = 1 to count do
+      ignore (Bolt.respond t.transport)
+    done
+  in
   let* () = ensure_ready t in
   let outcome =
     let* () =
@@ -272,14 +291,14 @@ let request_telemetry t ~message ~re_auth feature action =
     let* () = action () in
     match Bolt.respond t.transport with
     | Error error ->
-        (* TELEMETRY failed: the server IGNOREs the already-sent request, so
-           its response is still on the wire — drain it to keep the message
-           stream in sync for the follow-up RESET. The failure answered the
-           TELEMETRY, not the RUN: clear any idempotent marker so an
-           auto-commit retry never re-sends the query over it. *)
-        ignore (Bolt.respond t.transport);
+        drain_pull_responses (1 + pending_pulls);
         Error (Errors.clear_idempotent error)
-    | Ok _ -> Bolt.respond t.transport
+    | Ok _ -> (
+        match Bolt.respond t.transport with
+        | Error error ->
+            drain_pull_responses pending_pulls;
+            Error error
+        | Ok response -> Ok response)
   in
   match outcome with
   | Ok response ->
@@ -611,7 +630,7 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?version
   Packstream.Map items
 
 let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notifications_min_severity
-    ?notifications_disabled_categories t ~hydration ~query ~parameters =
+    ?notifications_disabled_categories ?(fetch_size = 1000) t ~hydration ~query ~parameters =
   (* Like the Python driver, the connection's last database is only updated
      outside a transaction: inside one the BEGIN's database stays authoritative
      (a tx RUN does not carry [db]). *)
@@ -632,48 +651,40 @@ let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notificati
     build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ~version:(t.major, t.minor)
       ?notifications_min_severity ?notifications_disabled_categories ()
   in
+  let send_run () =
+    Bolt.send t.transport ~tag:Bolt.run_tag [ Packstream.String query; parameters; extra ]
+  in
+  let send_pull () =
+    match t.major with
+    | 3 -> Bolt.send t.transport ~tag:Bolt.pull_tag []
+    | _ -> Bolt.send t.transport ~tag:Bolt.pull_tag [ pull_extra ~n:fetch_size () ]
+  in
   let* metadata_response =
     match telemetry with
     | Some feature when telemetry_wanted t ->
-        request_telemetry t ~message:State.Run ~re_auth feature (fun () ->
-            Bolt.send t.transport ~tag:Bolt.run_tag [ Packstream.String query; parameters; extra ])
-    | _ when t.major = 3 ->
-        request t ~message:State.Run ~re_auth (fun () ->
-            let* () =
-              Bolt.send t.transport ~tag:Bolt.run_tag [ Packstream.String query; parameters; extra ]
-            in
-            let* () = Bolt.send t.transport ~tag:Bolt.pull_tag [] in
-            Bolt.respond t.transport
-            |> Result.map_error (fun error ->
-                (* The RUN failed: the pipelined PULL is answered with an
-                   IGNORED that must be drained before the follow-up RESET. *)
-                ignore (Bolt.respond t.transport);
-                error))
+        request_telemetry
+          ~pending_pulls:(if t.major = 3 then 0 else 1)
+          t ~message:State.Run ~re_auth feature
+          (fun () ->
+            let* () = send_run () in
+            send_pull ())
     | _ ->
         request t ~message:State.Run ~re_auth (fun () ->
-            Bolt.run t.transport ~query ~parameters ~extra)
+            let* () = send_run () in
+            let* () = send_pull () in
+            Bolt.respond t.transport
+            |> Result.map_error (fun error ->
+                ignore (Bolt.respond t.transport);
+                error))
   in
-  if t.major = 3 then t.pipelined_pull := true;
+  t.pipelined_pull := true;
   let run_metadata = run_metadata_of metadata_response in
   (* The most recent query on the connection: a PULL/DISCARD of it may omit the
      [qid] (which then targets the last query), while older streams need it. *)
   t.last_qid := run_metadata.qid;
   Ok run_metadata
 
-(* The PULL/DISCARD payload: Bolt 4+ carries the [n] and (when targeting an
-   older stream) the [qid]; Bolt 3's PULL_ALL/DISCARD_ALL take no fields. *)
-let pull_extra ?(n = -1) ?qid () =
-  let extra = [ ("n", Packstream.Int (Int64.of_int n)) ] in
-  let extra =
-    match qid with Some qid -> ("qid", Packstream.Int (Int64.of_int qid)) :: extra | None -> extra
-  in
-  Packstream.Map extra
-
 let outcome_has_more = function Ok summary -> Bolt.metadata_has_more summary | Error _ -> false
-
-(* The PULL/DISCARD payload: Bolt 4+ carries the [n]/[qid] map; Bolt 3's
-   PULL_ALL/DISCARD_ALL take no fields. *)
-let pull_payload t ?n ?qid () = if t.major = 3 then None else Some (pull_extra ?n ?qid ())
 
 let pull ?n ?qid t ~hydration =
   let re_auth = re_auth_of t.major t.minor in
@@ -683,7 +694,6 @@ let pull ?n ?qid t ~hydration =
       t ~message:State.Pull ~re_auth
       (fun () ->
         if !(t.pipelined_pull) then begin
-          (* Bolt 3: the PULL_ALL was already sent with the RUN — read it. *)
           t.pipelined_pull := false;
           Bolt.collect_records [] t.transport
         end
@@ -710,10 +720,14 @@ let discard ?n ?qid t =
       t ~message:State.Discard ~re_auth
       (fun () ->
         if !(t.pipelined_pull) then begin
-          (* Bolt 3: the PULL_ALL was already sent with the RUN — consume its
-             response instead of sending a DISCARD_ALL. *)
           t.pipelined_pull := false;
-          Bolt.collect_records [] t.transport
+          let* ((_, outcome) as collected) = Bolt.collect_records [] t.transport in
+          match outcome with
+          | Error _ -> Ok collected
+          | Ok summary ->
+              if Bolt.metadata_has_more summary then
+                Bolt.discard ?extra:(pull_payload t ~n:(-1) ()) t.transport
+              else Ok collected
         end
         else Bolt.discard ?extra:(pull_payload t ?n ?qid ()) t.transport)
   in

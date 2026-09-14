@@ -111,7 +111,7 @@ let execute_ok () =
       check int "one attempt" 1 !attempts;
       check (list string) "bookmarks" [ "b1" ] (Bookmarks.to_list (Session.last_bookmarks session));
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x12 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
         (message_tags received))
 
 (* A retryable failure retries the unit of work on a fresh transaction. Each
@@ -122,8 +122,8 @@ let execute_retries () =
   let received = ref [] in
   Test_mock.with_mock_multi
     [
-      (* First attempt: HELLO, LOGON, BEGIN, RUN -> transient failure, then
-         the rollback's RESET. *)
+      (* First attempt: HELLO, LOGON, BEGIN, RUN -> transient failure, the
+         pipelined PULL is drained, then the rollback's RESET. *)
       ( (5, 4),
         received,
         [
@@ -131,6 +131,7 @@ let execute_retries () =
           Test_mock.Success;
           Test_mock.Success;
           Test_mock.Failure ("Neo.TransientError.General.DatabaseUnavailable", "transient");
+          Test_mock.Success;
           Test_mock.Success;
         ] );
       (* Second attempt on a fresh connection: HELLO, LOGON, BEGIN, RUN, PULL,
@@ -156,7 +157,7 @@ let execute_retries () =
       check int "two attempts" 2 !attempts;
       check (list string) "bookmarks" [ "b2" ] (Bookmarks.to_list (Session.last_bookmarks session));
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x11; 0x10; 0x0F; 0x01; 0x6A; 0x11; 0x10; 0x2F; 0x12 ]
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x0F; 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
         (message_tags received))
 
 (* A non-retryable failure is not retried and surfaces the driver error. *)
@@ -172,6 +173,7 @@ let execute_no_retry () =
            Test_mock.Success;
            Test_mock.Failure ("Neo.ClientError.Statement.SyntaxError", "bad");
            Test_mock.Success;
+           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let session = session net clock sw port in
@@ -186,7 +188,9 @@ let execute_no_retry () =
           | _ -> fail "expected a Neo4j error")
       | Error Session.Client -> fail "expected a driver error");
       check int "one attempt" 1 !attempts;
-      check (list int) "wire sequence" [ 0x01; 0x6A; 0x11; 0x10; 0x0F ] (message_tags received))
+      check (list int) "wire sequence"
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x0F ]
+        (message_tags received))
 
 (* An application (client) failure rolls back without retrying. *)
 let execute_client_failure () =
@@ -235,7 +239,7 @@ let run_captures_bookmark () =
       check (list string) "bookmarks" [ "auto-b" ]
         (Bookmarks.to_list (Session.last_bookmarks session));
       (* consume() discards the rest of the stream instead of pulling it. *)
-      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x2F ] (message_tags received))
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received))
 
 (* A negative transaction/query timeout is rejected up front as a configuration
    error, without touching the connection. *)
@@ -378,7 +382,7 @@ let run_list_fetches_all_at_once () =
       | Ok records -> check (list int) "list" [ 1; 2; 3 ] (List.map record_int records)
       | Error error -> fail (Errors.to_string error));
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received);
-      check (list int) "pull sizes" [ -1 ] (pull_sizes received))
+      check (list int) "pull sizes" [ 1 ] (pull_sizes received))
 
 (* [list] keeps records already buffered by a prior [next] and fetches the rest
    at once. *)
@@ -684,6 +688,7 @@ let run_retries_idempotent () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Success;
+           Test_mock.Success;
          ] ))
     (fun net clock sw port ->
       let session = session net clock sw port in
@@ -694,7 +699,7 @@ let run_retries_idempotent () =
           | Error error -> fail (Errors.to_string error))
       | Error error -> fail (Errors.to_string error));
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x10; 0x0F; 0x10; 0x2F ]
+        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x10; 0x3F ]
         (message_tags received))
 
 (* [disable_auto_commit_retries] turns the idempotent retry off: the failure
@@ -710,6 +715,7 @@ let run_disabled_no_idempotent_retry () =
            Test_mock.Success;
            Test_mock.Success;
            Test_mock.Failure_idempotent ("Neo.ClientError.MadeUp.Idempotent", "idem");
+           Test_mock.Success;
            Test_mock.Success;
          ] ))
     (fun net clock sw port ->
@@ -728,7 +734,7 @@ let run_disabled_no_idempotent_retry () =
           | Errors.Neo4j server ->
               check string "code" "Neo.ClientError.MadeUp.Idempotent" server.code
           | _ -> fail "expected a server error"));
-      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x0F ] (message_tags received))
+      check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F ] (message_tags received))
 
 (* A second failure after the idempotent retry surfaces as-is (no further
    retry), whatever its idempotency. *)
@@ -743,7 +749,9 @@ let run_second_error_surfaced () =
            Test_mock.Success;
            Test_mock.Failure_idempotent ("Neo.ClientError.MadeUp.Idempotent", "idem");
            Test_mock.Success;
+           Test_mock.Success;
            Test_mock.Failure ("Neo.ClientError.MadeUp.Code", "boom");
+           Test_mock.Success;
            Test_mock.Success;
          ] ))
     (fun net clock sw port ->
@@ -755,7 +763,7 @@ let run_second_error_surfaced () =
           | Errors.Neo4j server -> check string "code" "Neo.ClientError.MadeUp.Code" server.code
           | _ -> fail "expected a server error"));
       check (list int) "wire sequence"
-        [ 0x01; 0x6A; 0x10; 0x0F; 0x10; 0x0F ]
+        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x10; 0x3F; 0x0F ]
         (message_tags received))
 
 (* A managed transaction reports its own TELEMETRY feature code: execute_query

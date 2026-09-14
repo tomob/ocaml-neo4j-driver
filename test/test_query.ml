@@ -169,7 +169,7 @@ let qid_in_extra () =
       let _, fields = unpack_message pull in
       let map = map_of_fields fields in
       check (option int) "qid" None (int_of_map map "qid");
-      check (option int) "n" (Some (-1)) (int_of_map map "n");
+      check (option int) "n" (Some 1000) (int_of_map map "n");
       Conn.close conn)
 
 (* A failing RUN auto-resets the connection right away (like the Python
@@ -180,6 +180,7 @@ let run_failure_reset () =
   let responses =
     [
       Test_mock.Failure ("Neo.ClientError.Statement.SyntaxError", "bad query");
+      Test_mock.Success;
       Test_mock.Success;
       Test_mock.Success;
     ]
@@ -194,7 +195,7 @@ let run_failure_reset () =
       | Ok _ -> check_state conn "Ready"
       | Error error -> fail (Errors.to_string error));
       let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
-      check (list int) "wire order" [ 0x01; 0x6A; 0x10; 0x0F; 0x2F ] tags;
+      check (list int) "wire order" [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x2F ] tags;
       Conn.close conn)
 
 let tests =

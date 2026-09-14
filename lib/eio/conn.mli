@@ -156,6 +156,7 @@ val run :
   ?telemetry:int ->
   ?notifications_min_severity:string ->
   ?notifications_disabled_categories:string list ->
+  ?fetch_size:int ->
   t ->
   hydration:Hydration.t ->
   query:string ->
@@ -165,7 +166,9 @@ val run :
     [mode], [db], [bookmarks], [timeout] (seconds) and [metadata] ([tx_metadata]) go into the
     request's [extra] map. [telemetry] batches a TELEMETRY notification (Bolt 5.4+) with the RUN.
     [notifications_min_severity] and [notifications_disabled_categories] are the session-level
-    notification filtering settings, sent in the extra map on Bolt >= 5.2.
+    notification filtering settings, sent in the extra map on Bolt >= 5.2. The first PULL is
+    pipelined with the RUN ([fetch_size] records, default 1000; Bolt 3 sends PULL_ALL): its response
+    is consumed by the result's [pull]/[discard] (or [drain_pending_pull] when abandoned).
     @return
       [Error _] if the server fails the request (the connection enters [Failed] and is RESET before
       the next request). *)

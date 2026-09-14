@@ -285,6 +285,7 @@ let run ?timeout ?metadata t ~query ~parameters =
             ?imp_user:t.config.impersonated_user ?db:!(t.database) ?timeout ?metadata
             ?notifications_min_severity:t.config.notifications_min_severity
             ?notifications_disabled_categories:t.config.notifications_disabled_categories
+            ?fetch_size:t.config.fetch_size
         with
         | Ok run_metadata -> Ok (conn, run_metadata)
         | Error error ->

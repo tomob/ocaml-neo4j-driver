@@ -384,6 +384,7 @@ let authorization_expired_marks_all () =
               Test_mock.Success;
               Test_mock.Success;
               Test_mock.Success;
+              Test_mock.Success;
             ] );
         ];
       ])
@@ -434,7 +435,9 @@ let authorization_expired_marks_all () =
       | Ok conn -> Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check (list int) "conn1 wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received_a);
-      check (list int) "conn2 wire" [ 0x01; 0x6A; 0x10; 0x0F; 0x6B; 0x6A ] (message_tags received_b))
+      check (list int) "conn2 wire"
+        [ 0x01; 0x6A; 0x10; 0x3F; 0x0F; 0x6B; 0x6A ]
+        (message_tags received_b))
 
 (* A handled security error (basic manager + Unauthorized) is marked retryable
    and the manager refreshes its token. *)

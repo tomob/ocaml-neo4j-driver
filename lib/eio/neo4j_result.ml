@@ -83,15 +83,18 @@ let values t = fetch_loop max_int [] t
    [values], this never pulls batch by batch with [fetch_size]. *)
 let list t =
   let* () = check_open t in
-  let rec drain acc =
-    match Conn.next_record t.stream with
-    | Some record -> drain (record :: acc)
-    | None -> List.rev acc
+  let rec drain () =
+    match Conn.next_record t.stream with Some record -> record :: drain () | None -> []
   in
-  let buffered = drain [] in
-  let* _ = if Conn.has_more t.stream then Conn.pull_stream t.stream else Ok [] in
-  let fetched = drain [] in
-  match Conn.error t.stream with Some error -> Error error | None -> Ok (buffered @ fetched)
+  let rec collect acc =
+    let acc = acc @ drain () in
+    if Conn.has_more t.stream then
+      let* _ = Conn.pull_stream t.stream in
+      collect acc
+    else Ok acc
+  in
+  let* records = collect [] in
+  match Conn.error t.stream with Some error -> Error error | None -> Ok records
 
 let data t =
   let ks = keys t in
