@@ -190,4 +190,13 @@ let parse_uri uri_string =
     | None | Some "" -> Ok []
     | Some query -> parse_routing_context query
   in
+  let* () =
+    match (scheme, routing_context) with
+    | (Bolt | Bolt_secure | Bolt_self_signed), _ :: _ ->
+        config_error
+          "Parameters are not supported for the direct driver URI %S (they are only valid for the \
+           neo4j:// routed schemes)"
+          uri_string
+    | _ -> Ok ()
+  in
   Ok { scheme; host; port; routing_context }

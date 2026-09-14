@@ -130,6 +130,17 @@ let connect_failure_message () =
   let msg = Addressing.connect_failure_message ~address:address6 ~resolved:[] ~failures:none in
   check string "ipv6" "Couldn't connect to [::1]:7687 (resolved to )" msg
 
+let bolt_uri_with_params () =
+  (match Addressing.parse_uri "bolt://localhost:7687?region=china&policy=p" with
+  | Error (Errors.Configuration_error _) -> ()
+  | _ -> fail "expected a configuration error for a direct URI with parameters");
+  (match Addressing.parse_uri "bolt+s://localhost?policy=p" with
+  | Error (Errors.Configuration_error _) -> ()
+  | _ -> fail "expected a configuration error for a direct TLS URI with parameters");
+  match Addressing.parse_uri "neo4j://localhost:7687?region=china" with
+  | Ok uri -> check int "routing context preserved" 1 (List.length uri.routing_context)
+  | Error error -> fail (Errors.to_string error)
+
 let tests =
   [
     ("[Addressing] parse", [ test_case "address parsing" `Quick parse ]);
@@ -137,6 +148,8 @@ let tests =
     ("[Addressing] of_host_port", [ test_case "host + port constructor" `Quick of_host_port ]);
     ("[Addressing] uri", [ test_case "uri parsing" `Quick uri ]);
     ("[Addressing] routing_context", [ test_case "routing context" `Quick routing_context ]);
+    ( "[Addressing] bolt_uri_with_params",
+      [ test_case "direct URI rejects parameters" `Quick bolt_uri_with_params ] );
     ("[Addressing] resolved", [ test_case "resolved address" `Quick resolved ]);
     ( "[Addressing] connect_failure_message",
       [ test_case "aggregated connection error message" `Quick connect_failure_message ] );
