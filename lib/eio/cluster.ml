@@ -642,6 +642,24 @@ let select_from_table ?(exclude = []) cluster ~mode table =
       | Some addr -> Ok (addr, pool_for cluster addr)
       | None -> Error (Errors.Service_unavailable "routing table has no suitable address"))
 
+(* The resolution a table implies: the table's [db] is the effective database. *)
+let of_table ~guessed table =
+  let db = Routing_table.database table in
+  { table; effective = db; guessed; table_key = db }
+
+(* The cached (no fetch) routing table for [database], if any. *)
+let cached_table cluster ~database ~mode =
+  with_lock cluster (fun () -> fresh_table cluster ~database ~mode)
+
+(* Resolve the default database over a fresh ROUTE/procedure fetch: pin the
+   session to the reported home database and cache it for the identity. *)
+let resolve_default cluster ~mode ~imp_user ~key ~bookmarks ~session_auth =
+  let* table =
+    resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true ~session_auth
+  in
+  cache_home_table cluster ~key table;
+  Ok (of_table ~guessed:false table)
+
 (* Resolve the effective database for [database] and the routing table to use.
    A fixed database is used as-is ([effective] = [table_key] = it). The default
    database resolves to the server's home database in one of two ways:
@@ -656,7 +674,10 @@ let select_from_table ?(exclude = []) cluster ~mode table =
      missing. With the home-db cache disabled or expired a default-database
      acquire therefore always issues the ROUTE (the home database may have
      moved since the last session resolved it), like the Python driver without
-     the home-database-cache optimisation. *)
+     the home-database-cache optimisation. Without server-side routing (Bolt 3
+     / the procedure fallback) there is no home database to resolve: the cached
+     default-database table is reused as-is, so a retry does not re-fetch on the
+     routing connection. *)
 let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key ~bookmarks
     ~session_auth =
   match database with
@@ -666,66 +687,33 @@ let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key
       let* table =
         resolve_table cluster ~database ~mode ~imp_user ~key ~bookmarks ~force:false ~session_auth
       in
-      Ok { table; effective = Some db; guessed = false; table_key = Some db }
+      Ok { (of_table ~guessed:false table) with effective = Some db; table_key = Some db }
   | None -> (
-      (* Without server-side routing (e.g. Bolt 3 / the pre-4.3 procedure
-         fallback) there is no home database to resolve: a fresh table for the
-         default database is reused, so a retry does not re-fetch on the routing
-         connection (a forced explicit resolve below still bypasses the cache). *)
-      let cached_default =
-        if force_explicit || cluster.ssr_seen then None
-        else with_lock cluster (fun () -> fresh_table cluster ~database:None ~mode)
-      in
-      match cached_default with
-      | Some table ->
-          let database = Routing_table.database table in
-          Ok { table; effective = database; guessed = false; table_key = database }
-      | None -> (
-          let cached_home_db =
-            if force_explicit || not cluster.ssr_seen then None
-            else with_lock cluster (fun () -> home_db_of cluster key)
-          in
-          match cached_home_db with
-          | Some home_db -> (
-              match
-                with_lock cluster (fun () -> fresh_table cluster ~database:(Some home_db) ~mode)
-              with
-              | Some table ->
-                  Log.debug Log.pool (fun m ->
-                      m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
-                  Ok { table; effective = None; guessed = true; table_key = Some home_db }
-              | None ->
-                  Log.debug Log.pool (fun m ->
-                      m
-                        "[#0000]  _: <WORKSPACE> no table for the cached home database %s, \
-                         resolving explicitly"
-                        home_db);
-                  let* table =
-                    resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
-                      ~session_auth
-                  in
-                  cache_home_table cluster ~key table;
-                  Ok
-                    {
-                      table;
-                      effective = Routing_table.database table;
-                      guessed = false;
-                      table_key = Routing_table.database table;
-                    })
-          | None ->
-              Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
-              let* table =
-                resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
-                  ~session_auth
-              in
-              cache_home_table cluster ~key table;
-              Ok
-                {
-                  table;
-                  effective = Routing_table.database table;
-                  guessed = false;
-                  table_key = Routing_table.database table;
-                }))
+      if (not cluster.ssr_seen) && not force_explicit then
+        match cached_table cluster ~database:None ~mode with
+        | Some table -> Ok (of_table ~guessed:false table)
+        | None -> resolve_default cluster ~mode ~imp_user ~key ~bookmarks ~session_auth
+      else
+        match
+          if force_explicit then None else with_lock cluster (fun () -> home_db_of cluster key)
+        with
+        | Some home_db -> (
+            match cached_table cluster ~database:(Some home_db) ~mode with
+            | Some table ->
+                Log.debug Log.pool (fun m ->
+                    m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
+                Ok
+                  { (of_table ~guessed:true table) with effective = None; table_key = Some home_db }
+            | None ->
+                Log.debug Log.pool (fun m ->
+                    m
+                      "[#0000]  _: <WORKSPACE> no table for the cached home database %s, resolving \
+                       explicitly"
+                      home_db);
+                resolve_default cluster ~mode ~imp_user ~key ~bookmarks ~session_auth)
+        | None ->
+            Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
+            resolve_default cluster ~mode ~imp_user ~key ~bookmarks ~session_auth)
 
 (* Result of trying to acquire a connection from a table: [Role_empty] is the
    table itself having no address for the role (an acquire may refetch once —
