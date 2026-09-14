@@ -668,25 +668,52 @@ let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key
       in
       Ok { table; effective = Some db; guessed = false; table_key = Some db }
   | None -> (
-      let cached_home_db =
-        if force_explicit || not cluster.ssr_seen then None
-        else with_lock cluster (fun () -> home_db_of cluster key)
+      (* Without server-side routing (e.g. Bolt 3 / the pre-4.3 procedure
+         fallback) there is no home database to resolve: a fresh table for the
+         default database is reused, so a retry does not re-fetch on the routing
+         connection (a forced explicit resolve below still bypasses the cache). *)
+      let cached_default =
+        if force_explicit || cluster.ssr_seen then None
+        else with_lock cluster (fun () -> fresh_table cluster ~database:None ~mode)
       in
-      match cached_home_db with
-      | Some home_db -> (
-          match
-            with_lock cluster (fun () -> fresh_table cluster ~database:(Some home_db) ~mode)
-          with
-          | Some table ->
-              Log.debug Log.pool (fun m ->
-                  m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
-              Ok { table; effective = None; guessed = true; table_key = Some home_db }
+      match cached_default with
+      | Some table ->
+          let database = Routing_table.database table in
+          Ok { table; effective = database; guessed = false; table_key = database }
+      | None -> (
+          let cached_home_db =
+            if force_explicit || not cluster.ssr_seen then None
+            else with_lock cluster (fun () -> home_db_of cluster key)
+          in
+          match cached_home_db with
+          | Some home_db -> (
+              match
+                with_lock cluster (fun () -> fresh_table cluster ~database:(Some home_db) ~mode)
+              with
+              | Some table ->
+                  Log.debug Log.pool (fun m ->
+                      m "[#0000]  _: <WORKSPACE> routing towards cached database: %s" home_db);
+                  Ok { table; effective = None; guessed = true; table_key = Some home_db }
+              | None ->
+                  Log.debug Log.pool (fun m ->
+                      m
+                        "[#0000]  _: <WORKSPACE> no table for the cached home database %s, \
+                         resolving explicitly"
+                        home_db);
+                  let* table =
+                    resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
+                      ~session_auth
+                  in
+                  cache_home_table cluster ~key table;
+                  Ok
+                    {
+                      table;
+                      effective = Routing_table.database table;
+                      guessed = false;
+                      table_key = Routing_table.database table;
+                    })
           | None ->
-              Log.debug Log.pool (fun m ->
-                  m
-                    "[#0000]  _: <WORKSPACE> no table for the cached home database %s, resolving \
-                     explicitly"
-                    home_db);
+              Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
               let* table =
                 resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
                   ~session_auth
@@ -698,21 +725,7 @@ let resolve_for ?(force_explicit = false) cluster ~database ~mode ~imp_user ~key
                   effective = Routing_table.database table;
                   guessed = false;
                   table_key = Routing_table.database table;
-                })
-      | None ->
-          Log.debug Log.pool (fun m -> m "[#0000]  _: <WORKSPACE> resolve home database");
-          let* table =
-            resolve_table cluster ~database:None ~mode ~imp_user ~key ~bookmarks ~force:true
-              ~session_auth
-          in
-          cache_home_table cluster ~key table;
-          Ok
-            {
-              table;
-              effective = Routing_table.database table;
-              guessed = false;
-              table_key = Routing_table.database table;
-            })
+                }))
 
 (* Result of trying to acquire a connection from a table: [Role_empty] is the
    table itself having no address for the role (an acquire may refetch once —
