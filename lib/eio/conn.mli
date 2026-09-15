@@ -330,6 +330,10 @@ val ssr_enabled : t -> bool
 val capabilities : t -> Capabilities.t
 (** The protocol capabilities of the connection's version. *)
 
+val supports_impersonation : t -> bool
+(** Whether the connection's protocol version supports impersonation ([imp_user]) — Bolt 4.4 and
+    later. *)
+
 val current_auth : t -> auth option
 (** The authentication token the connection is currently logged on with, if any. *)
 

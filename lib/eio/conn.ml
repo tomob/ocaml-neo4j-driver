@@ -61,6 +61,7 @@ let basic_auth ?(principal = "neo4j") ?(credentials = "") ?realm () =
 (* A bearer (SSO) token: only the token as credentials. *)
 let bearer_auth = Auth_manager.bearer_auth
 let capabilities_of t = Capabilities.of_version t.major t.minor
+let supports_impersonation t = t.major > 4 || (t.major = 4 && t.minor >= 4)
 let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth
 
 let timeout_of_config clock config =
@@ -631,6 +632,13 @@ let build_extra ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?version
 
 let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notifications_min_severity
     ?notifications_disabled_categories ?(fetch_size = 1000) t ~hydration ~query ~parameters =
+  let* () =
+    match imp_user with
+    | Some _ when not (supports_impersonation t) ->
+        Error
+          (Errors.Configuration_error "Impersonation is not supported on Bolt versions before 4.4")
+    | _ -> Ok ()
+  in
   (* Like the Python driver, the connection's last database is only updated
      outside a transaction: inside one the BEGIN's database stays authoritative
      (a tx RUN does not carry [db]). *)

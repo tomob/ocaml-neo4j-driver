@@ -334,6 +334,14 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
       Error (Errors.Transaction_error "Explicit transaction already open")
   | _ -> (
       let* conn = conn_for_mode t ~mode in
+      let* () =
+        match t.config.impersonated_user with
+        | Some _ when not (Conn.supports_impersonation conn) ->
+            Error
+              (Errors.Configuration_error
+                 "Impersonation is not supported on Bolt versions before 4.4")
+        | _ -> Ok ()
+      in
       (* A TELEMETRY notification is reported once per connection per API call
          (feature): a retry of the same API call reusing the same connection
          does not re-report it, while a retry that reconnected (or a different

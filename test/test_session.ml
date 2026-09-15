@@ -672,6 +672,27 @@ let session_notification_extras () =
   check_run (5, 5) (Some "OFF") (Some [ "SCHEMA" ]) "notifications_minimum_severity"
     "notifications_disabled_classifications"
 
+(* Impersonation is not supported before Bolt 4.4: a session configured with an
+   impersonated user errors before the RUN/BEGIN is sent. *)
+let impersonation_rejected_before_4_4 () =
+  let received = ref [] in
+  let session_config = { Session.default_config with impersonated_user = Some "user" } in
+  Test_mock.with_mock
+    (Test_mock.Session ((4, 3), received, [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
+      in
+      let session = Session.create session_config ~clock ~connect () in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Error (Errors.Configuration_error _) -> ()
+      | _ -> fail "expected a configuration error");
+      match Session.begin_transaction session with
+      | Error (Errors.Configuration_error _) -> ()
+      | _ -> fail "expected a configuration error")
+
 (* An auto-commit RUN that fails with an idempotent (Bolt 6) server failure is
    retried once on the same connection; the retry does not re-send TELEMETRY
    (none was sent here: the mock HELLO advertises no telemetry). *)
@@ -829,6 +850,8 @@ let tests =
     ( "[Session] execute_telemetry_code",
       [ test_case "managed tx telemetry feature code" `Quick execute_telemetry_code ] );
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
+    ( "[Session] impersonation_rejected_before_4_4",
+      [ test_case "impersonation on Bolt < 4.4" `Quick impersonation_rejected_before_4_4 ] );
     ("[Session] negative_timeout", [ test_case "negative tx/query timeout" `Quick negative_timeout ]);
     ( "[Session] manager_seeds_run_and_updates",
       [ test_case "manager + initial + commit" `Quick manager_seeds_run_and_updates ] );
