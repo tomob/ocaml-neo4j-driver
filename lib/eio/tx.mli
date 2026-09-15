@@ -16,6 +16,8 @@ type t
 (** An explicit transaction. *)
 
 val begin_transaction :
+  ?pipelined:bool ->
+  ?on_begin_db:(string -> unit) ->
   Conn.t ->
   extra:Packstream.value ->
   fetch_size:int option ->
@@ -25,7 +27,9 @@ val begin_transaction :
     the transaction runs on (if any). A RESET is sent first if the connection is in the [Failed]
     state (recovering from a previous failed transaction). [fetch_size] is the session's fetch size,
     used for the transaction's result PULL batches. [telemetry] batches a TELEMETRY notification
-    with the BEGIN. *)
+    with the BEGIN. With [pipelined] the BEGIN is not read back (the execute_query BEGIN
+    pipelining): the first [run] consumes it and, when the server reports a [db], hands it to
+    [on_begin_db]; the returned [db] is then [None]. *)
 
 val run :
   t ->

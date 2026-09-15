@@ -23,6 +23,7 @@ let features : string list =
     "Feature:Bolt:6.0";
     "Feature:Bolt:6.1";
     "Feature:Bolt:HandshakeManifestV1";
+    "Feature:API:Driver.ExecuteQuery";
     "Feature:API:Driver:GetServerInfo";
     "Feature:API:Driver:MaxConnectionLifetime";
     "Feature:API:Driver:NotificationsConfig";
@@ -42,6 +43,8 @@ let features : string list =
     "Feature:API:Type.UUID";
     "Optimization:ConnectionReuse";
     "Optimization:EagerTransactionBegin";
+    "Optimization:ExecuteQueryPipelining";
+    "Optimization:ImplicitDefaultArguments";
     "Optimization:MinimalResets";
     "Optimization:HomeDatabaseCache";
     "Optimization:HomeDbCacheBasicPrincipalIsImpersonatedUser";

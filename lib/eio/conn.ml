@@ -39,6 +39,8 @@ type t = {
   ssr_enabled : bool ref;
   telemetry_enabled : bool ref;
   pipelined_pull : bool ref;
+  pending_begin : int ref;
+  begin_db : string option ref;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   utc_patch : bool ref;
   (* The [qid] of the most recent RUN on this connection: a PULL/DISCARD of it
@@ -241,6 +243,29 @@ let drain_pending_pull t =
     | Error _ -> ()
   end
 
+(* Drain a still-pending pipelined BEGIN response before the connection is used
+   for something other than the RUN that would consume it: its responses (a
+   TELEMETRY SUCCESS, when batched, and the BEGIN) are already on the wire. *)
+let drain_pending_begin t =
+  if !(t.pending_begin) > 0 then begin
+    let pending = !(t.pending_begin) in
+    t.pending_begin := 0;
+    let rec loop remaining last =
+      if remaining = 0 then last
+      else
+        match Bolt.respond t.transport with
+        | Ok response -> loop (remaining - 1) (Some response)
+        | Error _ -> None
+    in
+    match loop pending None with
+    | Some (Packstream.Map fields) -> (
+        match List.assoc_opt "db" fields with
+        | Some (Packstream.String db) -> t.begin_db := Some db
+        | _ -> ())
+    | Some _ -> ()
+    | None -> t.state := State.Failed
+  end
+
 (* Send [action] (a Bolt message that already reads its response) and update the
    server state. If the server is in the FAILED state, a RESET is sent first.
    [has_more result] decides whether the state stays in STREAMING after the
@@ -248,6 +273,7 @@ let drain_pending_pull t =
    connection (Bolt 3) is drained first, except for the PULL/DISCARD that is
    itself about to consume it. *)
 let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
+  if !(t.pending_begin) > 0 && message <> State.Run then drain_pending_begin t;
   if !(t.pipelined_pull) && message <> State.Pull && message <> State.Discard then
     drain_pending_pull t;
   let* () = ensure_ready t in
@@ -500,6 +526,8 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       ssr_enabled = ref false;
       telemetry_enabled = ref (not config.telemetry_disabled);
       pipelined_pull = ref false;
+      pending_begin = ref 0;
+      begin_db = ref None;
       clock;
       utc_patch = ref false;
       last_qid = ref None;
@@ -667,23 +695,76 @@ let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notificati
     | 3 -> Bolt.send t.transport ~tag:Bolt.pull_tag []
     | _ -> Bolt.send t.transport ~tag:Bolt.pull_tag [ pull_extra ~n:fetch_size () ]
   in
+  let drain_responses count =
+    for _ = 1 to count do
+      ignore (Bolt.respond t.transport)
+    done
+  in
+  let parse_begin_db = function
+    | Packstream.Map fields -> (
+        match List.assoc_opt "db" fields with
+        | Some (Packstream.String db) -> t.begin_db := Some db
+        | _ -> ())
+    | _ -> ()
+  in
   let* metadata_response =
-    match telemetry with
-    | Some feature when telemetry_wanted t ->
-        request_telemetry
-          ~pending_pulls:(if t.major = 3 then 0 else 1)
-          t ~message:State.Run ~re_auth feature
-          (fun () ->
-            let* () = send_run () in
-            send_pull ())
-    | _ ->
-        request t ~message:State.Run ~re_auth (fun () ->
-            let* () = send_run () in
-            let* () = send_pull () in
-            Bolt.respond t.transport
-            |> Result.map_error (fun error ->
-                ignore (Bolt.respond t.transport);
-                error))
+    if !(t.pending_begin) > 0 then begin
+      (* A pipelined BEGIN (execute_query) is still unanswered: the RUN + PULL
+         are sent first, then its responses are consumed before the RUN's. *)
+      let pending = !(t.pending_begin) in
+      t.pending_begin := 0;
+      let* () = ensure_ready t in
+      let* () = send_run () in
+      let* () = send_pull () in
+      let rec read_pending remaining read =
+        if remaining = 0 then Ok ()
+        else
+          match Bolt.respond t.transport with
+          | Ok response ->
+              if read = pending then parse_begin_db response;
+              read_pending (remaining - 1) (read + 1)
+          | Error error ->
+              (* The TELEMETRY/BEGIN failed: drain the remaining pending
+                 responses and the RUN/PULL IGNOREDs, then recover. *)
+              drain_responses (remaining - 1 + 2);
+              Error error
+      in
+      match read_pending pending 1 with
+      | Error error ->
+          t.state := State.Failed;
+          let error = report t error in
+          recover_after_failure t error;
+          Error error
+      | Ok () -> (
+          match Bolt.respond t.transport with
+          | Ok response ->
+              t.state := State.server_transition ~re_auth ~has_more:false !(t.state) State.Run;
+              Ok response
+          | Error error ->
+              (* The RUN failed: the pipelined PULL is IGNORED. *)
+              drain_responses 1;
+              t.state := State.Failed;
+              let error = report t error in
+              recover_after_failure t error;
+              Error error)
+    end
+    else
+      match telemetry with
+      | Some feature when telemetry_wanted t ->
+          request_telemetry
+            ~pending_pulls:(if t.major = 3 then 0 else 1)
+            t ~message:State.Run ~re_auth feature
+            (fun () ->
+              let* () = send_run () in
+              send_pull ())
+      | _ ->
+          request t ~message:State.Run ~re_auth (fun () ->
+              let* () = send_run () in
+              let* () = send_pull () in
+              Bolt.respond t.transport
+              |> Result.map_error (fun error ->
+                  ignore (Bolt.respond t.transport);
+                  error))
   in
   t.pipelined_pull := true;
   let run_metadata = run_metadata_of metadata_response in
@@ -897,6 +978,39 @@ let commit t =
   let re_auth = re_auth_of t.major t.minor in
   let* metadata = request t ~message:State.Commit ~re_auth (fun () -> Bolt.commit t.transport) in
   Ok metadata
+
+(* Send a BEGIN without reading its response (the execute_query BEGIN
+   pipelining): the next [run] consumes its responses (a TELEMETRY SUCCESS, when
+   [telemetry] is batched with it, and the BEGIN) before its own RUN response.
+   The reported [db] is then available through [take_begin_db]. *)
+let begin_pipelined ?telemetry t ~extra =
+  (match extra with
+  | Packstream.Map fields -> (
+      match List.assoc_opt "db" fields with
+      | Some (Packstream.String db) -> t.last_database := Some db
+      | _ -> ())
+  | _ -> ());
+  let* () = ensure_ready t in
+  let* telemetry_responses =
+    match telemetry with
+    | Some feature when telemetry_wanted t ->
+        let* () =
+          Bolt.send t.transport ~tag:Bolt.telemetry_tag [ Packstream.Int (Int64.of_int feature) ]
+        in
+        Ok 1
+    | _ -> Ok 0
+  in
+  let* () = Bolt.send t.transport ~tag:Bolt.begin_tag [ extra ] in
+  t.pending_begin := telemetry_responses + 1;
+  let re_auth = re_auth_of t.major t.minor in
+  t.state := State.server_transition ~re_auth ~has_more:false !(t.state) State.Begin;
+  Ok ()
+
+(* The [db] the last pipelined BEGIN reported (Bolt 5.2+), if any; clears it. *)
+let take_begin_db t =
+  let db = !(t.begin_db) in
+  t.begin_db := None;
+  db
 
 (* Roll back the current transaction. On a FAILED connection the server already
    discarded the transaction implicitly, so a RESET suffices (a ROLLBACK would

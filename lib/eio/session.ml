@@ -327,7 +327,7 @@ let run ?timeout ?metadata t ~query ~parameters =
             | Error second_error -> Error second_error)
           else Error error)
 
-let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
+let begin_transaction_mode ?metadata ?timeout ?telemetry ?(pipelined = false) t ~mode =
   let* () = validate_timeout timeout in
   match !(t.current_tx) with
   | Some tx when not (Tx.closed tx) ->
@@ -383,7 +383,11 @@ let begin_transaction_mode ?metadata ?timeout ?telemetry t ~mode =
             if t.pin_on_home_db_reported then t.database := Some db
         | _ -> ()
       in
-      match Tx.begin_transaction conn ~extra ~fetch_size:t.config.fetch_size ~telemetry with
+      match
+        Tx.begin_transaction ~pipelined
+          ?on_begin_db:(if pipelined then Some (fun db -> report_actual_db (Some db)) else None)
+          conn ~extra ~fetch_size:t.config.fetch_size ~telemetry
+      with
       | Ok (tx, reported_db) ->
           report_actual_db reported_db;
           t.current_tx := Some tx;
@@ -405,7 +409,7 @@ let mark_tx_ended t ~bookmark =
   (match bookmark with Some b -> record_bookmarks t (Bookmarks.singleton b) | None -> ());
   t.current_tx := None
 
-let execute t ~mode ?metadata ?timeout ?telemetry work =
+let execute t ~mode ?metadata ?timeout ?telemetry ?(pipeline_begin = false) work =
   let telemetry = Option.value ~default:0 telemetry in
   let* () = validate_execute_timeout timeout in
   let t0 = now t in
@@ -421,7 +425,9 @@ let execute t ~mode ?metadata ?timeout ?telemetry work =
       raise exn
   in
   let begin_tx () =
-    match begin_transaction_mode ?metadata ?timeout ~telemetry t ~mode with
+    match
+      begin_transaction_mode ?metadata ?timeout ~telemetry ~pipelined:pipeline_begin t ~mode
+    with
     | Ok tx -> Ok tx
     | Error error -> Error (Driver error)
   in

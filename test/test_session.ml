@@ -693,6 +693,36 @@ let impersonation_rejected_before_4_4 () =
       | Error (Errors.Configuration_error _) -> ()
       | _ -> fail "expected a configuration error")
 
+(* With [pipeline_begin] the managed transaction sends BEGIN with the first RUN
+   and PULL (the execute_query BEGIN pipelining) instead of waiting for the
+   BEGIN's response first (the stub would otherwise deadlock). *)
+let execute_pipelined_begin () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 3),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records ([], false);
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let session = session net clock sw port in
+      let attempts = ref 0 in
+      (match
+         Session.execute session ~mode:Config.Write ~pipeline_begin:true (run_work session attempts)
+       with
+      | Ok () -> ()
+      | Error (Session.Driver error) -> fail (Errors.to_string error)
+      | Error Session.Client -> fail "unexpected client error");
+      check (list int) "wire sequence"
+        [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ]
+        (message_tags received))
+
 (* An auto-commit RUN that fails with an idempotent (Bolt 6) server failure is
    retried once on the same connection; the retry does not re-send TELEMETRY
    (none was sent here: the mock HELLO advertises no telemetry). *)
@@ -849,6 +879,8 @@ let tests =
       [ test_case "second failure surfaces" `Quick run_second_error_surfaced ] );
     ( "[Session] execute_telemetry_code",
       [ test_case "managed tx telemetry feature code" `Quick execute_telemetry_code ] );
+    ( "[Session] execute_pipelined_begin",
+      [ test_case "pipelined BEGIN with the first RUN" `Quick execute_pipelined_begin ] );
     ("[Session] already_open", [ test_case "explicit tx guard" `Quick already_open ]);
     ( "[Session] impersonation_rejected_before_4_4",
       [ test_case "impersonation on Bolt < 4.4" `Quick impersonation_rejected_before_4_4 ] );

@@ -1452,7 +1452,10 @@ let execute_query _ctx fields =
                     eager := Some (keys, records, summary);
                     Ok ())))
   in
-  let outcome = Session.execute session ~mode:access_mode ?metadata ?timeout ~telemetry:3 work in
+  let outcome =
+    Session.execute session ~mode:access_mode ?metadata ?timeout ~telemetry:3 ~pipeline_begin:true
+      work
+  in
   let response =
     match outcome with
     | Ok () -> (

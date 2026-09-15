@@ -129,6 +129,7 @@ val execute :
   ?metadata:(string * Values.t) list ->
   ?timeout:float ->
   ?telemetry:int ->
+  ?pipeline_begin:bool ->
   (Tx.t -> (unit, failure) result) ->
   (unit, failure) result
 (** Run the unit of work [work] in a managed transaction with retry. [work] is invoked on a fresh

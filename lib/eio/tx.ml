@@ -16,6 +16,7 @@ type t = {
   mutable state : state;
   bookmark : string option ref;
   mutable streams : Conn.stream list;
+  on_begin_db : (string -> unit) option;
 }
 
 let closed t = t.state = Closed
@@ -31,11 +32,14 @@ let metadata_string key = function
       match List.assoc_opt key fields with Some (Packstream.String v) -> Some v | _ -> None)
   | _ -> None
 
-let begin_transaction conn ~extra ~fetch_size ~telemetry =
-  match Conn.begin_ ?telemetry conn ~extra with
-  | Error _ as error -> error
-  | Ok reported_db ->
-      Ok ({ conn; fetch_size; state = Open; bookmark = ref None; streams = [] }, reported_db)
+let begin_transaction ?(pipelined = false) ?on_begin_db conn ~extra ~fetch_size ~telemetry =
+  let tx state = { conn; fetch_size; state; bookmark = ref None; streams = []; on_begin_db } in
+  if pipelined then
+    let* () = Conn.begin_pipelined ?telemetry conn ~extra in
+    Ok (tx Open, None)
+  else
+    let* reported_db = Conn.begin_ ?telemetry conn ~extra in
+    Ok (tx Open, reported_db)
 
 (* Drain the transaction's still-open results (like the Python driver's
    _consume_results) so COMMIT/ROLLBACK can follow, and mark them closed: a
@@ -58,6 +62,9 @@ let run t ~hydration ~query ~parameters =
       List.iter (fun s -> Conn.mark_stream_error s error) t.streams;
       Error error
   | Ok run_metadata ->
+      (match (t.on_begin_db, Conn.take_begin_db t.conn) with
+      | Some report, Some db -> report db
+      | _ -> ());
       let stream =
         Conn.stream t.conn ~hydration ~run_metadata ~on_error:(fun error ->
             (* A server failure on one of the transaction's results terminates

@@ -179,6 +179,14 @@ val begin_ : ?telemetry:int -> t -> extra:Packstream.value -> (string option, Er
     notification with the BEGIN. Returns the [db] the server reports the transaction runs on (Bolt
     5.2+), if any. *)
 
+val begin_pipelined : ?telemetry:int -> t -> extra:Packstream.value -> (unit, Errors.t) result
+(** Send a BEGIN without reading its response (the execute_query BEGIN pipelining): the next [run]
+    consumes its responses (a TELEMETRY SUCCESS, when [telemetry] is batched with it, and the BEGIN)
+    before its own RUN response. The reported [db] is then available through {!take_begin_db}. *)
+
+val take_begin_db : t -> string option
+(** The [db] the last {!begin_pipelined} reported (Bolt 5.2+), if any; clears it. *)
+
 val build_extra :
   ?mode:Config.access_mode ->
   ?db:string ->
