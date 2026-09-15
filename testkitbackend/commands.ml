@@ -1036,48 +1036,38 @@ let position_json = function
             ])
   | _ -> `Null
 
-(* A summary notification, serialized for the TestKit Summary response. From
-   Bolt 5.0 the parsed severity and category levels are added
-   (rawSeverityLevel/severityLevel/rawCategory/category), like the Python
-   driver's SummaryNotification; a legacy Bolt 4.x notification passes the raw
-   fields through, dropping the raw [severity] only when a [position] is
-   present (the legacy TestKit shape). *)
-let notification_json major = function
+(* A summary notification, serialized for the TestKit Summary response: the
+   base fields plus the raw and parsed severity/category levels, like the Python
+   driver's SummaryNotification (the driver advertises
+   Feature:API:Driver:NotificationsConfig, so the harness expects the full shape
+   on every protocol version). *)
+let notification_json = function
   | Values.Map fields ->
-      let full = major >= 5 in
-      if not full then
-        let has_position = List.mem_assoc "position" fields in
-        `Assoc
-          (List.filter_map
-             (fun (k, v) ->
-               if k = "severity" && has_position then None else Some (k, values_to_plain v))
-             fields)
-      else
-        let string key =
-          match List.assoc_opt key fields with Some (Values.String s) -> s | _ -> ""
-        in
-        let position =
-          match List.assoc_opt "position" fields with
-          | Some _ as pos -> position_json pos
-          | None -> `Null
-        in
-        let base =
-          [ ("description", `String (string "description")); ("code", `String (string "code")) ]
-          @ (match List.assoc_opt "position" fields with
-            | Some _ -> [ ("position", position) ]
-            | None -> [])
-          @ [ ("title", `String (string "title")) ]
-        in
-        let severity = string "severity" in
-        let category = string "category" in
-        `Assoc
-          ([
-             ("rawSeverityLevel", `String severity);
-             ("severityLevel", `String (parsed_severity severity));
-             ("rawCategory", `String category);
-             ("category", `String (parsed_category category));
-           ]
-          @ base)
+      let string key =
+        match List.assoc_opt key fields with Some (Values.String s) -> s | _ -> ""
+      in
+      let position =
+        match List.assoc_opt "position" fields with
+        | Some _ as pos -> position_json pos
+        | None -> `Null
+      in
+      let base =
+        [ ("description", `String (string "description")); ("code", `String (string "code")) ]
+        @ (match List.assoc_opt "position" fields with
+          | Some _ -> [ ("position", position) ]
+          | None -> [])
+        @ [ ("title", `String (string "title")) ]
+      in
+      let severity = string "severity" in
+      let category = string "category" in
+      `Assoc
+        ([
+           ("rawSeverityLevel", `String severity);
+           ("severityLevel", `String (parsed_severity severity));
+           ("rawCategory", `String category);
+           ("category", `String (parsed_category category));
+         ]
+        @ base)
   | _ -> `Null
 
 (* The default diagnostic-record values the driver fills in when the server
@@ -1233,7 +1223,7 @@ let summary_json s =
       ( "notifications",
         match s.Summary.notifications with
         | [] -> `Null
-        | items -> `List (List.map (notification_json major) items) );
+        | items -> `List (List.map notification_json items) );
       ("gqlStatusObjects", `List (gql_status_objects_json s));
       ("plan", value_or_null s.Summary.plan);
       ("profile", value_or_null s.Summary.profile);
