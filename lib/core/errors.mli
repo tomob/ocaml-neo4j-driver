@@ -14,12 +14,20 @@ type server_error = {
   classification : classification;
   retryable : bool;
   gql_status : string option;
+  status_description : string option;
+  diagnostic_record : (string * Values.t) list option;
+  gql_classification : string option;
+  raw_classification : string option;
+  cause : server_error option;
   idempotent : bool;
 }
 (** A server (Neo4j) error as reported over the wire. [gql_status] is the GQL status code from the
-    FAILURE metadata (Bolt >= 5.2), when the server provides one. [idempotent] is the Bolt >= 6.0
-    [diagnostic_record._idempotent] flag: the server guarantees the failed request did not alter any
-    database state, so an auto-commit RUN failing with such an error may be retried safely. *)
+    FAILURE metadata (Bolt >= 5.2 / 5.7), when the server provides one; with a Bolt 5.7 server it
+    comes with a [status_description], the [diagnostic_record] (its default entries filled in), the
+    parsed [gql_classification] and [raw_classification] and an optional nested [cause] error.
+    [idempotent] is the Bolt >= 6.0 [diagnostic_record._idempotent] flag: the server guarantees the
+    failed request did not alter any database state, so an auto-commit RUN failing with such an
+    error may be retried safely. *)
 
 type specific =
   | Constraint
@@ -76,9 +84,38 @@ val of_neo4j_code_with_gql_status : gql_status:string option -> code:string -> m
 (** Like {!of_neo4j_code}, but also records the [gql_status] from the Bolt >= 5.2 FAILURE metadata.
 *)
 
+val server_error_of_neo4j_gql :
+  code:string ->
+  message:string ->
+  gql_status:string ->
+  status_description:string ->
+  diagnostic_record:(string * Values.t) list option ->
+  gql_classification:string ->
+  raw_classification:string option ->
+  cause:server_error option ->
+  server_error
+(** Build a Bolt 5.7 style server error with its GQL status fields, diagnostic record and nested
+    cause. *)
+
 val idempotent : t -> bool
 (** Whether the server marked the failure idempotent (an auto-commit RUN failing with it may be
     retried); [false] for driver errors and unmarked server errors. *)
+
+val status_description : t -> string option
+(** The GQL status description of a server error, if any. *)
+
+val diagnostic_record : t -> (string * Values.t) list option
+(** The diagnostic record of a server error (with its default entries filled in), if any. *)
+
+val gql_classification : t -> string option
+(** The parsed GQL classification of a server error ("UNKNOWN" when the server did not provide a
+    known one), if any. *)
+
+val raw_classification : t -> string option
+(** The raw [_classification] string of a server error's diagnostic record, when it is a string. *)
+
+val cause : t -> server_error option
+(** The nested server error a failure reported as its cause, if any. *)
 
 val mark_idempotent : t -> t
 (** [mark_idempotent error] returns [error] with its idempotent marker set (used when the Bolt >= 6

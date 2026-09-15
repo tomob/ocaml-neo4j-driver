@@ -19,6 +19,11 @@ type server_error = {
   classification : classification;
   retryable : bool;
   gql_status : string option;
+  status_description : string option;
+  diagnostic_record : (string * Values.t) list option;
+  gql_classification : string option;
+  raw_classification : string option;
+  cause : server_error option;
   idempotent : bool;
 }
 
@@ -148,16 +153,50 @@ let specific_of_code = function
   | "Neo.TransientError.General.DatabaseUnavailable" -> Database_unavailable
   | _ -> Other
 
-(* Build a [Neo4j] error from a server-provided code, message and GQL status. *)
-let of_neo4j_code_with_gql_status ~gql_status ~code ~message =
+(* Build a server error from a code, message and GQL status. *)
+let server_error ~gql_status ~code ~message =
   let code = if code = "" then unknown_code else code in
   let classification = classification_of_code code in
   let classification, code = rewrite code classification in
   let retryable = classification = Transient in
-  Neo4j { code; message; classification; retryable; gql_status; idempotent = false }
+  {
+    code;
+    message;
+    classification;
+    retryable;
+    gql_status;
+    status_description = None;
+    diagnostic_record = None;
+    gql_classification = None;
+    raw_classification = None;
+    cause = None;
+    idempotent = false;
+  }
+
+let of_neo4j_code_with_gql_status ~gql_status ~code ~message =
+  Neo4j (server_error ~gql_status ~code ~message)
 
 let of_neo4j_code ~code ~message = of_neo4j_code_with_gql_status ~gql_status:None ~code ~message
+
+(* A Bolt 5.7 style server error: the GQL status fields, the diagnostic record
+   and the nested [cause] are attached to a code/message error. *)
+let server_error_of_neo4j_gql ~code ~message ~gql_status ~status_description ~diagnostic_record
+    ~gql_classification ~raw_classification ~cause =
+  {
+    (server_error ~gql_status:(Some gql_status) ~code ~message) with
+    status_description = Some status_description;
+    diagnostic_record;
+    gql_classification = Some gql_classification;
+    raw_classification;
+    cause;
+  }
+
 let code = function Neo4j server -> Some server.code | _ -> None
+let status_description = function Neo4j server -> server.status_description | _ -> None
+let diagnostic_record = function Neo4j server -> server.diagnostic_record | _ -> None
+let gql_classification = function Neo4j server -> server.gql_classification | _ -> None
+let raw_classification = function Neo4j server -> server.raw_classification | _ -> None
+let cause = function Neo4j server -> server.cause | _ -> None
 
 (* Whether the server marked the failure idempotent (safe to retry an auto-commit
    RUN after it). *)

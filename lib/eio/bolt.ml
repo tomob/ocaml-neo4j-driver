@@ -120,12 +120,80 @@ let failure_code payload =
    the message carries no fields. *)
 let metadata_of_fields = function [] -> Packstream.Map [] | field :: _ -> field
 
-(* A server FAILURE as a driver error, from its metadata map. *)
-let failure_error metadata =
+(* Bolt 5.7 GQL status defaults, used when the server does not provide them
+   (polyfilling, like the Python driver's unknown-GQL placeholders). *)
+let unknown_gql_status = "50N42"
+let unknown_gql_description = "error: general processing exception - unexpected error"
+
+let default_diagnostic_record =
+  [
+    ("OPERATION", Values.String "");
+    ("OPERATION_CODE", Values.String "0");
+    ("CURRENT_SCHEMA", Values.String "/");
+  ]
+
+(* The diagnostic record / cause values carry no temporal data in practice;
+   Bolt 5.7 uses the Bolt 5 value tags. *)
+let gql_hydration = Hydration.create ~minor:7 Hydration.V2
+
+let with_defaults defaults entries =
+  List.fold_left
+    (fun acc (key, value) -> if List.mem_assoc key acc then acc else acc @ [ (key, value) ])
+    entries defaults
+
+let diagnostic_record_entries metadata =
+  match field_map_entries "diagnostic_record" metadata with
+  | Some entries ->
+      Some
+        (with_defaults default_diagnostic_record
+           (List.map (fun (key, value) -> (key, Hydration.hydrate gql_hydration value)) entries))
+  | None -> Some default_diagnostic_record
+
+let classification_of_diagnostic entries =
+  let raw =
+    match List.assoc_opt "_classification" entries with
+    | Some (Values.String classification) -> Some classification
+    | _ -> None
+  in
+  let parsed =
+    match raw with
+    | Some (("CLIENT_ERROR" | "DATABASE_ERROR" | "TRANSIENT_ERROR") as classification) ->
+        classification
+    | _ -> "UNKNOWN"
+  in
+  (raw, parsed)
+
+(* A server FAILURE as a server error. From Bolt 5.7 the server provides the GQL
+   status fields, the diagnostic record (default entries filled in) and a nested
+   cause; older versions only carry [code]/[message], for which the GQL status
+   defaults are polyfilled. *)
+let rec build_server_error metadata =
   let code = failure_code metadata in
   let message = Option.value ~default:"" (field_string "message" metadata) in
   let gql_status = field_string "gql_status" metadata in
-  let error = Errors.of_neo4j_code_with_gql_status ~gql_status ~code ~message in
+  let status_description = field_string "description" metadata in
+  match (gql_status, status_description) with
+  | Some gql_status, Some status_description ->
+      let diagnostic_record = diagnostic_record_entries metadata in
+      let raw_classification, gql_classification =
+        classification_of_diagnostic (Option.value ~default:[] diagnostic_record)
+      in
+      let cause =
+        match field_map_entries "cause" metadata with
+        | Some entries -> Some (build_server_error (Packstream.Map entries))
+        | None -> None
+      in
+      Errors.server_error_of_neo4j_gql ~code ~message ~gql_status ~status_description
+        ~diagnostic_record ~gql_classification ~raw_classification ~cause
+  | _ ->
+      Errors.server_error_of_neo4j_gql ~code ~message ~gql_status:unknown_gql_status
+        ~status_description:(unknown_gql_description ^ ". " ^ message)
+        ~diagnostic_record:(Some default_diagnostic_record) ~gql_classification:"UNKNOWN"
+        ~raw_classification:None ~cause:None
+
+(* A server FAILURE as a driver error. *)
+let failure_error metadata =
+  let error = Errors.Neo4j (build_server_error metadata) in
   if failure_is_idempotent metadata then Errors.mark_idempotent error else error
 
 let respond transport =

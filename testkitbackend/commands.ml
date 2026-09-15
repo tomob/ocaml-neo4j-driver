@@ -1533,6 +1533,29 @@ let driver_error_json error =
   let retryable = Errors.is_retryable error in
   match error with
   | Errors.Neo4j server ->
+      let diagnostic_record_json (record : (string * Values.t) list option) =
+        match record with
+        | Some entries ->
+            `Assoc (List.map (fun (key, value) -> (key, Testkit_values.to_yojson value)) entries)
+        | None -> `Null
+      in
+      (* A cause is serialized as the TestKit [GqlError] protocol object (no
+         [code] field). *)
+      let rec cause_json (server : Errors.server_error) =
+        let payload =
+          [
+            ("msg", `String server.message);
+            ("gqlStatus", `String (Option.value ~default:"" server.gql_status));
+            ("statusDescription", `String (Option.value ~default:"" server.status_description));
+            ("diagnosticRecord", diagnostic_record_json server.diagnostic_record);
+            ("classification", `String (Option.value ~default:"UNKNOWN" server.gql_classification));
+            ( "rawClassification",
+              match server.raw_classification with Some c -> `String c | None -> `Null );
+          ]
+          @ match server.cause with Some cause -> [ ("cause", cause_json cause) ] | None -> []
+        in
+        `Assoc [ ("name", `String "GqlError"); ("data", `Assoc payload) ]
+      in
       let fields =
         [
           ("id", `Int id);
@@ -1544,7 +1567,24 @@ let driver_error_json error =
       in
       let fields =
         match server.gql_status with
-        | Some status -> ("gqlStatus", `String status) :: fields
+        | Some status ->
+            let gql_fields =
+              [
+                ("gqlStatus", `String status);
+                ("statusDescription", `String (Option.value ~default:"" server.status_description));
+                ("diagnosticRecord", diagnostic_record_json server.diagnostic_record);
+                ( "classification",
+                  `String (Option.value ~default:"UNKNOWN" server.gql_classification) );
+                ( "rawClassification",
+                  match server.raw_classification with Some c -> `String c | None -> `Null );
+              ]
+            in
+            let gql_fields =
+              match server.cause with
+              | Some cause -> ("cause", cause_json cause) :: gql_fields
+              | None -> gql_fields
+            in
+            gql_fields @ fields
         | None -> fields
       in
       ("DriverError", `Assoc fields)

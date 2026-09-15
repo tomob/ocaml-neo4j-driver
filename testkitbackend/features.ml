@@ -34,6 +34,7 @@ let features : string list =
     "Feature:API:Result.Peek";
     "Feature:API:Result.Single";
     "Feature:API:Result.SingleOptional";
+    "Feature:API:RetryableExceptions";
     "Feature:API:Session:NotificationsConfig";
     "Feature:API:Summary:GqlStatusObjects";
     "Feature:API:Type.Spatial";
