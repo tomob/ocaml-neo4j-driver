@@ -602,6 +602,9 @@ let re_auth_changed_token () =
           | Ok true -> check_state conn "Ready"
           | Ok false -> fail "changed token should re-authenticate"
           | Error error -> fail (Errors.to_string error));
+          (match Conn.consume_pending_auth conn with
+          | Ok () -> ()
+          | Error error -> fail (Errors.to_string error));
           let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
           check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
           Conn.close conn)
@@ -623,6 +626,9 @@ let re_auth_after_mark () =
           (match Conn.re_auth conn (auth ()) with
           | Ok true -> ()
           | Ok false -> fail "should re-authenticate after mark_unauthenticated"
+          | Error error -> fail (Errors.to_string error));
+          (match Conn.consume_pending_auth conn with
+          | Ok () -> ()
           | Error error -> fail (Errors.to_string error));
           let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
           check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;
@@ -711,6 +717,9 @@ let re_auth_force () =
           (match Conn.re_auth ~force:true conn (auth ()) with
           | Ok true -> check_state conn "Ready"
           | Ok false -> fail "force should re-authenticate even for the same token"
+          | Error error -> fail (Errors.to_string error));
+          (match Conn.consume_pending_auth conn with
+          | Ok () -> ()
           | Error error -> fail (Errors.to_string error));
           let tags = List.map (fun bytes -> fst (unpack_message bytes)) (List.rev !received) in
           check (list int) "wire order" [ 0x01; 0x6A; 0x6B; 0x6A ] tags;

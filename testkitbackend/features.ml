@@ -43,6 +43,7 @@ let features : string list =
     "Feature:API:Type.Vector";
     "Feature:API:Type.UUID";
     "Optimization:ConnectionReuse";
+    "Optimization:AuthPipelining";
     "Optimization:EagerTransactionBegin";
     "Optimization:ExecuteQueryPipelining";
     "Optimization:ImplicitDefaultArguments";

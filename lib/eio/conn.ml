@@ -41,6 +41,7 @@ type t = {
   pipelined_pull : bool ref;
   pending_begin : int ref;
   begin_db : string option ref;
+  pending_auth : int ref;
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   utc_patch : bool ref;
   (* The [qid] of the most recent RUN on this connection: a PULL/DISCARD of it
@@ -266,13 +267,46 @@ let drain_pending_begin t =
     | None -> t.state := State.Failed
   end
 
+(* Consume the responses of a pipelined LOGOFF+LOGON (auth pipelining): the
+   next request is sent before they are read, so its own response follows them.
+   A FAILURE drains the remaining responses and is returned. *)
+let consume_pending_auth t =
+  if !(t.pending_auth) = 0 then Ok ()
+  else begin
+    let pending = !(t.pending_auth) in
+    t.pending_auth := 0;
+    let rec loop remaining =
+      if remaining = 0 then Ok ()
+      else
+        match Bolt.respond t.transport with
+        | Ok _ -> loop (remaining - 1)
+        | Error error ->
+            for _ = 1 to remaining - 1 do
+              ignore (Bolt.respond t.transport)
+            done;
+            Error error
+    in
+    loop pending
+  end
+
 (* Send [action] (a Bolt message that already reads its response) and update the
    server state. If the server is in the FAILED state, a RESET is sent first.
    [has_more result] decides whether the state stays in STREAMING after the
    message (used by PULL/DISCARD). A pipelined PULL response pending on the
    connection (Bolt 3) is drained first, except for the PULL/DISCARD that is
    itself about to consume it. *)
-let request ?(has_more = fun _ -> false) t ~message ~re_auth action =
+let request ?(has_more = fun _ -> false) ?(auth_handled = false) t ~message ~re_auth action =
+  let* () =
+    if (not auth_handled) && !(t.pending_auth) > 0 then (
+      match consume_pending_auth t with
+      | Ok () -> Ok ()
+      | Error error ->
+          t.state := State.Failed;
+          let error = report t error in
+          recover_after_failure t error;
+          Error error)
+    else Ok ()
+  in
   if !(t.pending_begin) > 0 && message <> State.Run then drain_pending_begin t;
   if !(t.pipelined_pull) && message <> State.Pull && message <> State.Discard then
     drain_pending_pull t;
@@ -316,6 +350,13 @@ let request_telemetry ?(pending_pulls = 0) t ~message ~re_auth feature action =
       Bolt.send t.transport ~tag:Bolt.telemetry_tag [ Packstream.Int (Int64.of_int feature) ]
     in
     let* () = action () in
+    let* () =
+      match consume_pending_auth t with
+      | Ok () -> Ok ()
+      | Error error ->
+          drain_pull_responses (1 + pending_pulls);
+          Error error
+    in
     match Bolt.respond t.transport with
     | Error error ->
         drain_pull_responses (1 + pending_pulls);
@@ -528,6 +569,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       pipelined_pull = ref false;
       pending_begin = ref 0;
       begin_db = ref None;
+      pending_auth = ref 0;
       clock;
       utc_patch = ref false;
       last_qid = ref None;
@@ -729,7 +771,13 @@ let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notificati
               drain_responses (remaining - 1 + 2);
               Error error
       in
-      match read_pending pending 1 with
+      (match consume_pending_auth t with
+        | Error error ->
+            drain_responses (pending + 2);
+            Error error
+        | Ok () -> read_pending pending 1)
+      |> fun result ->
+      match result with
       | Error error ->
           t.state := State.Failed;
           let error = report t error in
@@ -758,13 +806,20 @@ let run ?mode ?db ?imp_user ?bookmarks ?timeout ?metadata ?telemetry ?notificati
               let* () = send_run () in
               send_pull ())
       | _ ->
-          request t ~message:State.Run ~re_auth (fun () ->
+          request t ~auth_handled:true ~message:State.Run ~re_auth (fun () ->
               let* () = send_run () in
               let* () = send_pull () in
-              Bolt.respond t.transport
-              |> Result.map_error (fun error ->
+              match consume_pending_auth t with
+              | Error error ->
+                  (* LOGON failed: the RUN and PULL are IGNORED. *)
                   ignore (Bolt.respond t.transport);
-                  error))
+                  ignore (Bolt.respond t.transport);
+                  Error error
+              | Ok () ->
+                  Bolt.respond t.transport
+                  |> Result.map_error (fun error ->
+                      ignore (Bolt.respond t.transport);
+                      error))
   in
   t.pipelined_pull := true;
   let run_metadata = run_metadata_of metadata_response in
@@ -966,7 +1021,15 @@ let begin_ ?telemetry t ~extra =
     | Some feature when telemetry_wanted t ->
         request_telemetry t ~message:State.Begin ~re_auth feature (fun () ->
             Bolt.send t.transport ~tag:Bolt.begin_tag [ extra ])
-    | _ -> request t ~message:State.Begin ~re_auth (fun () -> Bolt.begin_ t.transport ~extra)
+    | _ ->
+        request t ~auth_handled:true ~message:State.Begin ~re_auth (fun () ->
+            let* () = Bolt.send t.transport ~tag:Bolt.begin_tag [ extra ] in
+            match consume_pending_auth t with
+            | Error error ->
+                (* LOGON failed: the BEGIN is IGNORED. *)
+                ignore (Bolt.respond t.transport);
+                Error error
+            | Ok () -> Bolt.respond t.transport)
   in
   Ok
     (match metadata with
@@ -1133,7 +1196,7 @@ let route_message ?db ?imp_user t ~routing_context ~bookmarks =
   let re_auth = re_auth_of t.major t.minor in
   let at_least_4_4 = t.major > 4 || (t.major = 4 && t.minor >= 4) in
   let* metadata =
-    request t ~message:State.Route ~re_auth (fun () ->
+    request t ~auth_handled:true ~message:State.Route ~re_auth (fun () ->
         let extra =
           if at_least_4_4 then
             let fields =
@@ -1146,11 +1209,20 @@ let route_message ?db ?imp_user t ~routing_context ~bookmarks =
             Packstream.Map fields
           else match db with Some db -> Packstream.String db | None -> Packstream.Null
         in
-        Bolt.route t.transport
-          ~routing_context:
-            (Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) routing_context))
-          ~bookmarks:(Packstream.List (List.map (fun b -> Packstream.String b) bookmarks))
-          ~extra)
+        let* () =
+          Bolt.send t.transport ~tag:Bolt.route_tag
+            [
+              Packstream.Map (List.map (fun (k, v) -> (k, Packstream.String v)) routing_context);
+              Packstream.List (List.map (fun b -> Packstream.String b) bookmarks);
+              extra;
+            ]
+        in
+        match consume_pending_auth t with
+        | Error error ->
+            (* LOGON failed: the ROUTE is IGNORED. *)
+            ignore (Bolt.respond t.transport);
+            Error error
+        | Ok () -> Bolt.respond t.transport)
   in
   let missing_rt =
     Error (Errors.Service_unavailable "ROUTE response is missing the routing table")
@@ -1191,18 +1263,25 @@ let re_auth ?(force = false) t auth =
   if (not force) && same_auth t auth then Ok false
   else if not (re_auth_of t.major t.minor) then
     Error (Errors.Service_unavailable "Re-authentication is not supported by this protocol version")
-  else
-    let* () =
-      request t ~message:State.Logoff ~re_auth:true (fun () -> Bolt.logoff t.transport)
-      |> Result.map (fun _ -> ())
-    in
-    let* () =
-      request t ~message:State.Logon ~re_auth:true (fun () ->
-          Bolt.logon t.transport ~auth:(auth_map auth))
-      |> Result.map (fun _ -> ())
-    in
+  else begin
+    let re_auth_flag = re_auth_of t.major t.minor in
+    let* () = ensure_ready t in
+    (* Auth pipelining: LOGOFF and LOGON are written together with the next
+       request, whose response the caller reads after consuming theirs. *)
+    let* () = Bolt.send t.transport ~tag:Bolt.logoff_tag [] in
+    let* () = Bolt.send t.transport ~tag:Bolt.logon_tag [ auth_map auth ] in
+    t.pending_auth := 2;
     t.current_auth := Some auth;
+    let old = !(t.state) in
+    let after_logoff =
+      State.server_transition ~re_auth:re_auth_flag ~has_more:false old State.Logoff
+    in
+    let after_logon =
+      State.server_transition ~re_auth:re_auth_flag ~has_more:false after_logoff State.Logon
+    in
+    t.state := after_logon;
     Ok true
+  end
 
 let mark_unauthenticated t = t.current_auth := None
 

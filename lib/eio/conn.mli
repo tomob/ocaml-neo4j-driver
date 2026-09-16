@@ -353,8 +353,15 @@ val same_auth : t -> auth -> bool
 val re_auth : ?force:bool -> t -> auth -> (bool, Errors.t) result
 (** Re-authenticate when [auth] differs from the current token (LOGOFF then LOGON, Bolt >= 5.1).
     Returns whether the token changed ([false] when it is the same as the current one, unless
-    [force] is set — which re-authenticates unconditionally, e.g. for user switching).
+    [force] is set — which re-authenticates unconditionally, e.g. for user switching). The LOGOFF
+    and LOGON are pipelined (auth pipelining): a subsequent request consumes their responses before
+    its own.
     @return [Error _] for older protocol versions or on server failure. *)
+
+val consume_pending_auth : t -> (unit, Errors.t) result
+(** Read the responses of a pipelined {!re_auth} that no request consumed yet (a no-op when none are
+    pending); a failure drains the remaining responses and is returned. Used by callers that
+    re-authenticated a connection without issuing a further request. *)
 
 val mark_unauthenticated : t -> unit
 (** Forget the current token (the next [re_auth] will log on again). *)

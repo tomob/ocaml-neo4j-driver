@@ -20,6 +20,9 @@ val reset_tag : int
 val run_tag : int
 (** Message tag of RUN (0x10). *)
 
+val route_tag : int
+(** Message tag of ROUTE (0x66). *)
+
 val begin_tag : int
 (** Message tag of BEGIN (0x11). *)
 

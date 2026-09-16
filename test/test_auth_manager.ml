@@ -16,9 +16,7 @@ let to_map () =
   check (option string) "basic principal default" (Some "neo4j")
     (field "principal" fields
     |> Option.map (function Packstream.String s -> s | _ -> fail "principal"));
-  check (option string) "basic credentials default" (Some "")
-    (field "credentials" fields
-    |> Option.map (function Packstream.String s -> s | _ -> fail "credentials"));
+  check bool "basic credentials default omitted" true (field "credentials" fields = None);
   check bool "basic realm absent" true (field "realm" fields = None);
   check bool "basic parameters absent" true (field "parameters" fields = None);
   let with_realm =

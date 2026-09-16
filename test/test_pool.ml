@@ -353,7 +353,11 @@ let re_auth_on_token_change () =
       | Error e -> fail (Errors.to_string e));
       current := Conn.basic_auth ~credentials:"pw2" ();
       (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
-      | Ok conn -> Pool.release pool conn
+      | Ok conn ->
+          (match Conn.consume_pending_auth conn with
+          | Ok () -> ()
+          | Error e -> fail (Errors.to_string e));
+          Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check (list int) "wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received))
 
@@ -429,10 +433,18 @@ let authorization_expired_marks_all () =
       Pool.release pool conn2;
       (* Re-acquiring both re-authenticates them (RESET, LOGOFF + LOGON each). *)
       (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
-      | Ok conn -> Pool.release pool conn
+      | Ok conn ->
+          (match Conn.consume_pending_auth conn with
+          | Ok () -> ()
+          | Error e -> fail (Errors.to_string e));
+          Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
-      | Ok conn -> Pool.release pool conn
+      | Ok conn ->
+          (match Conn.consume_pending_auth conn with
+          | Ok () -> ()
+          | Error e -> fail (Errors.to_string e));
+          Pool.release pool conn
       | Error e -> fail (Errors.to_string e));
       check (list int) "conn1 wire" [ 0x01; 0x6A; 0x6B; 0x6A ] (message_tags received_a);
       check (list int) "conn2 wire"
@@ -495,18 +507,19 @@ let session_auth_user_switching () =
       let pool = pool_with_manager net clock sw port manager () in
       let u1 = Some (Conn.basic_auth ~principal:"u1" ()) in
       let u2 = Some (Conn.basic_auth ~principal:"u2" ()) in
-      (match Pool.acquire ~force_liveness:false ~session_auth:u1 pool with
-      | Ok conn -> Pool.release pool conn
-      | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire ~force_liveness:false ~session_auth:u2 pool with
-      | Ok conn -> Pool.release pool conn
-      | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire ~force_liveness:false ~session_auth:u2 pool with
-      | Ok conn -> Pool.release pool conn
-      | Error e -> fail (Errors.to_string e));
-      (match Pool.acquire ~force_liveness:false ~session_auth:None pool with
-      | Ok conn -> Pool.release pool conn
-      | Error e -> fail (Errors.to_string e));
+      let acquire_then_release session_auth =
+        match Pool.acquire ~force_liveness:false ~session_auth pool with
+        | Ok conn ->
+            (match Conn.consume_pending_auth conn with
+            | Ok () -> ()
+            | Error e -> fail (Errors.to_string e));
+            Pool.release pool conn
+        | Error e -> fail (Errors.to_string e)
+      in
+      acquire_then_release u1;
+      acquire_then_release u2;
+      acquire_then_release u2;
+      acquire_then_release None;
       check (list int) "wire" [ 0x01; 0x6A; 0x6B; 0x6A; 0x6B; 0x6A ] (message_tags received))
 
 (* The acquisition timeout covers establishing a new connection too: a connect

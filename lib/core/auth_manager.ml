@@ -67,9 +67,12 @@ let to_map token =
     | Some principal -> [ ("principal", Packstream.String principal) ]
     | None -> [])
     @ (match token.credentials with
-      | Some credentials -> [ ("credentials", Packstream.String credentials) ]
-      | None -> [])
-    @ (match token.realm with Some realm -> [ ("realm", Packstream.String realm) ] | None -> [])
+      | Some credentials when credentials <> "" ->
+          [ ("credentials", Packstream.String credentials) ]
+      | _ -> [])
+    @ (match token.realm with
+      | Some realm when realm <> "" -> [ ("realm", Packstream.String realm) ]
+      | _ -> [])
     @ if token.parameters = [] then [] else [ ("parameters", Packstream.Map token.parameters) ]
   in
   Packstream.Map fields
