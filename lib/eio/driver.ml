@@ -202,13 +202,22 @@ let verify_authentication t ~auth =
   match attempt with
   | Error (Errors.Neo4j { code; _ }) when List.mem code invalid_auth_codes -> Ok false
   | Error error -> Error error
-  | Ok conn ->
+  | Ok conn -> (
+      (* The forced re-authentication of a reused connection is pipelined: read
+         its LOGON response to learn whether the token was accepted. *)
+      let pending = Conn.consume_pending_auth conn in
       let supported = (Conn.capabilities conn).supports_re_auth in
+      (match pending with Error _ -> Conn.mark_unauthenticated conn | Ok () -> ());
       release t conn;
-      if not supported then
-        Error
-          (Errors.Configuration_error "Re-authentication is not supported by this protocol version")
-      else Ok true
+      match pending with
+      | Error (Errors.Neo4j { code; _ }) when List.mem code invalid_auth_codes -> Ok false
+      | Error error -> Error error
+      | Ok () ->
+          if not supported then
+            Error
+              (Errors.Configuration_error
+                 "Re-authentication is not supported by this protocol version")
+          else Ok true)
 
 let close t =
   match t.connection with Cluster cluster -> Cluster.close cluster | Pool pool -> Pool.close pool
