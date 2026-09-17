@@ -114,6 +114,11 @@ JSON-over-TCP backend translating commands onto the **public library API**.
 - **B10 full conformance** — **Remaining**: server matrix (Bolt 4.x/5.x/6.x) and a CI job running the
   backend in containers (`ci.yml` currently only builds/tests/docs).
 - **B11 all `tests.stub.*` green** — Done (59 modules, 0 failures, 0 errors).
+- **TLS suites** — `scripts/testkit_tls.sh` runs `tests.tls.*` (Go TLS server, host or container
+  backend) and `run_all_tests.sh --tls` adds the phase; the backend reports
+  `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via
+  `OCAML_EXTRA_CA_CERTS`. Custom-CA (`API:SSLConfig`) and client-certificate
+  (`API:SSLClientCertificate`) tests still skip pending the deferred TLS work.
 
 Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db),
 `OK (skipped=4)` with `NEO4J_EDITION=aura`.

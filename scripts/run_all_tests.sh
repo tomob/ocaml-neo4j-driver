@@ -3,10 +3,12 @@
 # Run every test in the project:
 #   1. unit            dune runtest + backend smoke
 #   2. testkit stub    every tests.stub.* module, one process per module
-#   3. testkit neo4j   every tests.neo4j.* module, one process per module
+#   3. testkit tls     every tests.tls.* module, one process per module
+#                      (Go TLS server from the testkit checkout, no Neo4j)
+#   4. testkit neo4j   every tests.neo4j.* module, one process per module
 #                      (local Neo4j container up once for the whole phase)
-#   4. integration     scripts/integration.sh run-integration (plain + TLS)
-#   5. check           dune build @fmt + @doc (not part of --all)
+#   5. integration     scripts/integration.sh run-integration (plain + TLS)
+#   6. check           dune build @fmt + @doc (not part of --all)
 #
 # Per-module runs are isolated and time-bounded (TESTKIT_MODULE_TIMEOUT), so a
 # single hanging test cannot block the whole script. A final report lists the
@@ -14,17 +16,17 @@
 #
 # Usage:
 #   scripts/run_all_tests.sh [OPTION...]
-#     --unit --stub --neo4j --integration --check   run only the given phases
-#     --all            every test phase: unit, stub, neo4j, integration (default)
+#     --unit --stub --tls --neo4j --integration --check   run only the given phases
+#     --all            every test phase: unit, stub, tls, neo4j, integration (default)
 #     --no-docker      unit + stub only
 #     --stop-on-error  stop after the first failing phase
 #     -h, --help
 #
 # Environment (passed through to the phase scripts):
-#   NEO4J_TESTKIT_DIR       required for the stub/neo4j phases
+#   NEO4J_TESTKIT_DIR       required for the stub/tls/neo4j phases
 #   NEO4J_EDITION           community (default) | aura | enterprise
 #   NEO4J_URI, NEO4J_USER, NEO4J_PASS, TESTKIT_VERSION, TESTKIT_BACKEND_PORT,
-#   TESTKIT_NETWORK         passed through unchanged
+#   TESTKIT_NETWORK, TESTKIT_TLS_BACKEND  passed through unchanged
 #   TESTKIT_MODULE_TIMEOUT=600   per-module timeout in seconds (0 = no limit)
 #   TESTKIT_PHASE_TIMEOUT=3600   safety net for a whole testkit phase (0 = off)
 #   LOG_DIR=...              where phase logs go (default: _build/logs/run-all)
@@ -52,14 +54,15 @@ usage() {
   cat <<'EOF'
 Usage: run_all_tests.sh [OPTION...]
 
-Run every test in the project: unit tests, the TestKit stub and neo4j suites
-(one process per module, each under a timeout) and the integration tests, then
-print a PASS/SKIP/FAIL/ERROR report.
+Run every test in the project: unit tests, the TestKit stub, TLS and neo4j
+suites (one process per module, each under a timeout) and the integration tests,
+then print a PASS/SKIP/FAIL/ERROR report.
 
 Options:
   -h, --help          show this help and exit
   --unit              run the unit tests (dune runtest + backend smoke)
   --stub              run every TestKit stub suite module
+  --tls               run every TestKit TLS suite module (no Neo4j needed)
   --neo4j             run every TestKit neo4j suite module (needs docker)
   --integration       run the integration tests (needs docker)
   --check             run dune build @fmt and @doc
@@ -68,17 +71,19 @@ Options:
   --stop-on-error     stop after the first failing phase
 
 Environment:
-  NEO4J_TESTKIT_DIR        required for --stub/--neo4j
+  NEO4J_TESTKIT_DIR        required for --stub/--tls/--neo4j
   TESTKIT_MODULE_TIMEOUT=600   per-module timeout in seconds (0 = no limit)
   TESTKIT_PHASE_TIMEOUT=3600   safety net for a whole testkit phase (0 = off)
   NEO4J_EDITION, NEO4J_URI, NEO4J_USER, NEO4J_PASS, TESTKIT_VERSION,
-  TESTKIT_BACKEND_PORT, TESTKIT_NETWORK  are passed through to the scripts.
+  TESTKIT_BACKEND_PORT, TESTKIT_NETWORK, TESTKIT_TLS_BACKEND  are passed
+  through to the scripts.
 EOF
 }
 
 # --- phase selection -------------------------------------------------------
 run_unit=0
 run_stub=0
+run_tls=0
 run_neo4j=0
 run_integration=0
 run_check=0
@@ -98,6 +103,10 @@ for arg in "$@"; do
       run_stub=1
       specified=1
       ;;
+    --tls)
+      run_tls=1
+      specified=1
+      ;;
     --neo4j)
       run_neo4j=1
       specified=1
@@ -113,6 +122,7 @@ for arg in "$@"; do
     --all)
       run_unit=1
       run_stub=1
+      run_tls=1
       run_neo4j=1
       run_integration=1
       specified=1
@@ -132,6 +142,7 @@ done
 if [ "${specified}" -eq 0 ]; then
   run_unit=1
   run_stub=1
+  run_tls=1
   run_neo4j=1
   run_integration=1
 fi
@@ -269,6 +280,17 @@ phase_stub() {
   phase_testkit stub "${REPO_ROOT}/scripts/testkit_stub.sh"
 }
 
+phase_tls() {
+  if ! require_testkit; then
+    ph_status=ERROR
+    ph_detail="NEO4J_TESTKIT_DIR with a testkit venv is required (see scripts/README.md)"
+    return 1
+  fi
+  # testkit_tls.sh picks the backend placement itself: the host when the testkit
+  # TLS hostnames resolve, otherwise a docker container (docker is then required).
+  phase_testkit tls "${REPO_ROOT}/scripts/testkit_tls.sh"
+}
+
 phase_neo4j() {
   if ! require_testkit; then
     ph_status=ERROR
@@ -377,6 +399,9 @@ if [ "${run_unit}" -eq 1 ]; then
 fi
 if [ "${run_stub}" -eq 1 ]; then
   run_phase stub phase_stub
+fi
+if [ "${run_tls}" -eq 1 ]; then
+  run_phase tls phase_tls
 fi
 if [ "${run_neo4j}" -eq 1 ]; then
   run_phase neo4j phase_neo4j

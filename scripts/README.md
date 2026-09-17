@@ -30,6 +30,20 @@ routing suites:
 scripts/testkit_stub.sh tests.stub.routing.test_routing_v4x4 tests.stub.routing.test_routing_v5x0
 ```
 
+A fourth script, `testkit_tls.sh`, runs the **TLS suites** (`tests.tls.*`)
+against the locally built backend with **no Neo4j server** either: each test
+starts the Go TLS server from the testkit checkout (`testkit/tlsserver`) and the
+driver connects to it over `bolt+s` / `bolt+ssc` / `neo4j+s` / `neo4j+ssc` (or a
+plain scheme, where the test asserts the connection fails). It supports the same
+per-module loop mode and adds the testkit root CA to the backend trust store
+(`OCAML_EXTRA_CA_CERTS`), so `bolt+s` validation succeeds:
+
+```sh
+scripts/testkit_tls.sh -l                                   # list the modules
+scripts/testkit_tls.sh tests.tls.test_secure_scheme \
+  tests.tls.test_self_signed_scheme
+```
+
 The same per-module loop mode is available in `testkit_run_locally.sh`
 (container up once, then one process per module).
 
@@ -46,15 +60,17 @@ whole project test suite and prints a PASS/SKIP/FAIL/ERROR report:
 
 1. **unit** — `dune runtest` + `scripts/backend_smoke.sh`,
 2. **stub** — every `tests.stub.*` module, one process per module,
-3. **neo4j** — every `tests.neo4j.*` module, one process per module (local
+3. **tls** — every `tests.tls.*` module, one process per module (the Go TLS
+   server from the testkit checkout; no Neo4j),
+4. **neo4j** — every `tests.neo4j.*` module, one process per module (local
    Neo4j container up once for the whole phase),
-4. **integration** — `scripts/integration.sh run-integration` (plain + TLS).
+5. **integration** — `scripts/integration.sh run-integration` (plain + TLS).
 
 ```sh
 export NEO4J_TESTKIT_DIR=/path/to/neo4j-drivers/testkit
 scripts/run_all_tests.sh            # every phase above
 scripts/run_all_tests.sh --no-docker   # unit + stub only (no Neo4j needed)
-scripts/run_all_tests.sh --unit --stub # explicit phase selection
+scripts/run_all_tests.sh --unit --stub --tls  # explicit phase selection
 scripts/run_all_tests.sh --check      # dune build @fmt + @doc
 ```
 
@@ -83,9 +99,15 @@ Notes:
 
 ## Prerequisites
 
-- `docker` (for the Neo4j container; not needed for `testkit_stub.sh`).
+- `docker` (for the Neo4j container; not needed for `testkit_stub.sh`, and
+  needed for `testkit_tls.sh` only when the backend runs in a container).
 - A checkout of `neo4j-drivers/testkit` with its virtualenv installed.
 - The `neodriver` packages built (`dune build`).
+- For `testkit_tls.sh`: the Go toolchain (`go`, to build
+  `testkit/tlsserver/tlsserver` once) and either the testkit TLS hostnames in
+  `/etc/hosts` (`127.0.0.1 thehost thehostbutwrong`) or docker (the default
+  `auto` mode falls back to a container that adds them via
+  `--add-host thehost:host-gateway`).
 
 ## Running
 
@@ -135,6 +157,7 @@ All settings are environment variables (defaults shown in each script's header):
 | `TESTKIT_VERSION` | `2026.06` | server version reported to the harness (`TEST_NEO4J_VERSION`) |
 | `TESTKIT_BACKEND_PORT` | `9876` | port the testkit backend listens on |
 | `BACKEND_BINARY` | `_build/default/testkitbackend/testkitbackend.exe` | backend executable override (local script) |
+| `TESTKIT_TLS_BACKEND` | `auto` | TLS phase backend placement: `auto`, `host` or `container` |
 | `TESTKIT_BACKEND_IMAGE` | `ocaml-neo4j-testkit-backend` | backend image name (container script) |
 | `SUITE` | (unset) | space-separated test modules, alternative to positional arguments (testkit scripts) |
 | `TESTKIT_MODULE_TIMEOUT` | `600` | per-module timeout in seconds in the loop mode (`0` = no limit) |
@@ -177,6 +200,44 @@ Note: the server's "aligned" store format cannot **commit** UUID properties
 (`DataUnsupportedByStoreFormat`); `test_uuid_stored_on_node` (and the
 integration test) write and read the property back inside a transaction and
 then roll back.
+
+### Enabling the TLS tests
+
+The TLS suite needs neither Neo4j nor docker when the testkit TLS hostnames are
+present in `/etc/hosts`:
+
+```sh
+# once, as root: 127.0.0.1 thehost thehostbutwrong
+scripts/testkit_tls.sh
+```
+
+Without those entries the script falls back to a container backend that adds
+them with `--add-host thehost:host-gateway` (requires docker; the Go TLS server
+still runs on the host). Force a placement with `--host` / `--container` or
+`TESTKIT_TLS_BACKEND=host|container`:
+
+```sh
+scripts/testkit_tls.sh --container
+```
+
+The testkit root CA is passed to the backend via `OCAML_EXTRA_CA_CERTS`, so
+`bolt+s` / `neo4j+s` validate the testkit certificates. The custom-CA
+(`trusted_certificates`) and client-certificate (`Feature:API:SSLClientCertificate`)
+tests still skip: custom trust anchors and mTLS are not implemented yet (see
+`PLAN.md`).
+
+With the backend reporting `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3`,
+the whole suite currently reports:
+
+```
+Ran 43 tests in ~2s
+OK (skipped=31)
+```
+
+The 12 executed tests cover `bolt+s`/`neo4j+s` validation (trusted, untrusted,
+expired and wrong-hostname certificates, plain-scheme rejection), `bolt+ssc`
+trust-all and the TLS 1.1 rejection / 1.2 / 1.3 acceptance; the skips are the
+custom-CA and client-certificate tests plus the `is_encrypted` reporting.
 
 ### External server (`NEO4J_URI`) — multi-db
 
