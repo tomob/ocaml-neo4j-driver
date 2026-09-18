@@ -2,8 +2,8 @@
 
     Aggregates the public API of all packages under a single namespace, so consumers can `open
     Neodriver` and use Packstream, Errors, Config, Addressing, Deadline, Conn, Session, Tx,
-    Transport, Bolt, State, Values, Temporal, Hydration, Capabilities, Neo4jResult, Summary and
-    Driver directly. *)
+    Transport, Tls_client, Bolt, State, Values, Temporal, Hydration, Capabilities, Neo4jResult,
+    Summary and Driver directly. *)
 
 module Packstream = Neodriver_packstream.Packstream
 (** PackStream binary serialization. *)
@@ -55,6 +55,10 @@ module Tx = Neodriver_eio.Tx
 
 module Transport = Neodriver_eio.Transport
 (** Eio-based TCP transport with Bolt message framing. *)
+
+module Tls_client = Neodriver_eio.Tls_client
+(** TLS client settings: the trust anchors ([System], [Trust_all] or custom certificates) used to
+    validate server certificates. *)
 
 module Bolt = Neodriver_eio.Bolt
 (** Bolt protocol messages (send/receive and response interpretation). *)

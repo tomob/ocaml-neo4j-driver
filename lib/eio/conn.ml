@@ -93,22 +93,33 @@ let scheme_trust = function
 let load_trust = function
   | Config.System -> Ok Tls_client.System
   | Config.Trust_all -> Ok Tls_client.Trust_all
+  | Config.Custom [] ->
+      Error (Errors.Certificate_configuration_error "No trusted certificates configured")
   | Config.Custom files ->
+      let load_file file =
+        match In_channel.with_open_bin file In_channel.input_all with
+        | exception Sys_error msg ->
+            Error
+              (Errors.Certificate_configuration_error
+                 (Printf.sprintf "Could not read trusted certificate %s: %s" file msg))
+        | contents -> (
+            match X509.Certificate.decode_pem_multiple contents with
+            | Ok [] ->
+                Error
+                  (Errors.Certificate_configuration_error
+                     (Printf.sprintf "No PEM certificates found in trusted certificate %s" file))
+            | Ok certs -> Ok certs
+            | Error (`Msg msg) ->
+                Error
+                  (Errors.Certificate_configuration_error
+                     (Printf.sprintf "Could not parse trusted certificate %s: %s" file msg)))
+      in
       let rec load acc = function
         | [] -> Ok (Tls_client.Custom (List.rev acc))
         | file :: rest -> (
-            match In_channel.with_open_bin file In_channel.input_all with
-            | exception Sys_error msg ->
-                Error
-                  (Errors.Certificate_configuration_error
-                     (Printf.sprintf "Could not read trusted certificate %s: %s" file msg))
-            | contents -> (
-                match X509.Certificate.decode_pem_multiple contents with
-                | Ok certs -> load (List.rev_append certs acc) rest
-                | Error (`Msg msg) ->
-                    Error
-                      (Errors.Certificate_configuration_error
-                         (Printf.sprintf "Could not parse trusted certificate %s: %s" file msg))))
+            match load_file file with
+            | Error _ as error -> error
+            | Ok certs -> load (List.rev_append certs acc) rest)
       in
       load [] files
 

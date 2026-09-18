@@ -221,23 +221,26 @@ scripts/testkit_tls.sh --container
 ```
 
 The testkit root CA is passed to the backend via `OCAML_EXTRA_CA_CERTS`, so
-`bolt+s` / `neo4j+s` validate the testkit certificates. The custom-CA
-(`trusted_certificates`) and client-certificate (`Feature:API:SSLClientCertificate`)
-tests still skip: custom trust anchors and mTLS are not implemented yet (see
-`PLAN.md`).
+system-CA validation (`bolt+s` / `neo4j+s`) sees the testkit certificates, and
+the tests' relative `trusted_certificates` paths resolve through
+`TESTKIT_TLS_CERTS_DIR` (the testkit `certs/driver/custom` directory, set in host
+mode and mounted at `/certs/custom` for the container). The client-certificate
+tests (`Feature:API:SSLClientCertificate`) still skip: mTLS is not implemented
+yet (see `PLAN.md`).
 
-With the backend reporting `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3`,
-the whole suite currently reports:
+With the backend reporting `Feature:API:SSLSchemes` + `Feature:API:SSLConfig` +
+`Feature:TLS:1.2`/`1.3`, the whole suite currently reports:
 
 ```
 Ran 43 tests in ~2s
-OK (skipped=31)
+OK (skipped=5)
 ```
 
-The 12 executed tests cover `bolt+s`/`neo4j+s` validation (trusted, untrusted,
-expired and wrong-hostname certificates, plain-scheme rejection), `bolt+ssc`
-trust-all and the TLS 1.1 rejection / 1.2 / 1.3 acceptance; the skips are the
-custom-CA and client-certificate tests plus the `is_encrypted` reporting.
+The executed tests cover `bolt+s`/`neo4j+s` and explicit-config validation
+(trusted, untrusted, expired and wrong-hostname certificates, plain-scheme
+rejection), custom CA trust anchors, `bolt+ssc` trust-all, TLS 1.1 rejection /
+1.2 / 1.3 acceptance and the conflicting explicit-config rejection; the 5 skips
+are the client-certificate tests.
 
 ### External server (`NEO4J_URI`) — multi-db
 

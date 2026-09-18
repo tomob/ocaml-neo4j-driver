@@ -139,6 +139,11 @@ TESTKIT_TLS_BACKEND="${TESTKIT_TLS_BACKEND:-auto}"
 
 TLS_CERT="${NEO4J_TESTKIT_DIR}/tests/tls/certs/driver/trusted/trustedRoot.crt"
 [ -r "$TLS_CERT" ] || die "testkit TLS root CA not found at $TLS_CERT"
+# The [trusted_certificates] configs of the TLS tests name their files relative
+# to this directory (e.g. "customRoot.crt"); the backend resolves them against
+# TESTKIT_TLS_CERTS_DIR.
+TLS_CERTS_DIR="${NEO4J_TESTKIT_DIR}/tests/tls/certs/driver/custom"
+[ -d "$TLS_CERTS_DIR" ] || die "testkit custom TLS certs not found at $TLS_CERTS_DIR"
 TLSSERVER_DIR="${NEO4J_TESTKIT_DIR}/tlsserver"
 TLSSERVER_BIN="${TLSSERVER_DIR}/tlsserver"
 [ -f "${TLSSERVER_DIR}/main.go" ] || die "testkit TLS server source not found in $TLSSERVER_DIR"
@@ -188,8 +193,10 @@ trap cleanup EXIT
 if [ "$backend" = host ]; then
   # shellcheck source=lib/testkit_backend.sh
   source "${REPO_ROOT}/scripts/lib/testkit_backend.sh"
-  # Add the testkit root CA to the trust store (ca-certs).
+  # Add the testkit root CA to the trust store (ca-certs) and let the backend
+  # resolve the tests' relative certificate paths.
   export OCAML_EXTRA_CA_CERTS="$TLS_CERT"
+  export TESTKIT_TLS_CERTS_DIR="$TLS_CERTS_DIR"
   testkit_backend_start
 else
   docker_available || die "docker not found (required for the container backend)"
@@ -201,7 +208,9 @@ else
     --add-host thehost:host-gateway \
     --add-host thehostbutwrong:host-gateway \
     -e OCAML_EXTRA_CA_CERTS=/certs/trustedRoot.crt \
+    -e TESTKIT_TLS_CERTS_DIR=/certs/custom \
     -v "${TLS_CERT}:/certs/trustedRoot.crt:ro" \
+    -v "${TLS_CERTS_DIR}:/certs/custom:ro" \
     -p "${TESTKIT_BACKEND_PORT}:9876" \
     "${TESTKIT_BACKEND_IMAGE}" >/dev/null
   ready=0

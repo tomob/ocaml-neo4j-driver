@@ -101,7 +101,7 @@ Remaining (library surface only — the logic already lives in `testkitbackend/c
 - `Driver.supports_multi_db`.
 - `warn_notification_severity` (warnings at the calling-code level) — not implemented anywhere yet.
 
-### Phase A10 — TLS trust options (T1 done, T2-T6 planned)
+### Phase A10 — TLS trust options (T1-T2 done, T3-T6 planned)
 The `tests.tls` cases that still skip today: custom CA trust anchors, mTLS client certificates
 (single, rotation/provider and password-protected keys) and the explicit
 `encryption`/`trusted_certificates` security config.
@@ -158,18 +158,23 @@ are already in the `tls-eio` dependency closure, so no new runtime dependency.
    driver), `Driver.connect ?encryption ?trusted_certificates`, `Driver.is_encrypted`, the TestKit
    `CheckDriverIsEncrypted` command and `Feature:API:Driver.IsEncrypted`. Unit tests cover the
    scheme defaults, the overrides, the conflicts and the CA loading; `scripts/testkit_tls.sh` now
-   executes the `is_encrypted` tests (25 skips, was 31). The trust-config tests stay skipped until
-   `Feature:API:SSLConfig` is advertised (T5).
-2. **T2 — custom CA files**: load PEM bundles (`X509.Certificate.decode_pem_multiple`) into
-   `Trust_custom`; unit-test accept/reject. Unlocks `TestTrustCustomCertsConfig`.
+   executes the `is_encrypted` tests (25 skips, was 31).
+2. **T2 — custom CA files** — **Done**: the [Custom] loader reads every PEM file and errors on an
+   unreadable file, an unparseable file or a file with no certificates (an empty trust set is never
+   silently accepted); unit tests cover single/multiple bundles, the order and both reject cases.
+   TestKit: `Feature:API:SSLConfig` is reported, the backend resolves the tests' relative
+   certificate paths against `TESTKIT_TLS_CERTS_DIR` (set/mounted by `testkit_tls.sh`), and
+   `tests/tls/test_explicit_options.py` accepts `ocaml` (harness patch, like the earlier error-type
+   mappings). `scripts/testkit_tls.sh` now runs the custom-CA/system/trust-all/explicit-config tests:
+   **`OK (skipped=5)`** (only the client-certificate tests remain).
 3. **T3 — client certificates (plain key)**: mTLS handshake, present/absent cases.
 4. **T4 — encrypted private keys**: the local legacy-PEM helper (`pem_key.ml`). Completes
    `test_s_and_client_certificate_present` / `test_ssc_and_client_certificate_present`.
-5. **T5 — TestKit plumbing**: provider commands, the `TESTKIT_TLS_CERTS_DIR` cert-path plumbing,
-   advertise `Feature:API:SSLConfig` (which activates `TestTrustSystemCertsConfig`,
-   `TestTrustAllCertsConfig`, `test_secure_server_explicitly_disabled_encryption` and
-   `test_explicit_options`), the harness patch, `testkit_tls.sh` envs/mounts. Completes the
-   provider/rotation and explicit tests.
+5. **T5 — TestKit client-certificate plumbing**: the provider commands
+   (`NewClientCertificateProvider`/`Close` + the request/completed round-trip), the `NewDriver`
+   `clientCertificate`/`clientCertificateProviderId` fields, advertise
+   `Feature:API:SSLClientCertificate` and the `testkit_tls.sh` cert mounts. Completes the
+   provider/rotation tests.
 6. **T6 — docs + CI**: `README.md`, `usage.mld`/`docs/usage.md`, `scripts/README.md`, and
    `testkit_tls.sh` reporting the fully executed TLS suite.
 
@@ -197,8 +202,8 @@ JSON-over-TCP backend translating commands onto the **public library API**.
 - **TLS suites** — `scripts/testkit_tls.sh` runs `tests.tls.*` (Go TLS server, host or container
   backend) and `run_all_tests.sh --tls` adds the phase; the backend reports
   `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via
-  `OCAML_EXTRA_CA_CERTS`. Custom-CA (`API:SSLConfig`) and client-certificate
-  (`API:SSLClientCertificate`) tests still skip; they are Phase A10.
+  `OCAML_EXTRA_CA_CERTS`. The custom-CA (`API:SSLConfig`) tests now run; only the
+  client-certificate (`API:SSLClientCertificate`) tests still skip (Phase A10, T3-T5).
 
 Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db),
 `OK (skipped=4)` with `NEO4J_EDITION=aura`.
@@ -224,8 +229,8 @@ Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db)
 
 1. **Phase A9** — expose `execute_query`/`EagerResult`, `verify_connectivity`, `supports_multi_db`
    and `warn_notification_severity` in the public library API.
-2. **Phase A10 (TLS)** — custom CA trust anchors, mTLS client certificates (incl. password-protected
-   keys) and the explicit `encryption`/`trusted_certificates` config (T1 done).
+2. **Phase A10 (TLS)** — mTLS client certificates (incl. password-protected keys); custom CA trust
+   anchors and the explicit `encryption`/`trusted_certificates` config are done (T1-T2).
 3. **Config wiring** — `connection_write_timeout`, `keep_alive` (and `pool_config.connection_timeout`).
 4. **`neodriver_lwt` / `lib/lwt`** — second backend (the `transport.mli` interface is ready).
 5. **B10** — TestKit CI job + server-version matrix.

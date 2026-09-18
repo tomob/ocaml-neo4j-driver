@@ -98,6 +98,14 @@ let new_id () =
   incr next_id;
   !next_id
 
+(* The testkit sends the [trustedCertificates]/[clientCertificate] paths
+   relative to its cert directory; resolve them against TESTKIT_TLS_CERTS_DIR
+   (set by scripts/testkit_tls.sh) so the driver finds them whatever its CWD. *)
+let resolve_certificate_path path =
+  match Sys.getenv_opt "TESTKIT_TLS_CERTS_DIR" with
+  | Some dir when Filename.is_relative path -> Filename.concat dir path
+  | _ -> path
+
 let get_driver id =
   match Hashtbl.find_opt drivers id with
   | Some driver -> driver
@@ -546,7 +554,8 @@ let new_driver ctx fields =
           (Config.Custom
              (List.map
                 (function
-                  | `String path -> path | _ -> raise (Backend_error "bad trusted certificate path"))
+                  | `String path -> resolve_certificate_path path
+                  | _ -> raise (Backend_error "bad trusted certificate path"))
                 certificates))
     | _ -> None
   in

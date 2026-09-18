@@ -43,11 +43,8 @@ let features : string list =
     "Feature:API:Type.UnsupportedType";
     "Feature:API:Type.Vector";
     "Feature:API:Type.UUID";
-    (* TLS: bolt+s/neo4j+s (verify) and bolt+ssc/neo4j+ssc (trust all) schemes,
-       TLS 1.2/1.3 only. Custom CA trust anchors and client certificates are not
-       supported, so Feature:API:SSLConfig / Feature:API:SSLClientCertificate are
-       deliberately not reported. *)
     "Feature:API:SSLSchemes";
+    "Feature:API:SSLConfig";
     "Feature:TLS:1.2";
     "Feature:TLS:1.3";
     "Optimization:ConnectionReuse";

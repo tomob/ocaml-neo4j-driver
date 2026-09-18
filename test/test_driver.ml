@@ -232,6 +232,46 @@ let encryption_conflicts () =
     (is_encrypted ~encryption:Config.Disabled ~trusted_certificates:Config.Trust_all
        "bolt://localhost:7687")
 
+(* The [Custom] trust anchors are every certificate of every configured PEM
+   file, concatenated in file order; an unparseable file is a configuration
+   error. *)
+let custom_trust_anchor_files () =
+  let write contents =
+    let path = Filename.temp_file "neodriver-trust" ".pem" in
+    let oc = open_out_bin path in
+    output_string oc contents;
+    close_out oc;
+    path
+  in
+  let one = write Test_fixtures.cert in
+  let two = write (Test_fixtures.cert ^ Test_fixtures.cert) in
+  let invalid = write "not a certificate\n" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter (fun path -> try Sys.remove path with Sys_error _ -> ()) [ one; two; invalid ])
+    (fun () ->
+      let count files =
+        match
+          Conn.tls_of_config ~host:"thehost" Addressing.Bolt ~encryption:Config.Enabled
+            ~trusted_certificates:(Some (Config.Custom files))
+        with
+        | Ok (Transport.Secure { Tls_client.trust = Tls_client.Custom certificates; _ }) ->
+            Ok (List.length certificates)
+        | Ok _ -> Error "expected a Custom trust"
+        | Error error -> Error (Errors.to_string error)
+      in
+      (match count [ one ] with Ok n -> check int "one file" 1 n | Error message -> fail message);
+      (match count [ one; two ] with
+      | Ok n -> check int "two files" 3 n
+      | Error message -> fail message);
+      match
+        Conn.tls_of_config ~host:"thehost" Addressing.Bolt ~encryption:Config.Enabled
+          ~trusted_certificates:(Some (Config.Custom [ invalid ]))
+      with
+      | Error (Errors.Certificate_configuration_error _) -> ()
+      | Error error -> fail (Errors.to_string error)
+      | Ok _ -> fail "an invalid certificate file should be a Certificate_configuration_error")
+
 (* Custom trust anchors are loaded from the configured PEM files (and a missing
    file is a configuration error). *)
 let custom_trust_anchors () =
@@ -275,4 +315,6 @@ let tests =
       [ test_case "conflicting config is rejected" `Quick encryption_conflicts ] );
     ( "[Driver] custom trust anchors",
       [ test_case "custom CA files are loaded" `Quick custom_trust_anchors ] );
+    ( "[Driver] custom trust anchor files",
+      [ test_case "PEM bundles are concatenated" `Quick custom_trust_anchor_files ] );
   ]
