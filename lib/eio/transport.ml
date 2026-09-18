@@ -13,7 +13,7 @@ open Neodriver_core
 let ( let* ) = Result.bind
 let cancelled = function Eio.Cancel.Cancelled _ -> true | _ -> false
 
-type tls_mode = Plain | Verify of string | Trust_all of string
+type tls_mode = Plain | Secure of Tls_client.config
 
 type t = {
   id : int;
@@ -67,19 +67,13 @@ let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
     let socket = (socket :> [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r) in
     match tls with
     | Plain -> Ok socket
-    | Verify host ->
-        Log.debug Log.io (fun m -> m "[#%04X]  C: <SECURE> %s" id host);
-        Tls_client.wrap { Tls_client.mode = Verify; host } socket
+    | Secure config ->
+        Log.debug Log.io (fun m -> m "[#%04X]  C: <SECURE> %s" id config.Tls_client.host);
+        Tls_client.wrap config socket
         |> Result.map_error (fun error ->
             Log.debug Log.io (fun m ->
-                m "[#%04X]  S: <SECURE FAILURE> %s: %s" id host (Errors.to_string error));
-            error)
-    | Trust_all host ->
-        Log.debug Log.io (fun m -> m "[#%04X]  C: <SECURE> %s" id host);
-        Tls_client.wrap { Tls_client.mode = Trust_all; host } socket
-        |> Result.map_error (fun error ->
-            Log.debug Log.io (fun m ->
-                m "[#%04X]  S: <SECURE FAILURE> %s: %s" id host (Errors.to_string error));
+                m "[#%04X]  S: <SECURE FAILURE> %s: %s" id config.Tls_client.host
+                  (Errors.to_string error));
             error)
   in
   let sockaddr_str sockaddr = Format.asprintf "%a" Eio.Net.Sockaddr.pp sockaddr in

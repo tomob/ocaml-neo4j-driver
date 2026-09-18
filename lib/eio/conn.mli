@@ -18,18 +18,34 @@ type config = {
   user_agent : string;
   auth : auth;
   routing_context : (string * string) list option;
+  encryption : Config.encryption;
+  trusted_certificates : Config.trusted_certificates option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
 }
 (** Target connection settings. The scheme selects TLS: [Bolt] plain, [Bolt_secure] TLS with
-    certificate validation, [Bolt_self_signed] TLS without validation. [routing_context] is sent as
-    the [routing] field of HELLO (server-side routing) for routed ([neo4j*]) drivers: [None] for
-    direct [bolt*] drivers, [Some ctx] for routed ones (an empty list sends [routing: {}]). The
-    field is only sent on Bolt >= 4.1. [telemetry_disabled] suppresses the Bolt 5.4+ TELEMETRY
-    notifications. [notifications_min_severity] and [notifications_disabled_categories] are the
-    driver-level notification filtering settings carried in HELLO on Bolt >= 5.2 ([None] omits the
-    field; [Some []] sends an empty category list). *)
+    certificate validation, [Bolt_self_signed] TLS without validation; [encryption] and
+    [trusted_certificates] are the explicit security config overriding the scheme (see
+    {!tls_of_config}). [routing_context] is sent as the [routing] field of HELLO (server-side
+    routing) for routed ([neo4j*]) drivers: [None] for direct [bolt*] drivers, [Some ctx] for routed
+    ones (an empty list sends [routing: {}]). The field is only sent on Bolt >= 4.1.
+    [telemetry_disabled] suppresses the Bolt 5.4+ TELEMETRY notifications.
+    [notifications_min_severity] and [notifications_disabled_categories] are the driver-level
+    notification filtering settings carried in HELLO on Bolt >= 5.2 ([None] omits the field;
+    [Some []] sends an empty category list). *)
+
+val tls_of_config :
+  host:string ->
+  Addressing.scheme ->
+  encryption:Config.encryption ->
+  trusted_certificates:Config.trusted_certificates option ->
+  (Transport.tls_mode, Errors.t) result
+(** Resolve the connection's TLS mode: the URI scheme is the default (plain for [bolt]/[neo4j],
+    system trust for [+s], trust all for [+ssc]); the explicit [encryption]/[trusted_certificates]
+    config is only allowed with a plain scheme (a secure scheme already carries it) and is a
+    [Configuration_error] otherwise — as is [Disabled] with configured trust anchors. A [Custom]
+    trust anchor list is loaded from the given PEM files here. *)
 
 type t
 (** An established, authenticated Bolt connection: the transport, the negotiated protocol version

@@ -12,6 +12,8 @@
   tls-eio
   x509
   ca-certs
+  ptime
+  ptime.clock.os
   domain-name
   mirage-crypto-rng.unix
   mtime))

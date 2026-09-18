@@ -6,6 +6,7 @@ module Driver = Driver
 module Transport = Transport
 module Handshake = Handshake
 module Conn = Conn
+module Tls_client = Tls_client
 module Bolt = Bolt
 module State = State
 module Tx = Tx

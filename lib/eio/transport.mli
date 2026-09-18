@@ -17,14 +17,12 @@ val set_read_timeout : t -> Eio.Time.Timeout.t -> unit
 
 type tls_mode =
   | Plain
-  | Verify of string
-  | Trust_all of string
+  | Secure of Tls_client.config
       (** How the connection is secured with TLS:
           - [Plain]: no TLS.
-          - [Verify host]: wrap the connection in TLS, validating the server certificate against the
-            system trust store and checking [host] ([bolt+s]).
-          - [Trust_all host]: wrap the connection in TLS without validating the server certificate
-            ([bolt+ssc]). *)
+          - [Secure config]: wrap the connection in TLS with [config]'s trust anchors and host
+            (system trust store for [bolt+s], trust-all for [bolt+ssc], or explicit custom
+            certificates). *)
 
 val connect :
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
@@ -34,10 +32,10 @@ val connect :
   Addressing.t ->
   (t, Errors.t) result
 (** Open a TCP connection to [address] (resolving host names as needed) and return a transport. Each
-    resolved address (IPv4 and IPv6) is tried in turn until one connects. If [tls] is [Verify _] or
-    [Trust_all _], the connection is wrapped in TLS before returning. The TCP connect and TLS
-    handshake share a single [timeout] deadline; reads/writes on the result are bounded by the same
-    deadline. The default ([Eio.Time.Timeout.none]) imposes no deadline.
+    resolved address (IPv4 and IPv6) is tried in turn until one connects. If [tls] is [Secure _],
+    the connection is wrapped in TLS before returning. The TCP connect and TLS handshake share a
+    single [timeout] deadline; reads/writes on the result are bounded by the same deadline. The
+    default ([Eio.Time.Timeout.none]) imposes no deadline.
     @return
       [Error _] if the address cannot be resolved, if every resolved address fails to connect or
       complete the TLS handshake (all failures are aggregated into the [Service_unavailable]

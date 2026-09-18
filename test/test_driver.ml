@@ -166,6 +166,98 @@ let custom_config () =
           check (list string) "bookmarks" [ "bm-1" ] bookmarks
       | _ -> fail "expected RUN with query, parameters and extra")
 
+(* --- Explicit security config (phase A10/T1) --- *)
+
+let contains text substring =
+  let n = String.length text and m = String.length substring in
+  let rec go i = i + m <= n && (String.equal (String.sub text i m) substring || go (i + 1)) in
+  m = 0 || go 0
+
+(* Driver.is_encrypted resolved from the scheme and the explicit config. The
+   driver is lazy, so no connection is made (the URI host is never resolved). *)
+let is_encrypted ?encryption ?trusted_certificates uri =
+  with_env (fun net clock sw ->
+      match
+        Driver.connect ~uri ~auth:(Conn.basic_auth ()) ?encryption ?trusted_certificates net clock
+          sw
+      with
+      | Ok driver -> Ok (Driver.is_encrypted driver)
+      | Error error -> Error error)
+
+let encryption_scheme_defaults () =
+  let expect uri expected =
+    match is_encrypted uri with
+    | Ok actual -> check bool uri expected actual
+    | Error error -> fail (Errors.to_string error)
+  in
+  expect "bolt://localhost:7687" false;
+  expect "bolt+s://localhost:7687" true;
+  expect "bolt+ssc://localhost:7687" true;
+  expect "neo4j://localhost:7687" false;
+  expect "neo4j+s://localhost:7687" true;
+  expect "neo4j+ssc://localhost:7687" true
+
+let encryption_explicit_config () =
+  let expect ?encryption ?trusted_certificates uri expected =
+    match is_encrypted ?encryption ?trusted_certificates uri with
+    | Ok actual -> check bool uri expected actual
+    | Error error -> fail (Errors.to_string error)
+  in
+  expect ~encryption:Config.Enabled "bolt://localhost:7687" true;
+  expect ~encryption:Config.Disabled "bolt://localhost:7687" false;
+  expect ~trusted_certificates:Config.Trust_all "bolt://localhost:7687" true;
+  expect ~encryption:Config.Enabled ~trusted_certificates:Config.Trust_all "neo4j://localhost:7687"
+    true
+
+(* An explicit security config is rejected with a secure scheme (like the Python
+   driver), and trust anchors without encryption are rejected too. *)
+let encryption_conflicts () =
+  let expect_error uri result =
+    match result with
+    | Error (Errors.Configuration_error message) ->
+        let message = String.lowercase_ascii message in
+        check bool (uri ^ " mentions encryption") true (contains message "encryption");
+        check bool (uri ^ " mentions trust") true (contains message "trust")
+    | Error error -> fail (Errors.to_string error)
+    | Ok _ -> fail (uri ^ ": expected a Configuration_error")
+  in
+  expect_error "bolt+s://localhost:7687"
+    (is_encrypted ~encryption:Config.Enabled "bolt+s://localhost:7687");
+  expect_error "bolt+s://localhost:7687"
+    (is_encrypted ~encryption:Config.Disabled "bolt+s://localhost:7687");
+  expect_error "neo4j+ssc://localhost:7687"
+    (is_encrypted ~encryption:Config.Enabled ~trusted_certificates:Config.Trust_all
+       "neo4j+ssc://localhost:7687");
+  expect_error "bolt://localhost:7687"
+    (is_encrypted ~encryption:Config.Disabled ~trusted_certificates:Config.Trust_all
+       "bolt://localhost:7687")
+
+(* Custom trust anchors are loaded from the configured PEM files (and a missing
+   file is a configuration error). *)
+let custom_trust_anchors () =
+  let path = Filename.temp_file "neodriver-trust" ".pem" in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove path with Sys_error _ -> ())
+    (fun () ->
+      let oc = open_out path in
+      output_string oc Test_fixtures.cert;
+      close_out oc;
+      (match
+         is_encrypted ~encryption:Config.Enabled ~trusted_certificates:(Config.Custom [ path ])
+           "bolt://localhost:7687"
+       with
+      | Ok true -> ()
+      | Ok false -> fail "custom trust anchors should enable encryption"
+      | Error error -> fail (Errors.to_string error));
+      match
+        is_encrypted ~encryption:Config.Enabled
+          ~trusted_certificates:(Config.Custom [ "/nonexistent/neodriver.pem" ])
+          "bolt://localhost:7687"
+      with
+      | Error (Errors.Certificate_configuration_error _) -> ()
+      | Error error -> fail (Errors.to_string error)
+      | Ok _ -> fail "a missing trust anchor file should be a Certificate_configuration_error")
+
 let tests =
   [
     ("[Driver] basic_auth defaults", [ test_case "defaults" `Quick basic_auth_defaults ]);
@@ -175,4 +267,12 @@ let tests =
     ("[Driver] neo4j:// lazy", [ test_case "lazy reject" `Quick neo4j_uri_lazy ]);
     ("[Driver] connect and run", [ test_case "connect" `Quick connect_and_run ]);
     ("[Driver] custom config", [ test_case "config" `Quick custom_config ]);
+    ( "[Driver] encryption scheme defaults",
+      [ test_case "scheme selects TLS" `Quick encryption_scheme_defaults ] );
+    ( "[Driver] encryption explicit config",
+      [ test_case "explicit config overrides the scheme" `Quick encryption_explicit_config ] );
+    ( "[Driver] encryption conflicts",
+      [ test_case "conflicting config is rejected" `Quick encryption_conflicts ] );
+    ( "[Driver] custom trust anchors",
+      [ test_case "custom CA files are loaded" `Quick custom_trust_anchors ] );
   ]

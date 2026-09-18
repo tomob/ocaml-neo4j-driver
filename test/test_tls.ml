@@ -18,7 +18,11 @@ let trust_all () =
   Test_tls_mock.with_mock
     (Test_mock.Manifest [ (5, 8, 8) ])
     (fun net clock sw port ->
-      match negotiate_tls (Transport.Trust_all "localhost") net clock sw port with
+      match
+        negotiate_tls
+          (Transport.Secure { Tls_client.trust = Tls_client.Trust_all; host = "localhost" })
+          net clock sw port
+      with
       | Ok (major, minor) -> check (pair int int) "tls+bolt version" (5, 8) (major, minor)
       | Error error -> fail (Errors.to_string error))
 
@@ -27,7 +31,11 @@ let verify_rejects_self_signed () =
   Test_tls_mock.with_mock
     (Test_mock.Manifest [ (5, 8, 8) ])
     (fun net clock sw port ->
-      match negotiate_tls (Transport.Verify "localhost") net clock sw port with
+      match
+        negotiate_tls
+          (Transport.Secure { Tls_client.trust = Tls_client.System; host = "localhost" })
+          net clock sw port
+      with
       | Ok _ -> fail "verify should reject a self-signed certificate"
       | Error _ -> ())
 
@@ -36,7 +44,11 @@ let tls_against_plain_server () =
   Test_mock.with_mock
     (Test_mock.V1 (4, 4))
     (fun net clock sw port ->
-      match negotiate_tls (Transport.Trust_all "localhost") net clock sw port with
+      match
+        negotiate_tls
+          (Transport.Secure { Tls_client.trust = Tls_client.Trust_all; host = "localhost" })
+          net clock sw port
+      with
       | Ok _ -> fail "tls against a plain server should fail"
       | Error _ -> ())
 

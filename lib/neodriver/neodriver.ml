@@ -22,6 +22,7 @@ module Conn = Neodriver_eio.Conn
 module Session = Neodriver_eio.Session
 module Tx = Neodriver_eio.Tx
 module Transport = Neodriver_eio.Transport
+module Tls_client = Neodriver_eio.Tls_client
 module Bolt = Neodriver_eio.Bolt
 module State = Neodriver_eio.State
 module Cluster = Neodriver_eio.Cluster

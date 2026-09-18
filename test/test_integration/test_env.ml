@@ -44,6 +44,8 @@ let conn_config ?scheme ?password (env : t) =
           ~credentials:(Option.value ~default:env.password password)
           ();
       routing_context = None;
+      encryption = Neodriver.Config.Default;
+      trusted_certificates = None;
       telemetry_disabled = false;
       notifications_min_severity = None;
       notifications_disabled_categories = None;

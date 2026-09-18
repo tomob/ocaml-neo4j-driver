@@ -15,7 +15,12 @@ let default_connection_timeout = 30.0
 (* How the driver provides connections: a routing cluster for [neo4j://] URIs,
    or a single-address pool for [bolt://] and its TLS variants. *)
 type cluster_or_pool = Cluster of Cluster.t | Pool of Pool.t
-type t = { clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t; connection : cluster_or_pool }
+
+type t = {
+  clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
+  connection : cluster_or_pool;
+  encrypted : bool;
+}
 
 (* The target connection configuration for a single address. *)
 let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~connection_timeout
@@ -29,6 +34,8 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
       user_agent;
       auth;
       routing_context;
+      encryption = pool_config.encryption;
+      trusted_certificates = pool_config.trusted_certificates;
       telemetry_disabled = pool_config.telemetry_disabled;
       notifications_min_severity = pool_config.notifications_min_severity;
       notifications_disabled_categories = pool_config.notifications_disabled_categories;
@@ -95,10 +102,30 @@ let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
   Ok (Pool pool)
 
 let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent ?connection_timeout
-    ?(pool_config = Config.default_pool_config) net clock sw =
+    ?encryption ?trusted_certificates ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let connection_timeout = Option.value ~default:default_connection_timeout connection_timeout in
   let user_agent = Option.value ~default:Conn.default_user_agent user_agent in
+  (* The explicit security config overrides the URI scheme's TLS choice; an
+     invalid override (e.g. explicit config with a secure scheme) is reported
+     here, before any connection is made. *)
+  let pool_config =
+    match encryption with
+    | None -> pool_config
+    | Some encryption -> { pool_config with Config.encryption }
+  in
+  let pool_config =
+    match trusted_certificates with
+    | None -> pool_config
+    | Some trusted_certificates ->
+        { pool_config with Config.trusted_certificates = Some trusted_certificates }
+  in
+  let* encrypted =
+    Result.map
+      (function Transport.Plain -> false | Transport.Secure _ -> true)
+      (Conn.tls_of_config ~host:parsed.host parsed.scheme ~encryption:pool_config.encryption
+         ~trusted_certificates:pool_config.trusted_certificates)
+  in
   (* A plain token is wrapped in a static auth manager, like the Python driver
      ([auth_manager] lets a TestKit backend supply a rotating one). *)
   let auth_manager = Option.value ~default:(Auth_manager.static auth) auth_manager in
@@ -111,7 +138,9 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
         make_pool ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
           ~user_agent ~auth_manager net clock sw
   in
-  Ok { clock; connection }
+  Ok { clock; connection; encrypted }
+
+let is_encrypted t = t.encrypted
 
 let session ?config t =
   let config = Option.value ~default:Session.default_config config in

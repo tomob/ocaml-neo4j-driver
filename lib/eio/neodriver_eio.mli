@@ -14,6 +14,10 @@ module Handshake = Handshake
 module Conn = Conn
 (** A minimal Bolt connection (connect, authenticate, RUN/PULL/DISCARD, transactions). *)
 
+module Tls_client = Tls_client
+(** TLS client settings: the trust anchors ([System], [Trust_all] or custom certificates) used to
+    validate server certificates. *)
+
 module Bolt = Bolt
 (** Bolt protocol messages (send/receive and response interpretation). *)
 

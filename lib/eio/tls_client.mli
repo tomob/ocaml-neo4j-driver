@@ -2,14 +2,17 @@
 
 open Neodriver_core
 
-type mode =
-  | Verify
+type trust =
+  | System
   | Trust_all
+  | Custom of X509.Certificate.t list
       (** How the server certificate is validated:
-          - [Verify]: against the operating system's trust store ([bolt+s]).
-          - [Trust_all]: accept any certificate ([bolt+ssc]). *)
+          - [System]: against the operating system's trust store ([bolt+s]).
+          - [Trust_all]: accept any certificate ([bolt+ssc]).
+          - [Custom certs]: only the given trust anchors (the explicit [trusted_certificates]
+            configuration). The [host] is still checked against the leaf certificate. *)
 
-type config = { mode : mode; host : string }
+type config = { trust : trust; host : string }
 (** [host] is used for SNI and hostname verification (ignored for [Trust_all]). *)
 
 val wrap :

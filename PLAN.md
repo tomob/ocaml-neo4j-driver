@@ -101,6 +101,86 @@ Remaining (library surface only — the logic already lives in `testkitbackend/c
 - `Driver.supports_multi_db`.
 - `warn_notification_severity` (warnings at the calling-code level) — not implemented anywhere yet.
 
+### Phase A10 — TLS trust options (T1 done, T2-T6 planned)
+The `tests.tls` cases that still skip today: custom CA trust anchors, mTLS client certificates
+(single, rotation/provider and password-protected keys) and the explicit
+`encryption`/`trusted_certificates` security config.
+
+**Library surface**
+- `Tls_client` gains a rich `trust` (`System | Trust_all | Custom of X509.Certificate.t list`) and an
+  optional client certificate (`{ chain; key }` behind a `unit -> client_certificate` provider, so the
+  certificate is fetched per handshake and rotation works). `wrap` builds the authenticator from the
+  trust (System → `Ca_certs.authenticator ()`, Trust_all → accept-all, Custom →
+  `X509.Authenticator.chain_of_trust ~time:(Ptime_clock.now) certs`) and passes the client
+  certificate to `Tls.Config.client` (the `Single` variant carrying chain + key).
+- `Transport.tls_mode` (`Plain | Secure of Tls_client.config`) carries the trust and the optional
+  client certificate; `Conn.config` gains `encryption : Config.encryption`,
+  `trusted_certificates : Config.trusted_certificates option` and
+  `client_certificate : client_certificate option`.
+- `Config.pool_config` (or a sibling security record) carries the same fields, validated by
+  `make_pool_config`. `Conn.tls_of_config` resolves the effective mode: scheme default (`bolt`/`neo4j`
+  plain, `+s` system CAs, `+ssc` trust all), overridden by `encryption` (`Default | Enabled | Disabled`)
+  and `trusted_certificates`. Any explicit config with a `+s`/`+ssc` scheme, or `Disabled` with custom
+  CAs, is a `Configuration_error` mentioning "encryption"/"trust".
+- `Driver.connect` takes `?encryption`, `?trusted_certificates`, `?client_certificate`; `Driver.t`
+  stores the resolved `encrypted` flag and `Driver.is_encrypted : t -> bool` reports it (TestKit
+  `CheckDriverIsEncrypted`). `Detail:ClosedDriverIsEncrypted` later, by keeping the record after
+  `close`.
+
+**Encrypted private keys — local helper.** `x509` does not support encrypted keys at all
+(`Private_key.decode_pem` has no password; the changelog says "PKCS8 … only unencrypted keys so far",
+unchanged through 1.2.0), and the testkit fixtures are legacy OpenSSL PEM (`Proc-Type: 4,ENCRYPTED`,
+`DEK-Info: AES-256-CBC,<iv>`). A small local helper decrypts them: `EVP_BytesToKey(MD5, password,
+salt = iv[0..7], 1)` → key/IV, AES-256-CBC decrypt (`mirage-crypto`), then
+`X509.Private_key.decode_pem` on the resulting `RSA PRIVATE KEY` PEM. `mirage-crypto` (+ `digestif`)
+are already in the `tls-eio` dependency closure, so no new runtime dependency.
+
+**TestKit backend**
+- `NewDriver` parses `encrypted`, `trustedCertificates` (`None` = system / `[]` = trust all /
+  `[paths]` = custom) and `clientCertificate` (`{certfile,keyfile,password}`) or a
+  `clientCertificateProviderId`; relative certificate paths resolve against `TESTKIT_TLS_CERTS_DIR`
+  (set by `testkit_tls.sh`) instead of relying on the driver CWD.
+- Client-certificate provider: `NewClientCertificateProvider` / `ClientCertificateProviderClose`
+  commands and the `ClientCertificateProviderRequest`/`Completed` round-trip (mirror the auth-token
+  managers); a `has_update = false` reply reuses the cached certificate.
+- `CheckDriverIsEncrypted` → `DriverIsEncrypted { encrypted }` via `Driver.is_encrypted`.
+- Features: `Feature:API:SSLConfig`, `Feature:API:SSLClientCertificate`,
+  `Feature:API:Driver:IsEncrypted`.
+- Harness patch: `tests/tls/test_explicit_options.py` hard-fails for any driver not in
+  `["javascript","java","dotnet"]`; add `"ocaml"` with the expected "encryption"/"trust" message
+  substrings (same practice as the existing `ocaml` mappings in the testkit checkout).
+
+**Order of work** (each step unlocks tests, verifiable with `scripts/testkit_tls.sh`)
+1. **T1 — explicit security config + `is_encrypted`** — **Done**: `Tls_client.trust`
+   (`System | Trust_all | Custom`), `Transport.tls_mode` (`Plain | Secure of Tls_client.config`),
+   `Conn.config` fields + `Conn.tls_of_config` (scheme default, explicit `encryption`/
+   `trusted_certificates` overrides with custom-CA PEM loading, conflict validation like the Python
+   driver), `Driver.connect ?encryption ?trusted_certificates`, `Driver.is_encrypted`, the TestKit
+   `CheckDriverIsEncrypted` command and `Feature:API:Driver.IsEncrypted`. Unit tests cover the
+   scheme defaults, the overrides, the conflicts and the CA loading; `scripts/testkit_tls.sh` now
+   executes the `is_encrypted` tests (25 skips, was 31). The trust-config tests stay skipped until
+   `Feature:API:SSLConfig` is advertised (T5).
+2. **T2 — custom CA files**: load PEM bundles (`X509.Certificate.decode_pem_multiple`) into
+   `Trust_custom`; unit-test accept/reject. Unlocks `TestTrustCustomCertsConfig`.
+3. **T3 — client certificates (plain key)**: mTLS handshake, present/absent cases.
+4. **T4 — encrypted private keys**: the local legacy-PEM helper (`pem_key.ml`). Completes
+   `test_s_and_client_certificate_present` / `test_ssc_and_client_certificate_present`.
+5. **T5 — TestKit plumbing**: provider commands, the `TESTKIT_TLS_CERTS_DIR` cert-path plumbing,
+   advertise `Feature:API:SSLConfig` (which activates `TestTrustSystemCertsConfig`,
+   `TestTrustAllCertsConfig`, `test_secure_server_explicitly_disabled_encryption` and
+   `test_explicit_options`), the harness patch, `testkit_tls.sh` envs/mounts. Completes the
+   provider/rotation and explicit tests.
+6. **T6 — docs + CI**: `README.md`, `usage.mld`/`docs/usage.md`, `scripts/README.md`, and
+   `testkit_tls.sh` reporting the fully executed TLS suite.
+
+**Risks**
+- The legacy-PEM decryption is the only non-trivial crypto work; it is well specified (EVP_BytesToKey
+  MD5 + AES-CBC) and unit-testable against the committed testkit fixtures. Keeping it local avoids an
+  `x509` API dependency (upstream has no encrypted-key support).
+- Relative `trusted_certificates` paths depend on the testkit driver CWD; pin them with
+  `TESTKIT_TLS_CERTS_DIR`.
+- `test_explicit_options` needs the harness patch; without it the test fails for `ocaml` by design.
+
 ---
 
 ## TRACK B — TestKit
@@ -118,7 +198,7 @@ JSON-over-TCP backend translating commands onto the **public library API**.
   backend) and `run_all_tests.sh --tls` adds the phase; the backend reports
   `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via
   `OCAML_EXTRA_CA_CERTS`. Custom-CA (`API:SSLConfig`) and client-certificate
-  (`API:SSLClientCertificate`) tests still skip pending the deferred TLS work.
+  (`API:SSLClientCertificate`) tests still skip; they are Phase A10.
 
 Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db),
 `OK (skipped=4)` with `NEO4J_EDITION=aura`.
@@ -144,7 +224,8 @@ Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db)
 
 1. **Phase A9** — expose `execute_query`/`EagerResult`, `verify_connectivity`, `supports_multi_db`
    and `warn_notification_severity` in the public library API.
-2. **TLS** — custom CA trust anchors and mTLS client certificates.
+2. **Phase A10 (TLS)** — custom CA trust anchors, mTLS client certificates (incl. password-protected
+   keys) and the explicit `encryption`/`trusted_certificates` config (T1 done).
 3. **Config wiring** — `connection_write_timeout`, `keep_alive` (and `pool_config.connection_timeout`).
 4. **`neodriver_lwt` / `lib/lwt`** — second backend (the `transport.mli` interface is ready).
 5. **B10** — TestKit CI job + server-version matrix.

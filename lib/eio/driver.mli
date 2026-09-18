@@ -20,6 +20,8 @@ val connect :
   ?auth_manager:Auth_manager.t ->
   ?user_agent:string ->
   ?connection_timeout:float ->
+  ?encryption:Config.encryption ->
+  ?trusted_certificates:Config.trusted_certificates ->
   ?pool_config:Config.pool_config ->
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
@@ -30,15 +32,22 @@ val connect :
     is re-authenticated when it rotates. [resolver] replaces the address lookup for direct [bolt://]
     drivers (each returned address is tried in turn); [user_agent] defaults to
     [Conn.default_user_agent]; [connection_timeout] (seconds) defaults to 30.0 and bounds each
-    connection attempt and its subsequent reads/writes. [pool_config] (defaults from
+    connection attempt and its subsequent reads/writes. [encryption] and [trusted_certificates] are
+    the explicit security config: they override the URI scheme's TLS choice (see
+    {!Conn.tls_of_config}) and a conflicting combination is an error. [pool_config] (defaults from
     [Config.default_pool_config]: 100 connections, 1h lifetime, 60s acquisition timeout, no liveness
     check) sizes the pool and its acquisition timeout. Connections are established lazily on first
     use; for [neo4j://] the URI's address is the initial router and routing tables are fetched on
     demand. The [sw] switch is captured (it hosts the connection attempts), so it must outlive the
     returned [t].
     @return
-      [Error (Configuration_error _)] for an unparseable URI; [Error _] from the lazy connect on
-      first use otherwise. *)
+      [Error (Configuration_error _)] for an unparseable URI or a conflicting security config;
+      [Error _] from the lazy connect on first use otherwise. *)
+
+val is_encrypted : t -> bool
+(** Whether the driver's connections use TLS: resolved from the URI scheme and the explicit
+    [encryption]/[trusted_certificates] config (e.g. [true] for [bolt+s], [false] for [bolt], [true]
+    for [bolt] with [encryption = Enabled]). Does not connect. *)
 
 val session : ?config:Session.config -> t -> Session.t
 (** A new session borrowing a connection from the driver's pool (or routing cluster, selected by the

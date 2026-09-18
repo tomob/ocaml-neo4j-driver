@@ -20,6 +20,15 @@ type workspace_config = {
   disable_auto_commit_retries : bool;
 }
 
+(* The explicit TLS settings of the deprecated [encrypted]/[trusted_certificates]
+   configuration (the URI scheme is used when they are left at their default):
+   - [encryption]: force TLS on/off, or keep the scheme's choice ([Default]).
+   - [trusted_certificates]: [System] (the operating system's trust store),
+     [Trust_all] (accept any server certificate) or [Custom paths] (only these
+     PEM trust-anchor files). *)
+type encryption = Default | Enabled | Disabled
+type trusted_certificates = System | Trust_all | Custom of string list
+
 type pool_config = {
   max_connection_lifetime : float;
   liveness_check_timeout : float option;
@@ -28,6 +37,8 @@ type pool_config = {
   connection_timeout : float;
   connection_write_timeout : float;
   keep_alive : bool;
+  encryption : encryption;
+  trusted_certificates : trusted_certificates option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -57,6 +68,8 @@ let default_pool_config =
     connection_timeout = 30.0;
     connection_write_timeout = 30.0;
     keep_alive = true;
+    encryption = Default;
+    trusted_certificates = None;
     telemetry_disabled = false;
     notifications_min_severity = None;
     notifications_disabled_categories = None;
@@ -114,7 +127,8 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
     ?(connection_acquisition_timeout = default_pool_config.connection_acquisition_timeout)
     ?(connection_timeout = default_pool_config.connection_timeout)
     ?(connection_write_timeout = default_pool_config.connection_write_timeout)
-    ?(keep_alive = default_pool_config.keep_alive)
+    ?(keep_alive = default_pool_config.keep_alive) ?(encryption = default_pool_config.encryption)
+    ?(trusted_certificates = default_pool_config.trusted_certificates)
     ?(telemetry_disabled = default_pool_config.telemetry_disabled)
     ?(notifications_min_severity = default_pool_config.notifications_min_severity)
     ?(notifications_disabled_categories = default_pool_config.notifications_disabled_categories)
@@ -137,6 +151,8 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
         connection_timeout;
         connection_write_timeout;
         keep_alive;
+        encryption;
+        trusted_certificates;
         telemetry_disabled;
         notifications_min_severity;
         notifications_disabled_categories;

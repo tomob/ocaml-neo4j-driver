@@ -20,6 +20,8 @@ type config = {
   user_agent : string;
   auth : auth;
   routing_context : (string * string) list option;
+  encryption : Config.encryption;
+  trusted_certificates : Config.trusted_certificates option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -74,10 +76,79 @@ let timeout_of_config clock config =
 (* The bolt_agent header is sent from Bolt 5.3. *)
 let bolt_agent_version major minor = major > 5 || (major = 5 && minor >= 3)
 
-let tls_of_scheme host = function
-  | Addressing.Bolt | Addressing.Neo4j -> Ok Transport.Plain
-  | Addressing.Bolt_secure | Addressing.Neo4j_secure -> Ok (Transport.Verify host)
-  | Addressing.Bolt_self_signed | Addressing.Neo4j_self_signed -> Ok (Transport.Trust_all host)
+(* Whether the URI scheme selects TLS. *)
+let scheme_encrypts = function
+  | Addressing.Bolt | Addressing.Neo4j -> false
+  | Addressing.Bolt_secure | Addressing.Neo4j_secure | Addressing.Bolt_self_signed
+  | Addressing.Neo4j_self_signed ->
+      true
+
+(* The trust anchors implied by the URI scheme. *)
+let scheme_trust = function
+  | Addressing.Bolt_secure | Addressing.Neo4j_secure -> Some Tls_client.System
+  | Addressing.Bolt_self_signed | Addressing.Neo4j_self_signed -> Some Tls_client.Trust_all
+  | Addressing.Bolt | Addressing.Neo4j -> None
+
+(* Load the configured PEM trust anchors (all certificates of every file). *)
+let load_trust = function
+  | Config.System -> Ok Tls_client.System
+  | Config.Trust_all -> Ok Tls_client.Trust_all
+  | Config.Custom files ->
+      let rec load acc = function
+        | [] -> Ok (Tls_client.Custom (List.rev acc))
+        | file :: rest -> (
+            match In_channel.with_open_bin file In_channel.input_all with
+            | exception Sys_error msg ->
+                Error
+                  (Errors.Certificate_configuration_error
+                     (Printf.sprintf "Could not read trusted certificate %s: %s" file msg))
+            | contents -> (
+                match X509.Certificate.decode_pem_multiple contents with
+                | Ok certs -> load (List.rev_append certs acc) rest
+                | Error (`Msg msg) ->
+                    Error
+                      (Errors.Certificate_configuration_error
+                         (Printf.sprintf "Could not parse trusted certificate %s: %s" file msg))))
+      in
+      load [] files
+
+(* Resolve the effective TLS mode from the URI scheme and the explicit
+   [encryption]/[trusted_certificates] configuration: the scheme is the default,
+   the explicit settings override it, and a conflicting combination is a
+   [Configuration_error] (like the Python driver). *)
+let tls_of_config ~host scheme ~encryption ~trusted_certificates =
+  let scheme_secure = scheme_encrypts scheme in
+  let explicit = encryption <> Config.Default || trusted_certificates <> None in
+  if explicit && scheme_secure then
+    (* Like the Python driver: the explicit config is only meaningful with a
+       plain (bolt:///neo4j://) URI; a secure scheme already carries it. *)
+    Error
+      (Errors.Configuration_error
+         (Printf.sprintf
+            "Encryption and trusted certificates cannot be configured explicitly with the %s \
+             scheme; use a bolt:// or neo4j:// URI"
+            (Addressing.scheme_to_string scheme)))
+  else
+    let trust () =
+      match trusted_certificates with
+      | Some trust -> load_trust trust
+      | None -> Ok (Option.value ~default:Tls_client.System (scheme_trust scheme))
+    in
+    let secure () =
+      let* trust = trust () in
+      Ok (Transport.Secure { Tls_client.trust; host })
+    in
+    match encryption with
+    | Config.Disabled -> (
+        match trusted_certificates with
+        | Some _ ->
+            Error
+              (Errors.Configuration_error
+                 "Trusted certificates are configured but encryption is disabled")
+        | None -> Ok Transport.Plain)
+    | Config.Enabled -> secure ()
+    | Config.Default ->
+        if scheme_secure || trusted_certificates <> None then secure () else Ok Transport.Plain
 
 let bolt_agent () =
   Packstream.Map
@@ -489,7 +560,10 @@ let authenticate conn config =
   end
 
 let connect ?resolver ?domain_name_resolver net clock sw config =
-  let* tls = tls_of_scheme config.host config.scheme in
+  let* tls =
+    tls_of_config ~host:config.host config.scheme ~encryption:config.encryption
+      ~trusted_certificates:config.trusted_certificates
+  in
   let initial = Addressing.of_host_port config.host config.port in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in
   (* Resolve any hostnames among [addresses] through the custom domain-name

@@ -28,6 +28,7 @@ let features : string list =
     "Feature:API:Driver:MaxConnectionLifetime";
     "Feature:API:Driver:NotificationsConfig";
     "Feature:API:Driver.VerifyConnectivity";
+    "Feature:API:Driver.IsEncrypted";
     "Feature:API:ConnectionAcquisitionTimeout";
     "Feature:API:Liveness.Check";
     "Feature:API:Result.List";

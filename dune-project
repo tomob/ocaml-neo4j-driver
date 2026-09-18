@@ -51,6 +51,7 @@
    (tls-eio (>= 2.0))
    (x509 (>= 1.0))
    (ca-certs (>= 1.0))
+   (ptime (>= 1.1))
    (domain-name (>= 0.4))
    (mirage-crypto-rng (>= 1.2))
    (mtime (>= 2.0))

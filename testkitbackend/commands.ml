@@ -63,6 +63,9 @@ type driver = {
   connection_timeout : float;
   max_transaction_retry_time : float;
   resolver_registered : bool;
+  (* Whether the driver's connections use TLS (Driver.is_encrypted), resolved
+     from the URI scheme and the explicit encrypted/trusted_certificates config. *)
+  encrypted : bool;
   (* The driver-level default fetch size: used by sessions that do not set one. *)
   fetch_size : int option;
   (* Disables the auto-commit retry after an idempotent server failure (Bolt >= 6.0); sessions may
@@ -526,6 +529,27 @@ let new_driver ctx fields =
   let disable_auto_commit_retries =
     match List.assoc_opt "disableAutoCommitRetries" fields with Some (`Bool b) -> b | _ -> false
   in
+  (* The explicit (deprecated) security config: [encrypted] overrides the URI
+     scheme's TLS choice and [trustedCertificates] says which certificates to
+     trust (null/absent = scheme default, [] = trust all, [paths] = custom). *)
+  let encryption =
+    match List.assoc_opt "encrypted" fields with
+    | Some (`Bool true) -> Config.Enabled
+    | Some (`Bool false) -> Config.Disabled
+    | _ -> Config.Default
+  in
+  let trusted_certificates =
+    match List.assoc_opt "trustedCertificates" fields with
+    | Some (`List []) -> Some Config.Trust_all
+    | Some (`List certificates) ->
+        Some
+          (Config.Custom
+             (List.map
+                (function
+                  | `String path -> path | _ -> raise (Backend_error "bad trusted certificate path"))
+                certificates))
+    | _ -> None
+  in
   let custom = if resolver_registered then Some (resolver ctx) else None in
   let custom_domain_name =
     if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
@@ -590,7 +614,8 @@ let new_driver ctx fields =
   in
   match
     Driver.connect ?resolver:custom ?domain_name_resolver:custom_domain_name ~uri:uri_string ~auth
-      ?auth_manager ~user_agent ~connection_timeout ~pool_config ctx.net ctx.clock ctx.sw
+      ?auth_manager ~user_agent ~connection_timeout ~encryption ?trusted_certificates ~pool_config
+      ctx.net ctx.clock ctx.sw
   with
   | Error error -> raise (Driver_error error)
   | Ok driver ->
@@ -603,6 +628,7 @@ let new_driver ctx fields =
           connection_timeout;
           max_transaction_retry_time;
           resolver_registered;
+          encrypted = Driver.is_encrypted driver;
           fetch_size;
           disable_auto_commit_retries;
           default_manager = Bookmark_manager.neo4j_bookmark_manager ();
@@ -618,6 +644,12 @@ let driver_close fields =
   (match Hashtbl.find_opt drivers id with Some driver -> Driver.close driver.driver | None -> ());
   Hashtbl.remove drivers id;
   ("Driver", `Assoc [ ("id", `Int id) ])
+
+(* Report whether the driver's connections use TLS (Driver.is_encrypted). *)
+let check_driver_is_encrypted fields =
+  let id = int "driverId" fields in
+  let driver = get_driver id in
+  ("DriverIsEncrypted", `Assoc [ ("encrypted", `Bool (Driver.is_encrypted driver.driver)) ])
 
 (* A custom NewAuthTokenManager: get_auth and handle_security_exception both
    round-trip to the harness. *)
@@ -1490,6 +1522,7 @@ let handle ctx name data =
   | "FakeTimeUninstall" -> Some (fake_time_uninstall ctx)
   | "NewDriver" -> Some (new_driver ctx fields)
   | "DriverClose" -> Some (driver_close fields)
+  | "CheckDriverIsEncrypted" -> Some (check_driver_is_encrypted fields)
   | "NewBookmarkManager" -> Some (new_bookmark_manager ctx fields)
   | "BookmarkManagerClose" -> Some (bookmark_manager_close fields)
   | "ExecuteQuery" -> Some (execute_query ctx fields)
