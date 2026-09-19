@@ -10,7 +10,8 @@
    - [Custom certs]: only the given trust anchors are accepted (still with
      hostname verification). Loaded from the [trusted_certificates] config.
 
-   Client certificates (mTLS) are deferred to a later phase (A10/T3). *)
+   An optional client certificate (mTLS) is presented to the server, supplied by
+   a provider so a rotating certificate is re-read on every connection. *)
 
 open Eio.Std
 open Neodriver_core
@@ -18,7 +19,13 @@ open Neodriver_core
 let ( let* ) = Result.bind
 
 type trust = System | Trust_all | Custom of X509.Certificate.t list
-type config = { trust : trust; host : string }
+type client_certificate = { chain : X509.Certificate.t list; key : X509.Private_key.t }
+
+type config = {
+  trust : trust;
+  host : string;
+  client_certificate : (unit -> client_certificate) option;
+}
 
 (* Trust every server certificate (bolt+ssc). *)
 let trust_all ?ip:_ ~host:_ _ = Ok None
@@ -42,7 +49,14 @@ let peer_name host = Result.to_option (Result.bind (Domain_name.of_string host) 
 
 let wrap config socket =
   let* authenticator = authenticator config.trust in
-  match Tls.Config.client ~authenticator ~version:(`TLS_1_2, `TLS_1_3) () with
+  let certificates =
+    Option.map
+      (fun provide ->
+        let { chain; key } = provide () in
+        `Single (chain, key))
+      config.client_certificate
+  in
+  match Tls.Config.client ~authenticator ?certificates ~version:(`TLS_1_2, `TLS_1_3) () with
   | Error (`Msg msg) ->
       Error
         (Errors.Certificate_configuration_error (Printf.sprintf "Invalid TLS configuration: %s" msg))

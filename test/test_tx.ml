@@ -19,6 +19,7 @@ let config host port scheme =
       routing_context = None;
       encryption = Config.Default;
       trusted_certificates = None;
+      client_certificate = None;
       telemetry_disabled = false;
       notifications_min_severity = None;
       notifications_disabled_categories = None;

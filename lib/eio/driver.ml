@@ -36,6 +36,7 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
       routing_context;
       encryption = pool_config.encryption;
       trusted_certificates = pool_config.trusted_certificates;
+      client_certificate = pool_config.client_certificate;
       telemetry_disabled = pool_config.telemetry_disabled;
       notifications_min_severity = pool_config.notifications_min_severity;
       notifications_disabled_categories = pool_config.notifications_disabled_categories;
@@ -102,7 +103,8 @@ let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
   Ok (Pool pool)
 
 let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent ?connection_timeout
-    ?encryption ?trusted_certificates ?(pool_config = Config.default_pool_config) net clock sw =
+    ?encryption ?trusted_certificates ?client_certificate
+    ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let connection_timeout = Option.value ~default:default_connection_timeout connection_timeout in
   let user_agent = Option.value ~default:Conn.default_user_agent user_agent in
@@ -120,11 +122,18 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
     | Some trusted_certificates ->
         { pool_config with Config.trusted_certificates = Some trusted_certificates }
   in
+  let pool_config =
+    match client_certificate with
+    | None -> pool_config
+    | Some client_certificate ->
+        { pool_config with Config.client_certificate = Some client_certificate }
+  in
   let* encrypted =
     Result.map
       (function Transport.Plain -> false | Transport.Secure _ -> true)
       (Conn.tls_of_config ~host:parsed.host parsed.scheme ~encryption:pool_config.encryption
-         ~trusted_certificates:pool_config.trusted_certificates)
+         ~trusted_certificates:pool_config.trusted_certificates
+         ~client_certificate:pool_config.client_certificate)
   in
   (* A plain token is wrapped in a static auth manager, like the Python driver
      ([auth_manager] lets a TestKit backend supply a rotating one). *)

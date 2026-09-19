@@ -101,7 +101,7 @@ Remaining (library surface only — the logic already lives in `testkitbackend/c
 - `Driver.supports_multi_db`.
 - `warn_notification_severity` (warnings at the calling-code level) — not implemented anywhere yet.
 
-### Phase A10 — TLS trust options (T1-T2 done, T3-T6 planned)
+### Phase A10 — TLS trust options (T1-T3 done, T4-T6 planned)
 The `tests.tls` cases that still skip today: custom CA trust anchors, mTLS client certificates
 (single, rotation/provider and password-protected keys) and the explicit
 `encryption`/`trusted_certificates` security config.
@@ -167,14 +167,21 @@ are already in the `tls-eio` dependency closure, so no new runtime dependency.
    `tests/tls/test_explicit_options.py` accepts `ocaml` (harness patch, like the earlier error-type
    mappings). `scripts/testkit_tls.sh` now runs the custom-CA/system/trust-all/explicit-config tests:
    **`OK (skipped=5)`** (only the client-certificate tests remain).
-3. **T3 — client certificates (plain key)**: mTLS handshake, present/absent cases.
-4. **T4 — encrypted private keys**: the local legacy-PEM helper (`pem_key.ml`). Completes
-   `test_s_and_client_certificate_present` / `test_ssc_and_client_certificate_present`.
+3. **T3 — client certificates (plain key)** — **Done**: `Config.client_certificate`
+   (`certfile`/`keyfile`/`password`), `Tls_client.client_certificate` + the optional provider in
+   `Tls_client.config` (passed to `Tls.Config.client` as a `Single` chain/key), the `Conn` loader
+   (certificate chain + private key; a client certificate requires TLS), `Driver.connect
+   ?client_certificate`, and mTLS unit tests (the mock server now optionally requires the committed
+   client certificate: present handshakes, absent is rejected) plus a `Driver` loading/validation
+   test. The TestKit feature is not advertised yet.
+4. **T4 — encrypted private keys**: the local legacy-PEM helper (`pem_key.ml`); `Some password` is
+   currently a `Certificate_configuration_error`.
 5. **T5 — TestKit client-certificate plumbing**: the provider commands
    (`NewClientCertificateProvider`/`Close` + the request/completed round-trip), the `NewDriver`
-   `clientCertificate`/`clientCertificateProviderId` fields, advertise
-   `Feature:API:SSLClientCertificate` and the `testkit_tls.sh` cert mounts. Completes the
-   provider/rotation tests.
+   `clientCertificate`/`clientCertificateProviderId` fields, the `testkit_tls.sh` cert mounts, and
+   advertising `Feature:API:SSLClientCertificate`. The five client-certificate tests share that one
+   feature, so they can only be enabled once both T4 (password keys) and T5 (provider/rotation) are
+   in.
 6. **T6 — docs + CI**: `README.md`, `usage.mld`/`docs/usage.md`, `scripts/README.md`, and
    `testkit_tls.sh` reporting the fully executed TLS suite.
 
@@ -203,7 +210,7 @@ JSON-over-TCP backend translating commands onto the **public library API**.
   backend) and `run_all_tests.sh --tls` adds the phase; the backend reports
   `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via
   `OCAML_EXTRA_CA_CERTS`. The custom-CA (`API:SSLConfig`) tests now run; only the
-  client-certificate (`API:SSLClientCertificate`) tests still skip (Phase A10, T3-T5).
+  client-certificate (`API:SSLClientCertificate`) tests still skip (Phase A10, T4-T5).
 
 Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db),
 `OK (skipped=4)` with `NEO4J_EDITION=aura`.

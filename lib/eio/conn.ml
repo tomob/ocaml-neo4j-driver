@@ -22,6 +22,7 @@ type config = {
   routing_context : (string * string) list option;
   encryption : Config.encryption;
   trusted_certificates : Config.trusted_certificates option;
+  client_certificate : Config.client_certificate option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -123,11 +124,51 @@ let load_trust = function
       in
       load [] files
 
+(* Load the client certificate (mTLS) from its PEM files. *)
+let load_client_certificate { Config.certfile; keyfile; password } =
+  let read role file =
+    match In_channel.with_open_bin file In_channel.input_all with
+    | exception Sys_error msg ->
+        Error
+          (Errors.Certificate_configuration_error
+             (Printf.sprintf "Could not read %s %s: %s" role file msg))
+    | contents -> Ok contents
+  in
+  let* certificate_pem = read "client certificate" certfile in
+  let* chain =
+    match X509.Certificate.decode_pem_multiple certificate_pem with
+    | Ok [] ->
+        Error
+          (Errors.Certificate_configuration_error
+             (Printf.sprintf "No PEM certificates found in client certificate %s" certfile))
+    | Ok chain -> Ok chain
+    | Error (`Msg msg) ->
+        Error
+          (Errors.Certificate_configuration_error
+             (Printf.sprintf "Could not parse client certificate %s: %s" certfile msg))
+  in
+  let* key_pem = read "client private key" keyfile in
+  let* key =
+    match password with
+    | Some _ ->
+        Error
+          (Errors.Certificate_configuration_error
+             "Encrypted client private keys are not supported yet")
+    | None -> (
+        match X509.Private_key.decode_pem key_pem with
+        | Ok key -> Ok key
+        | Error (`Msg msg) ->
+            Error
+              (Errors.Certificate_configuration_error
+                 (Printf.sprintf "Could not parse client private key %s: %s" keyfile msg)))
+  in
+  Ok Tls_client.{ chain; key }
+
 (* Resolve the effective TLS mode from the URI scheme and the explicit
    [encryption]/[trusted_certificates] configuration: the scheme is the default,
    the explicit settings override it, and a conflicting combination is a
    [Configuration_error] (like the Python driver). *)
-let tls_of_config ~host scheme ~encryption ~trusted_certificates =
+let tls_of_config ~host scheme ~encryption ~trusted_certificates ~client_certificate =
   let scheme_secure = scheme_encrypts scheme in
   let explicit = encryption <> Config.Default || trusted_certificates <> None in
   if explicit && scheme_secure then
@@ -147,19 +188,33 @@ let tls_of_config ~host scheme ~encryption ~trusted_certificates =
     in
     let secure () =
       let* trust = trust () in
-      Ok (Transport.Secure { Tls_client.trust; host })
+      let* client_certificate =
+        match client_certificate with
+        | None -> Ok None
+        | Some config ->
+            Result.map
+              (fun certificate -> Some (fun () -> certificate))
+              (load_client_certificate config)
+      in
+      Ok (Transport.Secure { Tls_client.trust; host; client_certificate })
     in
-    match encryption with
-    | Config.Disabled -> (
-        match trusted_certificates with
-        | Some _ ->
-            Error
-              (Errors.Configuration_error
-                 "Trusted certificates are configured but encryption is disabled")
-        | None -> Ok Transport.Plain)
-    | Config.Enabled -> secure ()
-    | Config.Default ->
-        if scheme_secure || trusted_certificates <> None then secure () else Ok Transport.Plain
+    let mode =
+      match encryption with
+      | Config.Disabled -> (
+          match trusted_certificates with
+          | Some _ ->
+              Error
+                (Errors.Configuration_error
+                   "Trusted certificates are configured but encryption is disabled")
+          | None -> Ok Transport.Plain)
+      | Config.Enabled -> secure ()
+      | Config.Default ->
+          if scheme_secure || trusted_certificates <> None then secure () else Ok Transport.Plain
+    in
+    match mode with
+    | Ok Transport.Plain when client_certificate <> None ->
+        Error (Errors.Configuration_error "A client certificate requires encryption")
+    | mode -> mode
 
 let bolt_agent () =
   Packstream.Map
@@ -574,6 +629,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
   let* tls =
     tls_of_config ~host:config.host config.scheme ~encryption:config.encryption
       ~trusted_certificates:config.trusted_certificates
+      ~client_certificate:config.client_certificate
   in
   let initial = Addressing.of_host_port config.host config.port in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in

@@ -27,6 +27,13 @@ type encryption =
     schemes). [Custom] holds file paths; they are loaded when the driver is connected. *)
 type trusted_certificates = System | Trust_all | Custom of string list
 
+type client_certificate = {
+  certfile : string;  (** PEM certificate chain file to present to the server. *)
+  keyfile : string;  (** PEM private key file matching [certfile]. *)
+  password : string option;  (** Password of an encrypted [keyfile], if any. *)
+}
+(** The client certificate (mTLS) to present to the server. *)
+
 type pool_config = {
   max_connection_lifetime : float;
   liveness_check_timeout : float option;
@@ -37,6 +44,7 @@ type pool_config = {
   keep_alive : bool;
   encryption : encryption;
   trusted_certificates : trusted_certificates option;
+  client_certificate : client_certificate option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -47,13 +55,14 @@ type pool_config = {
     [trusted_certificates] overrides which certificates are trusted. The two are the deprecated
     explicit security config, only allowed with a plain scheme; conflicting values (explicit config
     with a secure scheme, or trust anchors without encryption) are rejected when the driver is
-    connected. [home_db_cache_ttl] is how long a routed driver remembers a resolved home database
-    (default [Float.infinity], i.e. the cache is on — a default-database session guesses the cached
-    home database only when a server-side-routing capable connection has been seen); a TTL <= [0.0]
-    disables the cache and every default-database session re-fetches the home database over ROUTE.
-    [notifications_min_severity] and [notifications_disabled_categories] are the driver-level
-    notification filtering settings sent in HELLO (Bolt >= 5.2; [None] omits the field, [Some []]
-    sends an empty category list). *)
+    connected. [client_certificate] is the mTLS certificate presented to the server (allowed with
+    both secure and plain schemes; it requires encryption). [home_db_cache_ttl] is how long a routed
+    driver remembers a resolved home database (default [Float.infinity], i.e. the cache is on — a
+    default-database session guesses the cached home database only when a server-side-routing
+    capable connection has been seen); a TTL <= [0.0] disables the cache and every default-database
+    session re-fetches the home database over ROUTE. [notifications_min_severity] and
+    [notifications_disabled_categories] are the driver-level notification filtering settings sent in
+    HELLO (Bolt >= 5.2; [None] omits the field, [Some []] sends an empty category list). *)
 
 val default_access_mode : access_mode
 (** Default access mode ([Write]). *)
@@ -89,6 +98,7 @@ val make_pool_config :
   ?keep_alive:bool ->
   ?encryption:encryption ->
   ?trusted_certificates:trusted_certificates option ->
+  ?client_certificate:client_certificate option ->
   ?telemetry_disabled:bool ->
   ?notifications_min_severity:string option ->
   ?notifications_disabled_categories:string list option ->

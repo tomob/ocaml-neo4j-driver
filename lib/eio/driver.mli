@@ -22,6 +22,7 @@ val connect :
   ?connection_timeout:float ->
   ?encryption:Config.encryption ->
   ?trusted_certificates:Config.trusted_certificates ->
+  ?client_certificate:Config.client_certificate ->
   ?pool_config:Config.pool_config ->
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
@@ -34,7 +35,8 @@ val connect :
     [Conn.default_user_agent]; [connection_timeout] (seconds) defaults to 30.0 and bounds each
     connection attempt and its subsequent reads/writes. [encryption] and [trusted_certificates] are
     the explicit security config: they override the URI scheme's TLS choice (see
-    {!Conn.tls_of_config}) and a conflicting combination is an error. [pool_config] (defaults from
+    {!Conn.tls_of_config}) and a conflicting combination is an error. [client_certificate] is the
+    mTLS certificate presented to the server (requires TLS). [pool_config] (defaults from
     [Config.default_pool_config]: 100 connections, 1h lifetime, 60s acquisition timeout, no liveness
     check) sizes the pool and its acquisition timeout. Connections are established lazily on first
     use; for [neo4j://] the URI's address is the initial router and routing tables are fetched on

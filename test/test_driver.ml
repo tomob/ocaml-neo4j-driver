@@ -175,11 +175,11 @@ let contains text substring =
 
 (* Driver.is_encrypted resolved from the scheme and the explicit config. The
    driver is lazy, so no connection is made (the URI host is never resolved). *)
-let is_encrypted ?encryption ?trusted_certificates uri =
+let is_encrypted ?encryption ?trusted_certificates ?client_certificate uri =
   with_env (fun net clock sw ->
       match
-        Driver.connect ~uri ~auth:(Conn.basic_auth ()) ?encryption ?trusted_certificates net clock
-          sw
+        Driver.connect ~uri ~auth:(Conn.basic_auth ()) ?encryption ?trusted_certificates
+          ?client_certificate net clock sw
       with
       | Ok driver -> Ok (Driver.is_encrypted driver)
       | Error error -> Error error)
@@ -253,7 +253,7 @@ let custom_trust_anchor_files () =
       let count files =
         match
           Conn.tls_of_config ~host:"thehost" Addressing.Bolt ~encryption:Config.Enabled
-            ~trusted_certificates:(Some (Config.Custom files))
+            ~trusted_certificates:(Some (Config.Custom files)) ~client_certificate:None
         with
         | Ok (Transport.Secure { Tls_client.trust = Tls_client.Custom certificates; _ }) ->
             Ok (List.length certificates)
@@ -266,7 +266,7 @@ let custom_trust_anchor_files () =
       | Error message -> fail message);
       match
         Conn.tls_of_config ~host:"thehost" Addressing.Bolt ~encryption:Config.Enabled
-          ~trusted_certificates:(Some (Config.Custom [ invalid ]))
+          ~trusted_certificates:(Some (Config.Custom [ invalid ])) ~client_certificate:None
       with
       | Error (Errors.Certificate_configuration_error _) -> ()
       | Error error -> fail (Errors.to_string error)
@@ -298,6 +298,53 @@ let custom_trust_anchors () =
       | Error error -> fail (Errors.to_string error)
       | Ok _ -> fail "a missing trust anchor file should be a Certificate_configuration_error")
 
+(* The client certificate (mTLS) is loaded from its PEM files: it requires
+   encryption, and encrypted private keys are not supported yet. *)
+let client_certificate_config () =
+  let write contents suffix =
+    let path = Filename.temp_file "neodriver-client" suffix in
+    let oc = open_out_bin path in
+    output_string oc contents;
+    close_out oc;
+    path
+  in
+  let certfile = write Test_fixtures.cert ".pem" in
+  let keyfile = write Test_fixtures.key ".pem" in
+  let spec ?password certfile keyfile = Config.{ certfile; keyfile; password } in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter (fun path -> try Sys.remove path with Sys_error _ -> ()) [ certfile; keyfile ])
+    (fun () ->
+      (match is_encrypted ~client_certificate:(spec certfile keyfile) "bolt+s://localhost:7687" with
+      | Ok true -> ()
+      | Ok false -> fail "a client certificate should keep encryption on"
+      | Error error -> fail (Errors.to_string error));
+      (* requires encryption *)
+      (match is_encrypted ~client_certificate:(spec certfile keyfile) "bolt://localhost:7687" with
+      | Error (Errors.Configuration_error message) ->
+          check bool "mentions encryption" true
+            (contains (String.lowercase_ascii message) "encryption")
+      | Error error -> fail (Errors.to_string error)
+      | Ok _ -> fail "a client certificate without encryption should be rejected");
+      (* encrypted private keys are not supported yet *)
+      (match
+         is_encrypted
+           ~client_certificate:(spec ~password:"secret" certfile keyfile)
+           "bolt+s://localhost:7687"
+       with
+      | Error (Errors.Certificate_configuration_error _) -> ()
+      | Error error -> fail (Errors.to_string error)
+      | Ok _ -> fail "an encrypted private key should be rejected until supported");
+      (* a missing file is a configuration error *)
+      match
+        is_encrypted
+          ~client_certificate:(spec "/nonexistent/neodriver-client.pem" keyfile)
+          "bolt+s://localhost:7687"
+      with
+      | Error (Errors.Certificate_configuration_error _) -> ()
+      | Error error -> fail (Errors.to_string error)
+      | Ok _ -> fail "a missing client certificate should be a Certificate_configuration_error")
+
 let tests =
   [
     ("[Driver] basic_auth defaults", [ test_case "defaults" `Quick basic_auth_defaults ]);
@@ -317,4 +364,6 @@ let tests =
       [ test_case "custom CA files are loaded" `Quick custom_trust_anchors ] );
     ( "[Driver] custom trust anchor files",
       [ test_case "PEM bundles are concatenated" `Quick custom_trust_anchor_files ] );
+    ( "[Driver] client certificate",
+      [ test_case "mTLS certificate is loaded" `Quick client_certificate_config ] );
   ]

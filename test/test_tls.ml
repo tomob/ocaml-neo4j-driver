@@ -1,4 +1,4 @@
-(* Unit tests for TLS wrapping (bolt+s / bolt+ssc) using a mock TLS server. *)
+(* Unit tests for TLS wrapping (bolt+s / bolt+ssc / mTLS) using a mock TLS server. *)
 
 open Neodriver
 open Neodriver_eio
@@ -13,16 +13,16 @@ let negotiate_tls tls net clock sw port =
       Transport.close transport;
       result
 
+let secure ?client_certificate trust =
+  let client_certificate = Option.map (fun certificate () -> certificate) client_certificate in
+  Transport.Secure { Tls_client.trust; host = "localhost"; client_certificate }
+
 (* bolt+ssc: TLS handshake with no certificate validation succeeds. *)
 let trust_all () =
   Test_tls_mock.with_mock
     (Test_mock.Manifest [ (5, 8, 8) ])
     (fun net clock sw port ->
-      match
-        negotiate_tls
-          (Transport.Secure { Tls_client.trust = Tls_client.Trust_all; host = "localhost" })
-          net clock sw port
-      with
+      match negotiate_tls (secure Tls_client.Trust_all) net clock sw port with
       | Ok (major, minor) -> check (pair int int) "tls+bolt version" (5, 8) (major, minor)
       | Error error -> fail (Errors.to_string error))
 
@@ -31,11 +31,7 @@ let verify_rejects_self_signed () =
   Test_tls_mock.with_mock
     (Test_mock.Manifest [ (5, 8, 8) ])
     (fun net clock sw port ->
-      match
-        negotiate_tls
-          (Transport.Secure { Tls_client.trust = Tls_client.System; host = "localhost" })
-          net clock sw port
-      with
+      match negotiate_tls (secure Tls_client.System) net clock sw port with
       | Ok _ -> fail "verify should reject a self-signed certificate"
       | Error _ -> ())
 
@@ -44,12 +40,30 @@ let tls_against_plain_server () =
   Test_mock.with_mock
     (Test_mock.V1 (4, 4))
     (fun net clock sw port ->
-      match
-        negotiate_tls
-          (Transport.Secure { Tls_client.trust = Tls_client.Trust_all; host = "localhost" })
-          net clock sw port
-      with
+      match negotiate_tls (secure Tls_client.Trust_all) net clock sw port with
       | Ok _ -> fail "tls against a plain server should fail"
+      | Error _ -> ())
+
+let fixture_client_certificate () =
+  Tls_client.{ chain = [ Test_tls_mock.certificate () ]; key = Test_tls_mock.private_key () }
+
+(* mTLS: the server requires the committed client certificate. *)
+let client_certificate_present () =
+  Test_tls_mock.with_mock ~require_client_cert:true
+    (Test_mock.Manifest [ (5, 8, 8) ])
+    (fun net clock sw port ->
+      let tls = secure ~client_certificate:(fixture_client_certificate ()) Tls_client.Trust_all in
+      match negotiate_tls tls net clock sw port with
+      | Ok (major, minor) -> check (pair int int) "tls+bolt version" (5, 8) (major, minor)
+      | Error error -> fail (Errors.to_string error))
+
+(* mTLS: without a client certificate the server rejects the handshake. *)
+let client_certificate_absent () =
+  Test_tls_mock.with_mock ~require_client_cert:true
+    (Test_mock.Manifest [ (5, 8, 8) ])
+    (fun net clock sw port ->
+      match negotiate_tls (secure Tls_client.Trust_all) net clock sw port with
+      | Ok _ -> fail "the server requires a client certificate"
       | Error _ -> ())
 
 let tests =
@@ -58,4 +72,8 @@ let tests =
     ("[TLS] verify", [ test_case "bolt+s rejects self-signed" `Quick verify_rejects_self_signed ]);
     ( "[TLS] plain_server",
       [ test_case "tls against plain server fails" `Quick tls_against_plain_server ] );
+    ( "[TLS] client_certificate",
+      [ test_case "mTLS sends the client certificate" `Quick client_certificate_present ] );
+    ( "[TLS] client_certificate absent",
+      [ test_case "mTLS without a certificate is rejected" `Quick client_certificate_absent ] );
   ]

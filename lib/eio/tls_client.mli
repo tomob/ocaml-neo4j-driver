@@ -12,7 +12,19 @@ type trust =
           - [Custom certs]: only the given trust anchors (the explicit [trusted_certificates]
             configuration). The [host] is still checked against the leaf certificate. *)
 
-type config = { trust : trust; host : string }
+type client_certificate = {
+  chain : X509.Certificate.t list;  (** The certificate chain, leaf first. *)
+  key : X509.Private_key.t;  (** The private key matching the leaf certificate. *)
+}
+(** A client certificate (mTLS) presented to the server. *)
+
+type config = {
+  trust : trust;
+  host : string;
+  client_certificate : (unit -> client_certificate) option;
+      (** Supplies the client certificate for the handshake. A provider (rather than a value) so a
+          rotating certificate is re-read on every connection. *)
+}
 (** [host] is used for SNI and hostname verification (ignored for [Trust_all]). *)
 
 val wrap :

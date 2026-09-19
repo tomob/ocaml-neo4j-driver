@@ -29,6 +29,10 @@ type workspace_config = {
 type encryption = Default | Enabled | Disabled
 type trusted_certificates = System | Trust_all | Custom of string list
 
+(* The client certificate (mTLS) to present to the server: a PEM certificate
+   chain file and a PEM private key file, optionally protected by [password]. *)
+type client_certificate = { certfile : string; keyfile : string; password : string option }
+
 type pool_config = {
   max_connection_lifetime : float;
   liveness_check_timeout : float option;
@@ -39,6 +43,7 @@ type pool_config = {
   keep_alive : bool;
   encryption : encryption;
   trusted_certificates : trusted_certificates option;
+  client_certificate : client_certificate option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -70,6 +75,7 @@ let default_pool_config =
     keep_alive = true;
     encryption = Default;
     trusted_certificates = None;
+    client_certificate = None;
     telemetry_disabled = false;
     notifications_min_severity = None;
     notifications_disabled_categories = None;
@@ -129,6 +135,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
     ?(connection_write_timeout = default_pool_config.connection_write_timeout)
     ?(keep_alive = default_pool_config.keep_alive) ?(encryption = default_pool_config.encryption)
     ?(trusted_certificates = default_pool_config.trusted_certificates)
+    ?(client_certificate = default_pool_config.client_certificate)
     ?(telemetry_disabled = default_pool_config.telemetry_disabled)
     ?(notifications_min_severity = default_pool_config.notifications_min_severity)
     ?(notifications_disabled_categories = default_pool_config.notifications_disabled_categories)
@@ -153,6 +160,7 @@ let make_pool_config ?(max_connection_lifetime = default_pool_config.max_connect
         keep_alive;
         encryption;
         trusted_certificates;
+        client_certificate;
         telemetry_disabled;
         notifications_min_severity;
         notifications_disabled_categories;
