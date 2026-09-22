@@ -18,6 +18,9 @@ module Tls_client = Tls_client
 (** TLS client settings: the trust anchors ([System], [Trust_all] or custom certificates) used to
     validate server certificates. *)
 
+module Pem_key = Pem_key
+(** Loading PEM private keys, including the legacy OpenSSL-encrypted form. *)
+
 module Bolt = Bolt
 (** Bolt protocol messages (send/receive and response interpretation). *)
 

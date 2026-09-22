@@ -1,4 +1,6 @@
 (test
  (name test_main)
  (package neodriver)
- (libraries alcotest neodriver test_integration))
+ (libraries alcotest neodriver test_integration)
+ (deps
+  (glob_files fixtures/*)))

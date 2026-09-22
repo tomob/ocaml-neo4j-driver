@@ -15,7 +15,10 @@
   ptime
   ptime.clock.os
   domain-name
+  mirage-crypto
   mirage-crypto-rng.unix
+  digestif
+  base64
   mtime))
 
 (documentation

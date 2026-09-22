@@ -60,6 +60,9 @@ module Tls_client = Neodriver_eio.Tls_client
 (** TLS client settings: the trust anchors ([System], [Trust_all] or custom certificates) used to
     validate server certificates. *)
 
+module Pem_key = Neodriver_eio.Pem_key
+(** Loading PEM private keys, including the legacy OpenSSL-encrypted form. *)
+
 module Bolt = Neodriver_eio.Bolt
 (** Bolt protocol messages (send/receive and response interpretation). *)
 

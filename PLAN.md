@@ -101,7 +101,7 @@ Remaining (library surface only — the logic already lives in `testkitbackend/c
 - `Driver.supports_multi_db`.
 - `warn_notification_severity` (warnings at the calling-code level) — not implemented anywhere yet.
 
-### Phase A10 — TLS trust options (T1-T3 done, T4-T6 planned)
+### Phase A10 — TLS trust options (T1-T4 done, T5-T6 planned)
 The `tests.tls` cases that still skip today: custom CA trust anchors, mTLS client certificates
 (single, rotation/provider and password-protected keys) and the explicit
 `encryption`/`trusted_certificates` security config.
@@ -174,8 +174,15 @@ are already in the `tls-eio` dependency closure, so no new runtime dependency.
    ?client_certificate`, and mTLS unit tests (the mock server now optionally requires the committed
    client certificate: present handshakes, absent is rejected) plus a `Driver` loading/validation
    test. The TestKit feature is not advertised yet.
-4. **T4 — encrypted private keys**: the local legacy-PEM helper (`pem_key.ml`); `Some password` is
-   currently a `Certificate_configuration_error`.
+4. **T4 — encrypted private keys** — **Done**: `lib/eio/pem_key.ml` (exposed as `Pem_key`) decrypts
+   the legacy OpenSSL PEM ([Proc-Type: 4,ENCRYPTED] + [DEK-Info]): EVP_BytesToKey(MD5, salt = the
+   first eight IV bytes) → AES-128/192/256-CBC or DES-EDE3-CBC → PKCS#7 unpad, then
+   `X509.Private_key.decode_pem` under the original label; an encrypted key without a password, a
+   wrong password, an unsupported cipher or bad base64 is an error, and a plain key ignores the
+   password. `Conn.load_client_certificate` uses it, so `Config.client_certificate.password` now
+   works. Unit tests cover the plain key, an encrypt/decrypt round trip, the wrong/missing password
+   and — when `NEO4J_TESTKIT_DIR` is set — the real OpenSSL-generated fixture (the decrypted key must
+   match `certificate1.pem`).
 5. **T5 — TestKit client-certificate plumbing**: the provider commands
    (`NewClientCertificateProvider`/`Close` + the request/completed round-trip), the `NewDriver`
    `clientCertificate`/`clientCertificateProviderId` fields, the `testkit_tls.sh` cert mounts, and

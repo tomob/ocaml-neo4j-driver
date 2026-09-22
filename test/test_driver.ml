@@ -326,15 +326,15 @@ let client_certificate_config () =
             (contains (String.lowercase_ascii message) "encryption")
       | Error error -> fail (Errors.to_string error)
       | Ok _ -> fail "a client certificate without encryption should be rejected");
-      (* encrypted private keys are not supported yet *)
+      (* a password on an unencrypted key is ignored *)
       (match
          is_encrypted
            ~client_certificate:(spec ~password:"secret" certfile keyfile)
            "bolt+s://localhost:7687"
        with
-      | Error (Errors.Certificate_configuration_error _) -> ()
-      | Error error -> fail (Errors.to_string error)
-      | Ok _ -> fail "an encrypted private key should be rejected until supported");
+      | Ok true -> ()
+      | Ok false -> fail "a password should not disable encryption"
+      | Error error -> fail (Errors.to_string error));
       (* a missing file is a configuration error *)
       match
         is_encrypted

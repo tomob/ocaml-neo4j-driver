@@ -149,18 +149,12 @@ let load_client_certificate { Config.certfile; keyfile; password } =
   in
   let* key_pem = read "client private key" keyfile in
   let* key =
-    match password with
-    | Some _ ->
+    match Pem_key.decode ?password key_pem with
+    | Ok key -> Ok key
+    | Error msg ->
         Error
           (Errors.Certificate_configuration_error
-             "Encrypted client private keys are not supported yet")
-    | None -> (
-        match X509.Private_key.decode_pem key_pem with
-        | Ok key -> Ok key
-        | Error (`Msg msg) ->
-            Error
-              (Errors.Certificate_configuration_error
-                 (Printf.sprintf "Could not parse client private key %s: %s" keyfile msg)))
+             (Printf.sprintf "Could not parse client private key %s: %s" keyfile msg))
   in
   Ok Tls_client.{ chain; key }
 

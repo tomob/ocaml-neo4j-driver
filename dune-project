@@ -53,7 +53,10 @@
    (ca-certs (>= 1.0))
    (ptime (>= 1.1))
    (domain-name (>= 0.4))
+   (mirage-crypto (>= 1.0))
    (mirage-crypto-rng (>= 1.2))
+   (digestif (>= 1.0))
+   (base64 (>= 3.0))
    (mtime (>= 2.0))
    (alcotest :with-test)))
 
