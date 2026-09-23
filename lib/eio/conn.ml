@@ -23,6 +23,7 @@ type config = {
   encryption : Config.encryption;
   trusted_certificates : Config.trusted_certificates option;
   client_certificate : Config.client_certificate option;
+  client_certificate_provider : (unit -> Tls_client.client_certificate) option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -125,7 +126,7 @@ let load_trust = function
       load [] files
 
 (* Load the client certificate (mTLS) from its PEM files. *)
-let load_client_certificate { Config.certfile; keyfile; password } =
+let client_certificate_of_config { Config.certfile; keyfile; password } =
   let read role file =
     match In_channel.with_open_bin file In_channel.input_all with
     | exception Sys_error msg ->
@@ -162,7 +163,8 @@ let load_client_certificate { Config.certfile; keyfile; password } =
    [encryption]/[trusted_certificates] configuration: the scheme is the default,
    the explicit settings override it, and a conflicting combination is a
    [Configuration_error] (like the Python driver). *)
-let tls_of_config ~host scheme ~encryption ~trusted_certificates ~client_certificate =
+let tls_of_config ~host scheme ~encryption ~trusted_certificates ~client_certificate
+    ~client_certificate_provider =
   let scheme_secure = scheme_encrypts scheme in
   let explicit = encryption <> Config.Default || trusted_certificates <> None in
   if explicit && scheme_secure then
@@ -183,12 +185,15 @@ let tls_of_config ~host scheme ~encryption ~trusted_certificates ~client_certifi
     let secure () =
       let* trust = trust () in
       let* client_certificate =
-        match client_certificate with
-        | None -> Ok None
-        | Some config ->
-            Result.map
-              (fun certificate -> Some (fun () -> certificate))
-              (load_client_certificate config)
+        match client_certificate_provider with
+        | Some provider -> Ok (Some provider)
+        | None -> (
+            match client_certificate with
+            | None -> Ok None
+            | Some config ->
+                Result.map
+                  (fun certificate -> Some (fun () -> certificate))
+                  (client_certificate_of_config config))
       in
       Ok (Transport.Secure { Tls_client.trust; host; client_certificate })
     in
@@ -206,7 +211,7 @@ let tls_of_config ~host scheme ~encryption ~trusted_certificates ~client_certifi
           if scheme_secure || trusted_certificates <> None then secure () else Ok Transport.Plain
     in
     match mode with
-    | Ok Transport.Plain when client_certificate <> None ->
+    | Ok Transport.Plain when client_certificate <> None || client_certificate_provider <> None ->
         Error (Errors.Configuration_error "A client certificate requires encryption")
     | mode -> mode
 
@@ -624,6 +629,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
     tls_of_config ~host:config.host config.scheme ~encryption:config.encryption
       ~trusted_certificates:config.trusted_certificates
       ~client_certificate:config.client_certificate
+      ~client_certificate_provider:config.client_certificate_provider
   in
   let initial = Addressing.of_host_port config.host config.port in
   let* addresses = match resolver with Some resolve -> resolve initial | None -> Ok [ initial ] in

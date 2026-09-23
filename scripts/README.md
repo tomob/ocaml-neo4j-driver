@@ -225,22 +225,23 @@ system-CA validation (`bolt+s` / `neo4j+s`) sees the testkit certificates, and
 the tests' relative `trusted_certificates` paths resolve through
 `TESTKIT_TLS_CERTS_DIR` (the testkit `certs/driver/custom` directory, set in host
 mode and mounted at `/certs/custom` for the container). The client-certificate
-tests (`Feature:API:SSLClientCertificate`) still skip: mTLS is not implemented
-yet (see `PLAN.md`).
+tests pass host-absolute paths into `certs/driver`, which the container backend
+sees by mounting that directory at its own absolute path.
 
 With the backend reporting `Feature:API:SSLSchemes` + `Feature:API:SSLConfig` +
-`Feature:TLS:1.2`/`1.3`, the whole suite currently reports:
+`Feature:API:SSLClientCertificate` + `Feature:TLS:1.2`/`1.3`, the whole suite
+currently reports:
 
 ```
-Ran 43 tests in ~2s
-OK (skipped=5)
+Ran 43 tests in ~10s
+OK
 ```
 
-The executed tests cover `bolt+s`/`neo4j+s` and explicit-config validation
-(trusted, untrusted, expired and wrong-hostname certificates, plain-scheme
-rejection), custom CA trust anchors, `bolt+ssc` trust-all, TLS 1.1 rejection /
-1.2 / 1.3 acceptance and the conflicting explicit-config rejection; the 5 skips
-are the client-certificate tests.
+The 43 tests cover `bolt+s`/`neo4j+s` and explicit-config validation (trusted,
+untrusted, expired and wrong-hostname certificates, plain-scheme rejection),
+custom CA trust anchors, `bolt+ssc` trust-all, TLS 1.1 rejection / 1.2 / 1.3
+acceptance, the conflicting explicit-config rejection and mTLS client
+certificates (present/absent, password-protected keys and rotation).
 
 ### External server (`NEO4J_URI`) — multi-db
 

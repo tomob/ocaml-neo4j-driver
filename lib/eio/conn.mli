@@ -21,6 +21,7 @@ type config = {
   encryption : Config.encryption;
   trusted_certificates : Config.trusted_certificates option;
   client_certificate : Config.client_certificate option;
+  client_certificate_provider : (unit -> Tls_client.client_certificate) option;
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
@@ -36,19 +37,28 @@ type config = {
     notification filtering settings carried in HELLO on Bolt >= 5.2 ([None] omits the field;
     [Some []] sends an empty category list). *)
 
+val client_certificate_of_config :
+  Config.client_certificate -> (Tls_client.client_certificate, Errors.t) result
+(** Load a client certificate (mTLS) from its PEM files: the certificate chain of [certfile] and the
+    private key of [keyfile] (decrypted with [password] when it is a legacy OpenSSL-encrypted PEM).
+    A missing, empty or unparseable file, or an unreadable private key, is an error. *)
+
 val tls_of_config :
   host:string ->
   Addressing.scheme ->
   encryption:Config.encryption ->
   trusted_certificates:Config.trusted_certificates option ->
   client_certificate:Config.client_certificate option ->
+  client_certificate_provider:(unit -> Tls_client.client_certificate) option ->
   (Transport.tls_mode, Errors.t) result
 (** Resolve the connection's TLS mode: the URI scheme is the default (plain for [bolt]/[neo4j],
     system trust for [+s], trust all for [+ssc]); the explicit [encryption]/[trusted_certificates]
     config is only allowed with a plain scheme (a secure scheme already carries it) and is a
     [Configuration_error] otherwise — as is [Disabled] with configured trust anchors. A [Custom]
     trust anchor list is loaded from the given PEM files here. An optional [client_certificate]
-    (mTLS) is loaded from its PEM files and requires the resolved mode to use TLS. *)
+    (mTLS) is loaded from its PEM files; a [client_certificate_provider] (a rotating certificate,
+    fetched per connection) takes precedence over [client_certificate]. Both require the resolved
+    mode to use TLS. *)
 
 type t
 (** An established, authenticated Bolt connection: the transport, the negotiated protocol version

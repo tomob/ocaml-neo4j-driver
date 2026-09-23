@@ -47,6 +47,7 @@ let conn_config ?scheme ?password (env : t) =
       encryption = Neodriver.Config.Default;
       trusted_certificates = None;
       client_certificate = None;
+      client_certificate_provider = None;
       telemetry_disabled = false;
       notifications_min_severity = None;
       notifications_disabled_categories = None;

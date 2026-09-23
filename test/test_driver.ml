@@ -254,6 +254,7 @@ let custom_trust_anchor_files () =
         match
           Conn.tls_of_config ~host:"thehost" Addressing.Bolt ~encryption:Config.Enabled
             ~trusted_certificates:(Some (Config.Custom files)) ~client_certificate:None
+            ~client_certificate_provider:None
         with
         | Ok (Transport.Secure { Tls_client.trust = Tls_client.Custom certificates; _ }) ->
             Ok (List.length certificates)
@@ -267,6 +268,7 @@ let custom_trust_anchor_files () =
       match
         Conn.tls_of_config ~host:"thehost" Addressing.Bolt ~encryption:Config.Enabled
           ~trusted_certificates:(Some (Config.Custom [ invalid ])) ~client_certificate:None
+          ~client_certificate_provider:None
       with
       | Error (Errors.Certificate_configuration_error _) -> ()
       | Error error -> fail (Errors.to_string error)

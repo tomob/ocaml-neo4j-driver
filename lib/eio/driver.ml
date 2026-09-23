@@ -24,7 +24,7 @@ type t = {
 
 (* The target connection configuration for a single address. *)
 let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~connection_timeout
-    ~user_agent ~auth ~routing_context addr =
+    ~user_agent ~auth ~routing_context ~client_certificate_provider addr =
   Conn.
     {
       host = Addressing.host addr;
@@ -37,6 +37,7 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
       encryption = pool_config.encryption;
       trusted_certificates = pool_config.trusted_certificates;
       client_certificate = pool_config.client_certificate;
+      client_certificate_provider;
       telemetry_disabled = pool_config.telemetry_disabled;
       notifications_min_severity = pool_config.notifications_min_severity;
       notifications_disabled_categories = pool_config.notifications_disabled_categories;
@@ -49,7 +50,7 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
    per-address data pools for re-authentication and security-error handling. *)
 let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent
-    ~(auth_manager : Auth_manager.t) net clock sw =
+    ~(auth_manager : Auth_manager.t) ~client_certificate_provider net clock sw =
   let initial = Addressing.of_host_port parsed.host parsed.port in
   (* The routing context carries the cluster's own address (like the Python
      driver, which prepends "address" at pool creation): the server uses it for
@@ -62,7 +63,7 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
      may list addresses a custom resolver maps to real servers. *)
   let config auth addr =
     conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth
-      ~routing_context:(Some routing_context) addr
+      ~routing_context:(Some routing_context) ~client_certificate_provider addr
   in
   let with_token ~session_auth connect addr =
     let* auth =
@@ -88,13 +89,14 @@ let make_cluster ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
    connections without a LOGOFF+LOGON. *)
 let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
     ~(pool_config : Config.pool_config) ~connection_timeout ~user_agent
-    ~(auth_manager : Auth_manager.t) net clock sw =
+    ~(auth_manager : Auth_manager.t) ~client_certificate_provider net clock sw =
   let connect session_auth =
     let* auth =
       match session_auth with Some token -> Ok token | None -> auth_manager.get_auth ()
     in
     let config =
       conn_config ~parsed ~pool_config ~connection_timeout ~user_agent ~auth ~routing_context:None
+        ~client_certificate_provider
         (Addressing.of_host_port parsed.host parsed.port)
     in
     Conn.connect ?resolver ?domain_name_resolver net clock sw config
@@ -103,7 +105,7 @@ let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
   Ok (Pool pool)
 
 let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent ?connection_timeout
-    ?encryption ?trusted_certificates ?client_certificate
+    ?encryption ?trusted_certificates ?client_certificate ?client_certificate_provider
     ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let connection_timeout = Option.value ~default:default_connection_timeout connection_timeout in
@@ -133,7 +135,7 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
       (function Transport.Plain -> false | Transport.Secure _ -> true)
       (Conn.tls_of_config ~host:parsed.host parsed.scheme ~encryption:pool_config.encryption
          ~trusted_certificates:pool_config.trusted_certificates
-         ~client_certificate:pool_config.client_certificate)
+         ~client_certificate:pool_config.client_certificate ~client_certificate_provider)
   in
   (* A plain token is wrapped in a static auth manager, like the Python driver
      ([auth_manager] lets a TestKit backend supply a rotating one). *)
@@ -142,10 +144,10 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
     match parsed.scheme with
     | Addressing.Neo4j | Addressing.Neo4j_secure | Addressing.Neo4j_self_signed ->
         make_cluster ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
-          ~user_agent ~auth_manager net clock sw
+          ~user_agent ~auth_manager ~client_certificate_provider net clock sw
     | _ ->
         make_pool ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
-          ~user_agent ~auth_manager net clock sw
+          ~user_agent ~auth_manager ~client_certificate_provider net clock sw
   in
   Ok { clock; connection; encrypted }
 

@@ -51,11 +51,14 @@ project, running this program and what is going on under the hood.
   fallback before 1970).
 - Basic authentication (LOGON after HELLO on Bolt >= 5.1).
 - Vector and UUID value types (Bolt 6).
+- TLS trust options: system CAs (`bolt+s`), trust-all (`bolt+ssc`), custom CA
+  files, and mTLS client certificates (including password-protected keys and
+  rotation via a provider).
 - TestKit conformance: 119 of 126 tests passing (7 skipped — vector on the
   community server and multi-db; 4 skipped with `NEO4J_EDITION=aura`).
 
-Not yet implemented: notification filtering, telemetry and
-the high-level `execute_query`/`verify_connectivity` API. See
+Not yet implemented: the high-level `execute_query`/`verify_connectivity`/
+`supports_multi_db` API (backend-only, TestKit). See
 [PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
 
 ## Packages

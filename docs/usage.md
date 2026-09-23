@@ -496,6 +496,35 @@ descriptors (e.g. MirageOS). Credentials are always redacted (`*******`) in
 HELLO/LOGON log lines, and RECORD lines log only the number of records, never
 the data.
 
+## TLS and client certificates
+
+The URI scheme selects the default TLS behaviour: `bolt`/`neo4j` are plain,
+`bolt+s`/`neo4j+s` validate the server certificate against the system trust
+store, and `bolt+ssc`/`neo4j+ssc` accept any (e.g. self-signed) certificate. The
+explicit security config overrides the scheme for `bolt`/`neo4j` URIs:
+
+```ocaml
+let driver =
+  Driver.connect ~uri:"bolt://localhost:7687"
+    ~encryption:Config.Enabled
+    ~trusted_certificates:(Config.Custom [ "ca.pem" ])
+    ~auth:(Conn.basic_auth ())
+    net clock sw
+```
+
+`encryption` is `Config.Default` (the scheme decides), `Config.Enabled` or
+`Config.Disabled`; `trusted_certificates` is `Config.System`, `Config.Trust_all`
+or `Config.Custom paths` (PEM trust-anchor files). An explicit config combined
+with a `bolt+s`/`neo4j+s`/`+ssc` scheme, or `Disabled` with configured trust
+anchors, is a `Configuration_error`. `Driver.is_encrypted` reports the resolved
+flag without connecting.
+
+For mutual TLS, `client_certificate` presents a client certificate to the server
+(`certfile`, `keyfile` and an optional `password` for a legacy OpenSSL-encrypted
+private key); `client_certificate_provider` supplies a (possibly rotating)
+certificate, fetched on every connection. The `Pem_key` module exposes the
+encrypted-PEM loading directly (`Pem_key.decode ?password`).
+
 ## Not yet implemented
 
 - Impersonation on auto-commit queries (it works in transactions via the BEGIN

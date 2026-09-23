@@ -92,6 +92,13 @@ let results : (int, result) Hashtbl.t = Hashtbl.create 16
 let custom_resolutions : (int, string list) Hashtbl.t = Hashtbl.create 16
 let errors : (int, Errors.t) Hashtbl.t = Hashtbl.create 16
 let auth_managers : (int, Auth_manager.t) Hashtbl.t = Hashtbl.create 16
+
+(* Client-certificate providers created by NewClientCertificateProvider, keyed by
+   id: a provider supplies a (possibly rotating) mTLS certificate, asking the
+   harness for the current one on every call. *)
+let client_certificate_providers : (int, unit -> Tls_client.client_certificate) Hashtbl.t =
+  Hashtbl.create 4
+
 let next_id = ref 0
 
 let new_id () =
@@ -313,6 +320,48 @@ let bearer_auth_token_provider ctx id () =
       | _ -> raise (Backend_error "bad BearerAuthTokenProviderCompleted"))
   | Some _ -> raise (Backend_error "bad requestId in bearer completed")
   | None -> Error (Errors.Service_unavailable "harness closed during bearer auth token supply")
+
+(* Parse a ClientCertificate ({"name": "ClientCertificate", "data": {certfile,
+   keyfile, password}}). *)
+let client_certificate_of_json = function
+  | `Assoc fields -> (
+      match List.assoc_opt "data" fields with
+      | Some (`Assoc data) ->
+          Config.
+            {
+              certfile = string "certfile" data;
+              keyfile = string "keyfile" data;
+              password = opt_string "password" data;
+            }
+      | _ -> raise (Backend_error "bad client certificate"))
+  | _ -> raise (Backend_error "bad client certificate")
+
+(* A client-certificate provider (NewClientCertificateProvider): provide() asks
+   the harness for the current certificate on every call and loads it; a
+   hasUpdate=false reply means the certificate did not change since the last
+   call, so the previously loaded one is reused. *)
+let client_certificate_provider ctx id =
+  let cache = ref None in
+  fun () ->
+    let key = new_id () in
+    match
+      read_completed ctx "ClientCertificateProviderRequest"
+        (`Assoc [ ("id", `Int key); ("clientCertificateProviderId", `Int id) ])
+    with
+    | None -> raise (Backend_error "harness closed during client certificate supply")
+    | Some data -> (
+        match
+          ( List.assoc_opt "requestId" data,
+            List.assoc_opt "hasUpdate" data,
+            List.assoc_opt "clientCertificate" data )
+        with
+        | rid, Some (`Bool has_update), Some certificate when request_id_eq key rid -> (
+            match Conn.client_certificate_of_config (client_certificate_of_json certificate) with
+            | Error error -> raise (Driver_error error)
+            | Ok loaded ->
+                if has_update then cache := Some loaded;
+                Option.value ~default:loaded !cache)
+        | _ -> raise (Backend_error "bad ClientCertificateProviderCompleted"))
 
 let auth_of fields =
   match List.assoc_opt "authorizationToken" fields with
@@ -559,6 +608,28 @@ let new_driver ctx fields =
                 certificates))
     | _ -> None
   in
+  (* A client certificate (mTLS) is either a literal certificate
+     ({certfile,keyfile,password}) or the id of a provider (rotation). *)
+  let client_certificate =
+    match List.assoc_opt "clientCertificate" fields with
+    | Some `Null | None -> None
+    | Some certificate -> Some (client_certificate_of_json certificate)
+  in
+  let client_certificate_provider =
+    match List.assoc_opt "clientCertificateProviderId" fields with
+    | Some (`Int id) -> (
+        match Hashtbl.find_opt client_certificate_providers id with
+        | Some provider -> Some provider
+        | None -> raise (Backend_error "unknown client certificate provider"))
+    | Some (`Intlit id) -> (
+        match int_of_string_opt id with
+        | Some id -> (
+            match Hashtbl.find_opt client_certificate_providers id with
+            | Some provider -> Some provider
+            | None -> raise (Backend_error "unknown client certificate provider"))
+        | None -> raise (Backend_error "bad clientCertificateProviderId"))
+    | _ -> None
+  in
   let custom = if resolver_registered then Some (resolver ctx) else None in
   let custom_domain_name =
     if domain_name_resolver_registered then Some (domain_name_resolver ctx) else None
@@ -623,8 +694,8 @@ let new_driver ctx fields =
   in
   match
     Driver.connect ?resolver:custom ?domain_name_resolver:custom_domain_name ~uri:uri_string ~auth
-      ?auth_manager ~user_agent ~connection_timeout ~encryption ?trusted_certificates ~pool_config
-      ctx.net ctx.clock ctx.sw
+      ?auth_manager ~user_agent ~connection_timeout ~encryption ?trusted_certificates
+      ?client_certificate ?client_certificate_provider ~pool_config ctx.net ctx.clock ctx.sw
   with
   | Error error -> raise (Driver_error error)
   | Ok driver ->
@@ -697,6 +768,19 @@ let auth_token_manager_close fields =
   let id = int "id" fields in
   Hashtbl.remove auth_managers id;
   ("AuthTokenManager", `Assoc [ ("id", `Int id) ])
+
+(* NewClientCertificateProvider: a provider whose [provide] asks the harness for
+   the current client certificate (rotation). *)
+let new_client_certificate_provider ctx _fields =
+  let id = new_id () in
+  Hashtbl.add client_certificate_providers id (client_certificate_provider ctx id);
+  ("ClientCertificateProvider", `Assoc [ ("id", `Int id) ])
+
+(* ClientCertificateProviderClose: drop the provider and echo the id. *)
+let client_certificate_provider_close fields =
+  let id = int "id" fields in
+  Hashtbl.remove client_certificate_providers id;
+  ("ClientCertificateProvider", `Assoc [ ("id", `Int id) ])
 
 (* CheckSessionAuthSupport: whether the server supports re-authentication
    (Bolt >= 5.1), i.e. session-level auth (user switching). A driver connection
@@ -1539,6 +1623,8 @@ let handle ctx name data =
   | "NewBasicAuthTokenManager" -> Some (new_basic_auth_token_manager ctx fields)
   | "NewBearerAuthTokenManager" -> Some (new_bearer_auth_token_manager ctx fields)
   | "AuthTokenManagerClose" -> Some (auth_token_manager_close fields)
+  | "NewClientCertificateProvider" -> Some (new_client_certificate_provider ctx fields)
+  | "ClientCertificateProviderClose" -> Some (client_certificate_provider_close fields)
   | "CheckSessionAuthSupport" -> Some (check_session_auth_support fields)
   | "NewSession" -> Some (new_session fields)
   | "SessionClose" -> Some (session_close fields)

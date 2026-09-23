@@ -144,6 +144,11 @@ TLS_CERT="${NEO4J_TESTKIT_DIR}/tests/tls/certs/driver/trusted/trustedRoot.crt"
 # TESTKIT_TLS_CERTS_DIR.
 TLS_CERTS_DIR="${NEO4J_TESTKIT_DIR}/tests/tls/certs/driver/custom"
 [ -d "$TLS_CERTS_DIR" ] || die "testkit custom TLS certs not found at $TLS_CERTS_DIR"
+# The client-certificate tests pass host-absolute paths to this directory; the
+# container backend must see them at the same absolute path, so it is mounted
+# at its own path (no-op for the host backend).
+TLS_CLIENT_CERTS_DIR="${NEO4J_TESTKIT_DIR}/tests/tls/certs/driver"
+[ -d "$TLS_CLIENT_CERTS_DIR" ] || die "testkit client TLS certs not found at $TLS_CLIENT_CERTS_DIR"
 TLSSERVER_DIR="${NEO4J_TESTKIT_DIR}/tlsserver"
 TLSSERVER_BIN="${TLSSERVER_DIR}/tlsserver"
 [ -f "${TLSSERVER_DIR}/main.go" ] || die "testkit TLS server source not found in $TLSSERVER_DIR"
@@ -211,6 +216,7 @@ else
     -e TESTKIT_TLS_CERTS_DIR=/certs/custom \
     -v "${TLS_CERT}:/certs/trustedRoot.crt:ro" \
     -v "${TLS_CERTS_DIR}:/certs/custom:ro" \
+    -v "${TLS_CLIENT_CERTS_DIR}:${TLS_CLIENT_CERTS_DIR}:ro" \
     -p "${TESTKIT_BACKEND_PORT}:9876" \
     "${TESTKIT_BACKEND_IMAGE}" >/dev/null
   ready=0

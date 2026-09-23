@@ -101,8 +101,8 @@ Remaining (library surface only — the logic already lives in `testkitbackend/c
 - `Driver.supports_multi_db`.
 - `warn_notification_severity` (warnings at the calling-code level) — not implemented anywhere yet.
 
-### Phase A10 — TLS trust options (T1-T4 done, T5-T6 planned)
-The `tests.tls` cases that still skip today: custom CA trust anchors, mTLS client certificates
+### Phase A10 — TLS trust options (done)
+The `tests.tls` suite: custom CA trust anchors, mTLS client certificates
 (single, rotation/provider and password-protected keys) and the explicit
 `encryption`/`trusted_certificates` security config.
 
@@ -179,18 +179,19 @@ are already in the `tls-eio` dependency closure, so no new runtime dependency.
    first eight IV bytes) → AES-128/192/256-CBC or DES-EDE3-CBC → PKCS#7 unpad, then
    `X509.Private_key.decode_pem` under the original label; an encrypted key without a password, a
    wrong password, an unsupported cipher or bad base64 is an error, and a plain key ignores the
-   password. `Conn.load_client_certificate` uses it, so `Config.client_certificate.password` now
-   works. Unit tests cover the plain key, an encrypt/decrypt round trip, the wrong/missing password
-   and — when `NEO4J_TESTKIT_DIR` is set — the real OpenSSL-generated fixture (the decrypted key must
-   match `certificate1.pem`).
-5. **T5 — TestKit client-certificate plumbing**: the provider commands
-   (`NewClientCertificateProvider`/`Close` + the request/completed round-trip), the `NewDriver`
-   `clientCertificate`/`clientCertificateProviderId` fields, the `testkit_tls.sh` cert mounts, and
-   advertising `Feature:API:SSLClientCertificate`. The five client-certificate tests share that one
-   feature, so they can only be enabled once both T4 (password keys) and T5 (provider/rotation) are
-   in.
-6. **T6 — docs + CI**: `README.md`, `usage.mld`/`docs/usage.md`, `scripts/README.md`, and
-   `testkit_tls.sh` reporting the fully executed TLS suite.
+    password. `Conn.load_client_certificate` uses it, so `Config.client_certificate.password` now
+    works. Unit tests cover the plain key, an encrypt/decrypt round trip, the wrong/missing password
+    and the committed OpenSSL-generated fixture under `test/fixtures/` (the decrypted key must match
+    `certificate1.pem`).
+5. **T5 — TestKit client-certificate plumbing** — **Done**: the provider commands
+   (`NewClientCertificateProvider`/`Close` + the `ClientCertificateProviderRequest`/`Completed`
+   round-trip with `has_update` caching), the `NewDriver` `clientCertificate`/`clientCertificateProviderId`
+   fields (the library's `?client_certificate_provider` feeds `Tls_client.wrap` per connection), the
+   `testkit_tls.sh` mount of `certs/driver` at its own absolute path (container), and
+   `Feature:API:SSLClientCertificate`. `scripts/testkit_tls.sh` now runs the whole suite with
+   **0 skips** (`OK`, 43 tests, incl. rotation).
+6. **T6 — docs** — **Done**: `README.md`, `usage.mld`/`docs/usage.md`, `scripts/README.md` and this
+   plan describe the TLS trust options and the mTLS client certificates.
 
 **Risks**
 - The legacy-PEM decryption is the only non-trivial crypto work; it is well specified (EVP_BytesToKey
@@ -215,9 +216,9 @@ JSON-over-TCP backend translating commands onto the **public library API**.
 - **B11 all `tests.stub.*` green** — Done (59 modules, 0 failures, 0 errors).
 - **TLS suites** — `scripts/testkit_tls.sh` runs `tests.tls.*` (Go TLS server, host or container
   backend) and `run_all_tests.sh --tls` adds the phase; the backend reports
-  `Feature:API:SSLSchemes` + `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via
-  `OCAML_EXTRA_CA_CERTS`. The custom-CA (`API:SSLConfig`) tests now run; only the
-  client-certificate (`API:SSLClientCertificate`) tests still skip (Phase A10, T4-T5).
+  `Feature:API:SSLSchemes` + `Feature:API:SSLConfig` + `Feature:API:SSLClientCertificate` +
+  `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via `OCAML_EXTRA_CA_CERTS`. The
+  whole TLS suite is green (**0 skips**, 43 tests).
 
 Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db),
 `OK (skipped=4)` with `NEO4J_EDITION=aura`.
@@ -243,15 +244,16 @@ Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db)
 
 1. **Phase A9** — expose `execute_query`/`EagerResult`, `verify_connectivity`, `supports_multi_db`
    and `warn_notification_severity` in the public library API.
-2. **Phase A10 (TLS)** — mTLS client certificates (incl. password-protected keys); custom CA trust
-   anchors and the explicit `encryption`/`trusted_certificates` config are done (T1-T2).
+2. **Phase A10 (TLS)** — done: custom CA trust anchors, the explicit
+   `encryption`/`trusted_certificates` config, mTLS client certificates (incl. password-protected
+   keys and rotation) and the fully-green `tests.tls` suite.
 3. **Config wiring** — `connection_write_timeout`, `keep_alive` (and `pool_config.connection_timeout`).
 4. **`neodriver_lwt` / `lib/lwt`** — second backend (the `transport.mli` interface is ready).
 5. **B10** — TestKit CI job + server-version matrix.
 6. **C5** — manual GitHub Pages repository setting.
-7. **Docs drift** — `README.md`, `docs/usage.md` and `lib/neodriver/usage.mld` still list done
-   features as "not yet implemented" (notification filtering, telemetry, auto-commit impersonation,
-   `fetch_size`, wired `connection_timeout`, `neo4j://`).
+7. **Docs drift** — `docs/usage.md` / `lib/neodriver/usage.mld` still list "impersonation on
+   auto-commit queries" as not implemented (it is implemented via `Session.run`'s `imp_user`); the
+   high-level-API note there is accurate (Phase A9).
 
 ## Risks and open decisions
 
