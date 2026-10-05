@@ -259,6 +259,23 @@ let verify_authentication t ~auth =
                  "Re-authentication is not supported by this protocol version")
           else Ok true)
 
+(* Verify the driver can establish a connection: acquire a fresh read
+   connection for the default database (a routed driver fetches a routing
+   table and connects to a reader) and return it. The connection is re-acquired
+   on every call, so a changed cluster is re-discovered. *)
+let verify_connectivity t =
+  let* conn = acquire ~mode:Config.Read t in
+  release t conn;
+  Ok ()
+
+(* Whether the server supports multiple databases: a Bolt >= 4.0 protocol
+   capability (the feature may still be disabled server-side). *)
+let supports_multi_db t =
+  let* conn = acquire ~mode:Config.Read t in
+  let supported = (Conn.capabilities conn).supports_multiple_databases in
+  release t conn;
+  Ok supported
+
 let close t =
   match t.connection with Cluster cluster -> Cluster.close cluster | Pool pool -> Pool.close pool
 

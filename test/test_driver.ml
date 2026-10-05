@@ -213,8 +213,55 @@ let eager_result_of_result () =
               check string "summary query" "RETURN 1 AS a, 'x' AS b" eager.summary.query;
               check int "nodes created" 0 eager.summary.counters.nodes_created))
 
-(* --- Explicit security config (phase A10/T1) --- *)
+(* Driver.supports_multi_db reads the multi-database capability from the
+   negotiated protocol version (Bolt >= 4.0). *)
+let supports_multi_db version expected =
+  Test_mock.with_mock
+    (Test_mock.Session (version, ref [], [ Test_mock.Success ]))
+    (fun net clock sw port ->
+      match
+        Driver.connect
+          ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
+          ~auth:(Conn.basic_auth ()) net clock sw
+      with
+      | Error e -> fail (Errors.to_string e)
+      | Ok driver -> (
+          match Driver.supports_multi_db driver with
+          | Ok supported -> check bool "multi-db" expected supported
+          | Error e -> fail (Errors.to_string e)))
 
+let supports_multi_db_bolt3 () = supports_multi_db (3, 0) false
+let supports_multi_db_bolt4 () = supports_multi_db (4, 4) true
+
+(* Driver.verify_connectivity acquires a read connection (connecting and
+   authenticating) and reports success. *)
+let verify_connectivity_ok () =
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), ref [], [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      match
+        Driver.connect
+          ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
+          ~auth:(Conn.basic_auth ()) net clock sw
+      with
+      | Error e -> fail (Errors.to_string e)
+      | Ok driver -> (
+          match Driver.verify_connectivity driver with
+          | Ok () -> ()
+          | Error e -> fail (Errors.to_string e)))
+
+(* A connection failure (unreachable port) propagates from verify_connectivity. *)
+let verify_connectivity_error () =
+  with_env (fun net clock sw ->
+      match Driver.connect ~uri:"bolt://127.0.0.1:1" ~auth:(Conn.basic_auth ()) net clock sw with
+      | Error e -> fail (Errors.to_string e)
+      | Ok driver -> (
+          match Driver.verify_connectivity driver with
+          | Error (Errors.Service_unavailable _) -> ()
+          | Error e -> fail (Errors.to_string e)
+          | Ok () -> fail "expected a connection failure"))
+
+(* --- Explicit security config (phase A10/T1) --- *)
 let contains text substring =
   let n = String.length text and m = String.length substring in
   let rec go i = i + m <= n && (String.equal (String.sub text i m) substring || go (i + 1)) in
@@ -405,6 +452,13 @@ let tests =
     ("[Driver] custom config", [ test_case "config" `Quick custom_config ]);
     ( "[EagerResult] of_result",
       [ test_case "drain into keys/records/summary" `Quick eager_result_of_result ] );
+    ( "[Driver] supports_multi_db Bolt 3",
+      [ test_case "false below Bolt 4" `Quick supports_multi_db_bolt3 ] );
+    ( "[Driver] supports_multi_db Bolt 4",
+      [ test_case "true on Bolt 4+" `Quick supports_multi_db_bolt4 ] );
+    ("[Driver] verify_connectivity", [ test_case "connect + auth" `Quick verify_connectivity_ok ]);
+    ( "[Driver] verify_connectivity error",
+      [ test_case "connection failure propagates" `Quick verify_connectivity_error ] );
     ( "[Driver] encryption scheme defaults",
       [ test_case "scheme selects TLS" `Quick encryption_scheme_defaults ] );
     ( "[Driver] encryption explicit config",

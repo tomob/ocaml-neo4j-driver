@@ -77,6 +77,16 @@ val verify_authentication : t -> auth:Conn.auth -> (bool, Errors.t) result
     authentication error (CredentialsExpired, Forbidden, TokenExpired or Unauthorized); any other
     error (including the missing re-authentication support of Bolt < 5.1) propagates. *)
 
+val verify_connectivity : t -> (unit, Errors.t) result
+(** Verify the driver can establish a connection: acquire a fresh read connection for the default
+    database (a routed driver fetches a routing table and connects to a reader) and release it. The
+    connection is re-acquired on every call, so a changed cluster is re-discovered.
+    @return [Error _] when no connection could be established. *)
+
+val supports_multi_db : t -> (bool, Errors.t) result
+(** Whether the server supports multiple databases, based solely on the Bolt protocol version (Bolt
+    >= 4.0). The feature may still be disabled server-side even when this returns [Ok true]. *)
+
 val close : t -> unit
 (** Close the driver's pool/cluster: idle connections are closed and further [acquire]/[session]
     operations fail. Connections still in use by open sessions are closed (not returned to the pool)
