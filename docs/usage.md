@@ -525,12 +525,35 @@ private key); `client_certificate_provider` supplies a (possibly rotating)
 certificate, fetched on every connection. The `Pem_key` module exposes the
 encrypted-PEM loading directly (`Pem_key.decode ?password`).
 
-## Not yet implemented
+## High-level API
 
-- Impersonation on auto-commit queries (it works in transactions via the BEGIN
-  extra).
-- The high-level API (`execute_query`, `verify_connectivity`,
-  `supports_multi_db`) is not exposed by the library yet (backend-only,
-  TestKit).
+`Driver.execute_query` runs a query in a managed, retried transaction (a fresh
+session per call) and returns all results at once as an `EagerResult`
+(`keys` / `records` / `summary`):
+
+```ocaml
+match
+  Driver.execute_query driver
+    ~query:"MATCH (p:Person) RETURN p.name AS name"
+    ~parameters:[]
+with
+| Ok eager ->
+    List.iter
+      (function [ Values.String name ] -> Printf.printf "%s\n" name | _ -> ())
+      eager.records
+| Error error -> failwith (Errors.to_string error)
+```
+
+- `execute_query` defaults to the driver's implicit bookmark manager (causally
+  chaining the calls); pass `~config:{ Session.default_config with ... }` to
+  control the database, access mode, impersonation, bookmarks and auth.
+- `Driver.verify_connectivity` checks the driver can establish a connection
+  (returns `(unit, Errors.t) result`).
+- `Driver.supports_multi_db` reports whether the server supports multiple
+  databases (a Bolt >= 4.0 capability).
+
+The Python driver's `warn_notification_severity` (turning server notifications
+into native Python warnings) has no OCaml equivalent: notifications are
+available on `Summary.notifications` and are logged through `Log.notifications`.
 
 See [PLAN.md](../PLAN.md) for the full roadmap.

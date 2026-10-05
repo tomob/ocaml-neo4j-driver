@@ -91,15 +91,15 @@ auth-token managers + `Feature:Auth:Managed`; `Backend:MockTime` fake-time provi
 seed RUN/BEGIN/ROUTE from the manager and hand the committed bookmark back; TestKit
 `NewBookmarkManager`.
 
-### Phase A9 — High-level API — Partially done
-Done: `Driver.verify_authentication`, TELEMETRY telemetry, notification filtering, impersonation
-(auto-commit and transactions), idempotent auto-commit retries, `disable_auto_commit_retries`.
-
-Remaining (library surface only — the logic already lives in `testkitbackend/commands.ml`):
-- `Driver.execute_query` + `EagerResult` (keys/records/summary).
-- `Driver.verify_connectivity`.
-- `Driver.supports_multi_db`.
-- `warn_notification_severity` (warnings at the calling-code level) — not implemented anywhere yet.
+### Phase A9 — High-level API — Done
+`Driver.execute_query` (+ `EagerResult` keys/records/summary), `Driver.verify_connectivity` and
+`Driver.supports_multi_db`, backed by the driver's implicit `execute_query_bookmark_manager`; the
+TestKit backend now calls these instead of re-implementing them. `warn_notification_severity` (the
+Python driver's native-warning emission) is intentionally not implemented in OCaml — there is no
+equivalent `warnings` mechanism; notifications are available on `Summary.notifications` and logged
+through `Log.notifications`. Also done here: `Driver.verify_authentication`, TELEMETRY telemetry,
+notification filtering, impersonation (auto-commit and transactions), idempotent auto-commit
+retries, `disable_auto_commit_retries`.
 
 ### Phase A10 — TLS trust options — Done
 Custom CA trust anchors, the explicit `encryption`/`trusted_certificates` security config and mTLS
@@ -149,18 +149,13 @@ Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db)
 
 ## Remaining work (summary)
 
-1. **Phase A9** — expose `execute_query`/`EagerResult`, `verify_connectivity`, `supports_multi_db`
-   and `warn_notification_severity` in the public library API.
-2. **Phase A10 (TLS)** — done: custom CA trust anchors, the explicit
+1. **Phase A10 (TLS)** — done: custom CA trust anchors, the explicit
    `encryption`/`trusted_certificates` config, mTLS client certificates (incl. password-protected
    keys and rotation) and the fully-green `tests.tls` suite.
-3. **Config wiring** — `connection_write_timeout`, `keep_alive` (and `pool_config.connection_timeout`).
-4. **`neodriver_lwt` / `lib/lwt`** — second backend (the `transport.mli` interface is ready).
-5. **B10** — TestKit CI job + server-version matrix.
-6. **C5** — manual GitHub Pages repository setting.
-7. **Docs drift** — `docs/usage.md` / `lib/neodriver/usage.mld` still list "impersonation on
-   auto-commit queries" as not implemented (it is implemented via `Session.run`'s `imp_user`); the
-   high-level-API note there is accurate (Phase A9).
+2. **Config wiring** — `connection_write_timeout`, `keep_alive` (and `pool_config.connection_timeout`).
+3. **`neodriver_lwt` / `lib/lwt`** — second backend (the `transport.mli` interface is ready).
+4. **B10** — TestKit CI job + server-version matrix.
+5. **C5** — manual GitHub Pages repository setting.
 
 ## Risks and open decisions
 

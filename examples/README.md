@@ -78,3 +78,13 @@ without passing bookmarks around). Cleans up the demo nodes at the end.
 ```sh
 dune exec examples/bookmarks.exe
 ```
+
+## execute_query
+
+The high-level API: `Driver.execute_query` runs a query in a managed, retried
+transaction and returns an eager result (`keys` / `records` / `summary`);
+`Driver.verify_connectivity` and `Driver.supports_multi_db` probe the server.
+
+```sh
+dune exec examples/execute_query.exe
+```

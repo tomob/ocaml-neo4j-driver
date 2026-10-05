@@ -39,3 +39,10 @@
  (libraries neodriver neodriver_eio eio_main)
  (enabled_if
   (= %{profile} dev)))
+
+(executable
+ (name execute_query)
+ (modules execute_query common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))

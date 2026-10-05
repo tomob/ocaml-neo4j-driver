@@ -43,6 +43,8 @@ project, running this program and what is going on under the hood.
 - Bolt protocol 3.0, 4.2–4.4, 5.0–5.8 and 6.0.
 - Plain `bolt://` and TLS `bolt+s://` / `bolt+ssc://` connections.
 - Auto-commit queries with lazy streaming results (`Neo4jResult` / `Summary`).
+- The high-level `execute_query` API (eager results) plus `verify_connectivity`
+  and `supports_multi_db`.
 - Explicit and managed transactions with automatic retry.
 - A bounded connection pool (`Driver.session` borrows a connection, returned
   with a RESET on close).
@@ -57,9 +59,7 @@ project, running this program and what is going on under the hood.
 - TestKit conformance: 119 of 126 tests passing (7 skipped — vector on the
   community server and multi-db; 4 skipped with `NEO4J_EDITION=aura`).
 
-Not yet implemented: the high-level `execute_query`/`verify_connectivity`/
-`supports_multi_db` API (backend-only, TestKit). See
-[PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
+See [PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
 
 ## Packages
 
