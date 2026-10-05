@@ -71,10 +71,6 @@ type driver = {
   (* Disables the auto-commit retry after an idempotent server failure (Bolt >= 6.0); sessions may
      override it. *)
   disable_auto_commit_retries : bool;
-  (* The driver's implicit (Neo4j-style) bookmark manager, used by
-     driver.execute_query when no bookmark manager is configured (the analogue
-     of the Python [execute_query_bookmark_manager]). *)
-  default_manager : Bookmark_manager.t;
   driver : Driver.t;
 }
 
@@ -419,7 +415,8 @@ let custom_bookmark_manager id =
 
 (* Resolve a [bookmarkManagerId] JSON entry to a manager: [-1] disables it; an
    absent / null entry means [default] — [None] for a NewSession, the driver's
-   implicit manager for driver.execute_query. *)
+   implicit manager ([Driver.execute_query_bookmark_manager]) for
+   driver.execute_query. *)
 let bookmark_manager_of_field ~default fields =
   match List.assoc_opt "bookmarkManagerId" fields with
   | None -> default
@@ -711,7 +708,6 @@ let new_driver ctx fields =
           encrypted = Driver.is_encrypted driver;
           fetch_size;
           disable_auto_commit_retries;
-          default_manager = Bookmark_manager.neo4j_bookmark_manager ();
           driver;
         };
       ("Driver", `Assoc [ ("id", `Int id) ])
@@ -913,13 +909,8 @@ let resolver_resolution_completed fields =
 let verify_connectivity fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  (* Acquire a fresh connection for the default database (a routed driver
-     fetches a routing table and connects to a reader); re-acquired on every
-     call so a changed cluster is re-discovered. *)
-  match Driver.acquire ~mode:Config.Read driver.driver with
-  | Ok conn ->
-      Driver.release driver.driver conn;
-      ("Driver", `Assoc [ ("id", `Int id) ])
+  match Driver.verify_connectivity driver.driver with
+  | Ok () -> ("Driver", `Assoc [ ("id", `Int id) ])
   | Error error -> raise (Driver_error error)
 
 let get_server_info fields =
@@ -943,14 +934,8 @@ let get_server_info fields =
 let check_multi_db_support fields =
   let id = int "driverId" fields in
   let driver = get_driver id in
-  (* A lightweight connectivity check: acquire a connection for the default
-     database (a routed driver fetches a routing table and connects to a
-     reader); multi-db support is a Bolt 4+ protocol capability. *)
-  match Driver.acquire ~mode:Config.Read driver.driver with
-  | Ok conn ->
-      let major, _minor = Conn.version conn in
-      Driver.release driver.driver conn;
-      ("MultiDBSupport", `Assoc [ ("id", `Int id); ("available", `Bool (major >= 4)) ])
+  match Driver.supports_multi_db driver.driver with
+  | Ok available -> ("MultiDBSupport", `Assoc [ ("id", `Int id); ("available", `Bool available) ])
   | Error error -> raise (Driver_error error)
 
 let decode_params fields =
@@ -1535,9 +1520,11 @@ let execute_query _ctx fields =
   (* The bookmark manager of this call: the driver's implicit one (no
      bookmarkManagerId or null), an explicit one, or none (-1). *)
   let bookmark_manager =
-    bookmark_manager_of_field ~default:(Some driver.default_manager) config_fields
+    bookmark_manager_of_field
+      ~default:(Some (Driver.execute_query_bookmark_manager driver.driver))
+      config_fields
   in
-  let session_config =
+  let config =
     Session.
       {
         database;
@@ -1556,51 +1543,16 @@ let execute_query _ctx fields =
         notifications_disabled_categories = None;
       }
   in
-  let session = Driver.session ~config:session_config driver.driver in
-  let eager = ref None in
-  let work tx =
-    eager := None;
-    match Session.tx_conn session with
-    | Error error -> Error (Session.Driver error)
-    | Ok conn -> (
-        let hydration = Conn.hydration conn in
-        match Tx.run tx ~hydration ~query:cypher ~parameters with
-        | Error error -> Error (Session.Driver error)
-        | Ok result -> (
-            let keys = Neo4jResult.keys result in
-            match Neo4jResult.values result with
-            | Error error -> Error (Session.Driver error)
-            | Ok records -> (
-                match Neo4jResult.consume result with
-                | Error error -> Error (Session.Driver error)
-                | Ok summary ->
-                    eager := Some (keys, records, summary);
-                    Ok ())))
-  in
-  let outcome =
-    Session.execute session ~mode:access_mode ?metadata ?timeout ~telemetry:3 ~pipeline_begin:true
-      work
-  in
-  let response =
-    match outcome with
-    | Ok () -> (
-        (* The session updated the bookmark manager itself when the commit
-           succeeded (its bookmark supersedes the bookmarks that were sent). *)
-        match !eager with
-        | Some (keys, records, summary) ->
-            ( "EagerResult",
-              `Assoc
-                [
-                  ("keys", `List (List.map (fun k -> `String k) keys));
-                  ("records", `List (List.map record_json records));
-                  ("summary", summary_json summary);
-                ] )
-        | None -> raise (Backend_error "execute_query succeeded without a result"))
-    | Error (Session.Driver error) -> raise (Driver_error error)
-    | Error Session.Client -> raise (Backend_error "execute_query client error")
-  in
-  Session.close session;
-  response
+  match Driver.execute_query ~config ?metadata ?timeout driver.driver ~query:cypher ~parameters with
+  | Ok ({ keys; records; summary } : EagerResult.t) ->
+      ( "EagerResult",
+        `Assoc
+          [
+            ("keys", `List (List.map (fun k -> `String k) keys));
+            ("records", `List (List.map record_json records));
+            ("summary", summary_json summary);
+          ] )
+  | Error error -> raise (Driver_error error)
 
 let handle ctx name data =
   let fields =
