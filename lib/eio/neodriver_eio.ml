@@ -15,6 +15,7 @@ module Session = Session
 module Pool = Pool
 module Cluster = Cluster
 module Neo4jResult = Neo4j_result
+module EagerResult = Eager_result
 module Summary = Summary
 module Bookmarks = Neodriver_core.Bookmarks
 module Bookmark_manager = Neodriver_core.Bookmark_manager

@@ -14,6 +14,8 @@ user-facing connection, session and transaction layers, in direct style
   ROLLBACK).
 - {!module:Neodriver_eio.Neo4jResult} — a lazily-streamed query result
   (next / peek / fetch / consume / single).
+- {!module:Neodriver_eio.EagerResult} — an in-memory (eager) query result
+  (keys / records / summary).
 - {!module:Neodriver_eio.Summary} — the summary of a query result (counters,
   plan, notifications).
 - {!module:Neodriver_eio.Transport}, {!module:Neodriver_eio.Bolt},

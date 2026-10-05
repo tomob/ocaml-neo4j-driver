@@ -166,6 +166,53 @@ let custom_config () =
           check (list string) "bookmarks" [ "bm-1" ] bookmarks
       | _ -> fail "expected RUN with query, parameters and extra")
 
+(* EagerResult.of_result drains a lazy auto-commit result into its keys,
+   records and summary. *)
+let eager_result_of_result () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success_meta
+             [ ("fields", Packstream.List [ Packstream.String "a"; Packstream.String "b" ]) ];
+           Test_mock.Records
+             ( [
+                 [ Packstream.Int 1L; Packstream.String "x" ];
+                 [ Packstream.Int 2L; Packstream.String "y" ];
+               ],
+               false );
+         ] ))
+    (fun net clock sw port ->
+      let session =
+        match
+          Driver.connect
+            ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
+            ~auth:(Conn.basic_auth ()) net clock sw
+        with
+        | Ok driver -> Driver.session driver
+        | Error e -> fail (Errors.to_string e)
+      in
+      match Session.run session ~query:"RETURN 1 AS a, 'x' AS b" ~parameters:[] with
+      | Error e -> fail (Errors.to_string e)
+      | Ok result -> (
+          match EagerResult.of_result result with
+          | Error e -> fail (Errors.to_string e)
+          | Ok eager ->
+              check (list string) "keys" [ "a"; "b" ] eager.keys;
+              (match eager.records with
+              | [ [ Values.Int a; Values.String b ]; [ Values.Int c; Values.String d ] ] ->
+                  check int64 "first int" 1L a;
+                  check string "first string" "x" b;
+                  check int64 "second int" 2L c;
+                  check string "second string" "y" d
+              | _ -> fail "expected two records of [int; string]");
+              check string "summary query" "RETURN 1 AS a, 'x' AS b" eager.summary.query;
+              check int "nodes created" 0 eager.summary.counters.nodes_created))
+
 (* --- Explicit security config (phase A10/T1) --- *)
 
 let contains text substring =
@@ -356,6 +403,8 @@ let tests =
     ("[Driver] neo4j:// lazy", [ test_case "lazy reject" `Quick neo4j_uri_lazy ]);
     ("[Driver] connect and run", [ test_case "connect" `Quick connect_and_run ]);
     ("[Driver] custom config", [ test_case "config" `Quick custom_config ]);
+    ( "[EagerResult] of_result",
+      [ test_case "drain into keys/records/summary" `Quick eager_result_of_result ] );
     ( "[Driver] encryption scheme defaults",
       [ test_case "scheme selects TLS" `Quick encryption_scheme_defaults ] );
     ( "[Driver] encryption explicit config",

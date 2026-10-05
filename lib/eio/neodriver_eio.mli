@@ -42,6 +42,9 @@ module Cluster = Cluster
 module Neo4jResult = Neo4j_result
 (** A lazily-streamed query result (next/peek/fetch/consume/single). *)
 
+module EagerResult = Eager_result
+(** An in-memory (eager) query result (keys / records / summary). *)
+
 module Summary = Summary
 (** The summary of a query result (counters, plan, notifications, ...). *)
 

@@ -75,6 +75,9 @@ module Cluster = Neodriver_eio.Cluster
 module Neo4jResult = Neodriver_eio.Neo4jResult
 (** A lazily-streamed query result (next/peek/fetch/consume/single). *)
 
+module EagerResult = Neodriver_eio.EagerResult
+(** An in-memory (eager) query result (keys / records / summary). *)
+
 module Summary = Neodriver_eio.Summary
 (** The summary of a query result (counters, plan, notifications, ...). *)
 

@@ -28,6 +28,7 @@ module Bolt = Neodriver_eio.Bolt
 module State = Neodriver_eio.State
 module Cluster = Neodriver_eio.Cluster
 module Neo4jResult = Neodriver_eio.Neo4jResult
+module EagerResult = Neodriver_eio.EagerResult
 module Summary = Neodriver_eio.Summary
 module Driver = Neodriver_eio.Driver
 module Log = Neodriver_eio.Log

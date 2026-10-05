@@ -78,7 +78,7 @@ The per-package module documentation (each root module re-exports its API):
 - {{:../neodriver_core/Neodriver_core/index.html }Neodriver_core} — Errors, Config,
   Addressing, Deadline, Temporal, Values, Hydration, Capabilities.
 - {{:../neodriver_eio/Neodriver_eio/index.html }Neodriver_eio} — Driver, Conn, Session,
-  Tx, Neo4jResult, Summary, Transport, Bolt, State, Handshake.
+  Tx, Neo4jResult, EagerResult, Summary, Transport, Bolt, State, Handshake.
 - {{:../neodriver_packstream/Neodriver_packstream/index.html }Neodriver_packstream} —
   Packstream.
 
@@ -89,7 +89,8 @@ The root {!module:Neodriver} re-exports the whole API:
 - connection and transport: {!module:Neodriver.Conn}, {!module:Neodriver.Transport},
   {!module:Neodriver.Bolt}, {!module:Neodriver.State};
 - sessions and transactions: {!module:Neodriver.Session}, {!module:Neodriver.Tx};
-- results: {!module:Neodriver.Neo4jResult}, {!module:Neodriver.Summary};
+- results: {!module:Neodriver.Neo4jResult}, {!module:Neodriver.EagerResult},
+  {!module:Neodriver.Summary};
 - the entry point: {!module:Neodriver.Driver};
 - core types: {!module:Neodriver.Packstream}, {!module:Neodriver.Errors},
   {!module:Neodriver.Config}, {!module:Neodriver.Addressing},
