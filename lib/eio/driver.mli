@@ -87,6 +87,27 @@ val supports_multi_db : t -> (bool, Errors.t) result
 (** Whether the server supports multiple databases, based solely on the Bolt protocol version (Bolt
     >= 4.0). The feature may still be disabled server-side even when this returns [Ok true]. *)
 
+val execute_query_bookmark_manager : t -> Bookmark_manager.t
+(** The driver's implicit (Neo4j-style) bookmark manager, used by {!execute_query} when no [~config]
+    (or a config without its own [bookmark_manager]) is given — the analogue of the Python
+    [Driver.execute_query_bookmark_manager]. *)
+
+val execute_query :
+  ?config:Session.config ->
+  ?metadata:(string * Values.t) list ->
+  ?timeout:float ->
+  t ->
+  query:string ->
+  parameters:(string * Values.t) list ->
+  (Eager_result.t, Errors.t) result
+(** Execute [query] in a managed, retried transaction (a fresh session per call) and return its
+    eager result, like the Python driver's [Driver.execute_query]. [config] defaults to
+    [Session.default_config] with the driver's implicit bookmark manager (see
+    {!execute_query_bookmark_manager}); an explicit [config] controls the session settings exactly
+    ([database], [access_mode], [impersonated_user], [bookmarks], [auth], ...). [metadata] and
+    [timeout] are the transaction metadata and timeout. The result is drained eagerly into an
+    [Eager_result.t], so a retry re-runs the query against a fresh connection. *)
+
 val close : t -> unit
 (** Close the driver's pool/cluster: idle connections are closed and further [acquire]/[session]
     operations fail. Connections still in use by open sessions are closed (not returned to the pool)

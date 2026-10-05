@@ -261,6 +261,42 @@ let verify_connectivity_error () =
           | Error e -> fail (Errors.to_string e)
           | Ok () -> fail "expected a connection failure"))
 
+(* Driver.execute_query runs the query in a managed transaction (BEGIN pipelined
+   with the first RUN, then PULL and COMMIT) and returns an eager result. *)
+let execute_query_eager () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success_meta [ ("fields", Packstream.List [ Packstream.String "n" ]) ];
+           Test_mock.Records ([ [ Packstream.Int 1L ] ], false);
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      let driver =
+        match
+          Driver.connect
+            ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
+            ~auth:(Conn.basic_auth ()) net clock sw
+        with
+        | Ok driver -> driver
+        | Error e -> fail (Errors.to_string e)
+      in
+      match Driver.execute_query driver ~query:"RETURN 1 AS n" ~parameters:[] with
+      | Error e -> fail (Errors.to_string e)
+      | Ok eager ->
+          check (list string) "keys" [ "n" ] eager.keys;
+          (match eager.records with
+          | [ [ Values.Int n ] ] -> check int64 "value" 1L n
+          | _ -> fail "expected one record of [int]");
+          check string "summary query" "RETURN 1 AS n" eager.summary.query;
+          check (list int) "wire" [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ] (message_tags received))
+
 (* --- Explicit security config (phase A10/T1) --- *)
 let contains text substring =
   let n = String.length text and m = String.length substring in
@@ -459,6 +495,8 @@ let tests =
     ("[Driver] verify_connectivity", [ test_case "connect + auth" `Quick verify_connectivity_ok ]);
     ( "[Driver] verify_connectivity error",
       [ test_case "connection failure propagates" `Quick verify_connectivity_error ] );
+    ( "[Driver] execute_query",
+      [ test_case "eager result via managed tx" `Quick execute_query_eager ] );
     ( "[Driver] encryption scheme defaults",
       [ test_case "scheme selects TLS" `Quick encryption_scheme_defaults ] );
     ( "[Driver] encryption explicit config",

@@ -20,6 +20,7 @@ type t = {
   clock : Mtime.t Eio.Time.clock_ty Eio.Resource.t;
   connection : cluster_or_pool;
   encrypted : bool;
+  query_bookmark_manager : Bookmark_manager.t;
 }
 
 (* The target connection configuration for a single address. *)
@@ -149,7 +150,13 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
         make_pool ?resolver ?domain_name_resolver ~parsed ~pool_config ~connection_timeout
           ~user_agent ~auth_manager ~client_certificate_provider net clock sw
   in
-  Ok { clock; connection; encrypted }
+  Ok
+    {
+      clock;
+      connection;
+      encrypted;
+      query_bookmark_manager = Bookmark_manager.neo4j_bookmark_manager ();
+    }
 
 let is_encrypted t = t.encrypted
 
@@ -275,6 +282,48 @@ let supports_multi_db t =
   let supported = (Conn.capabilities conn).supports_multiple_databases in
   release t conn;
   Ok supported
+
+let execute_query_bookmark_manager t = t.query_bookmark_manager
+
+(* Execute [query] in a managed, retried transaction (a fresh session per call)
+   and return its eager result, like the Python driver's [Driver.execute_query].
+   The TELEMETRY feature code 3 identifies the execute_query API, and the BEGIN
+   is pipelined with the first RUN. *)
+let execute_query ?config ?metadata ?timeout t ~query ~parameters =
+  let config =
+    match config with
+    | Some config -> config
+    | None -> { Session.default_config with bookmark_manager = Some t.query_bookmark_manager }
+  in
+  let session = session ~config t in
+  let eager = ref None in
+  let work tx =
+    eager := None;
+    match Session.tx_conn session with
+    | Error error -> Error (Session.Driver error)
+    | Ok conn -> (
+        let hydration = Conn.hydration conn in
+        match Tx.run tx ~hydration ~query ~parameters with
+        | Error error -> Error (Session.Driver error)
+        | Ok result -> (
+            match Eager_result.of_result result with
+            | Error error -> Error (Session.Driver error)
+            | Ok eager_result ->
+                eager := Some eager_result;
+                Ok ()))
+  in
+  let outcome =
+    Session.execute session ~mode:config.access_mode ?metadata ?timeout ~telemetry:3
+      ~pipeline_begin:true work
+  in
+  Session.close session;
+  match outcome with
+  | Ok () -> (
+      match !eager with
+      | Some eager_result -> Ok eager_result
+      | None -> Error (Errors.Session_error "execute_query succeeded without a result"))
+  | Error (Session.Driver error) -> Error error
+  | Error Session.Client -> Error (Errors.Session_error "execute_query failed")
 
 let close t =
   match t.connection with Cluster cluster -> Cluster.close cluster | Pool pool -> Pool.close pool
