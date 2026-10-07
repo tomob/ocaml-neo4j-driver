@@ -5,10 +5,14 @@
 open Neodriver_core
 
 type t
-(** A TCP transport with a bounded read/write timeout and Bolt chunk framing. *)
+(** A TCP transport with a bounded read/write timeout, a TCP keep-alive flag and Bolt chunk framing.
+*)
 
 val id : t -> int
 (** The connection id of this transport (rendered as "[#XXXX]" in log lines; see [Log.conn]). *)
+
+val keep_alive : t -> bool
+(** Whether TCP keep-alive ([SO_KEEPALIVE]) is enabled on the connection's socket. *)
 
 val set_read_timeout : t -> Eio.Time.Timeout.t -> unit
 (** Replace the timeout bounding reads (and writes) on the connection. The server advertises a
@@ -28,12 +32,15 @@ val connect :
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   Eio.Switch.t ->
   ?timeout:Eio.Time.Timeout.t ->
+  ?keep_alive:bool ->
   ?tls:tls_mode ->
   Addressing.t ->
   (t, Errors.t) result
 (** Open a TCP connection to [address] (resolving host names as needed) and return a transport. Each
     resolved address (IPv4 and IPv6) is tried in turn until one connects. If [tls] is [Secure _],
-    the connection is wrapped in TLS before returning. The TCP connect and TLS handshake share a
+    the connection is wrapped in TLS before returning. [keep_alive] (default [true]) sets the
+    [SO_KEEPALIVE] socket option on the TCP socket (before any TLS wrap); a failure to set it is
+    treated like a connection failure for that address. The TCP connect and TLS handshake share a
     single [timeout] deadline; reads/writes on the result are bounded by the same deadline. The
     default ([Eio.Time.Timeout.none]) imposes no deadline.
     @return

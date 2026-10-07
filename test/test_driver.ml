@@ -297,6 +297,32 @@ let execute_query_eager () =
           check string "summary query" "RETURN 1 AS n" eager.summary.query;
           check (list int) "wire" [ 0x01; 0x6A; 0x11; 0x10; 0x3F; 0x12 ] (message_tags received))
 
+(* keep_alive is plumbed from pool_config into the connection's TCP socket. *)
+let keep_alive_plumbed () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session ((5, 4), received, [ Test_mock.Success; Test_mock.Success ]))
+    (fun net clock sw port ->
+      let pool_config =
+        match Config.make_pool_config ~keep_alive:false () with
+        | Ok pool_config -> pool_config
+        | Error error -> fail (Errors.to_string error)
+      in
+      let driver =
+        match
+          Driver.connect
+            ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
+            ~auth:(Conn.basic_auth ()) ~pool_config net clock sw
+        with
+        | Ok driver -> driver
+        | Error error -> fail (Errors.to_string error)
+      in
+      match Driver.acquire driver with
+      | Ok conn ->
+          check bool "keepalive plumbed" false (Conn.keep_alive conn);
+          Driver.release driver conn
+      | Error error -> fail (Errors.to_string error))
+
 (* --- Explicit security config (phase A10/T1) --- *)
 let contains text substring =
   let n = String.length text and m = String.length substring in
@@ -497,6 +523,7 @@ let tests =
       [ test_case "connection failure propagates" `Quick verify_connectivity_error ] );
     ( "[Driver] execute_query",
       [ test_case "eager result via managed tx" `Quick execute_query_eager ] );
+    ("[Driver] keep_alive", [ test_case "pool_config plumbed to socket" `Quick keep_alive_plumbed ]);
     ( "[Driver] encryption scheme defaults",
       [ test_case "scheme selects TLS" `Quick encryption_scheme_defaults ] );
     ( "[Driver] encryption explicit config",

@@ -42,6 +42,7 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
       telemetry_disabled = pool_config.telemetry_disabled;
       notifications_min_severity = pool_config.notifications_min_severity;
       notifications_disabled_categories = pool_config.notifications_disabled_categories;
+      keep_alive = pool_config.keep_alive;
     }
 
 (* The routing cluster for a [neo4j://] URI: its address is the initial router

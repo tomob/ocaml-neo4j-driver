@@ -51,4 +51,5 @@ let conn_config ?scheme ?password (env : t) =
       telemetry_disabled = false;
       notifications_min_severity = None;
       notifications_disabled_categories = None;
+      keep_alive = true;
     }

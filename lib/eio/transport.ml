@@ -2,10 +2,8 @@
 
    Modeled on the Neo4j Python driver's _async/io/_bolt_socket.py. Provides
    deadline-bounded reads/writes and the Bolt chunk framing (16-bit chunk size
-   prefixes, a 0x0000 terminator and NOOP skipping).
-
-   Note: SO_KEEPALIVE is not exposed by Eio's portable Net API and is deferred
-   until a platform-specific mechanism is available. *)
+   prefixes, a 0x0000 terminator and NOOP skipping). SO_KEEPALIVE is set on the
+   TCP socket through [Eio.Net.Sockopt] (Eio >= 1.4). *)
 
 open Eio.Std
 open Neodriver_core
@@ -18,12 +16,17 @@ type tls_mode = Plain | Secure of Tls_client.config
 type t = {
   id : int;
   socket : [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r;
+  raw : [ `Socket | `Close ] r;
   mutable timeout : Eio.Time.Timeout.t;
 }
 
 (* Bolt messages are sent in chunks of at most 64 KiB; the drivers use 16 KiB. *)
 let chunk_size = 16384
 let id t = t.id
+
+(* Whether TCP keep-alive is enabled on the connection's socket (reads the
+   SO_KEEPALIVE option back). *)
+let keep_alive t = Eio.Net.getsockopt t.raw Eio.Net.Sockopt.SO_KEEPALIVE
 
 (* Replace the timeout bounding reads (and writes) on the connection: the
    server advertises a receive timeout through the [connection.recv_timeout_seconds]
@@ -46,7 +49,21 @@ let sockaddrs_of_address net = function
       | Eio.Io (Eio.Net.E _, _) when String.equal (String.lowercase_ascii host) "localhost" ->
         [ `Tcp (Eio.Net.Ipaddr.V4.loopback, port); `Tcp (Eio.Net.Ipaddr.V6.loopback, port) ])
 
-let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
+(* Set SO_KEEPALIVE on the connected TCP socket. A failure is treated like a
+   connection failure for that address (the Python driver lets the setsockopt
+   exception fail the connection). *)
+let set_keep_alive socket keep_alive =
+  try
+    Eio.Net.setsockopt socket Eio.Net.Sockopt.SO_KEEPALIVE keep_alive;
+    Ok ()
+  with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn ->
+      Error
+        (Errors.Service_unavailable
+           (Printf.sprintf "Could not set SO_KEEPALIVE: %s" (Printexc.to_string exn)))
+
+let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(keep_alive = true) ?(tls = Plain) address =
   (* One total deadline covering every TCP connect / TLS handshake attempt. *)
   let with_timeout f =
     try Eio.Time.Timeout.run_exn timeout f with
@@ -113,13 +130,22 @@ let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(tls = Plain) address =
                       rest
                 | Ok socket -> (
                     let id = Log.next_id () in
-                    match secure id socket with
-                    | Ok socket -> Ok { socket; timeout; id }
+                    let raw = (socket :> [ `Socket | `Close ] r) in
+                    match set_keep_alive socket keep_alive with
                     | Error error ->
+                        (try Eio.Resource.close socket with _ -> ());
                         Log.debug Log.io (fun m ->
                             m "[#0000]  S: <CONNECTION FAILED> %s %s" (sockaddr_str sockaddr)
                               (Errors.to_string error));
-                        go (sockaddr_str sockaddr :: failed) (error :: errors) rest))
+                        go (sockaddr_str sockaddr :: failed) (error :: errors) rest
+                    | Ok () -> (
+                        match secure id socket with
+                        | Ok socket -> Ok { socket; raw; timeout; id }
+                        | Error error ->
+                            Log.debug Log.io (fun m ->
+                                m "[#0000]  S: <CONNECTION FAILED> %s %s" (sockaddr_str sockaddr)
+                                  (Errors.to_string error));
+                            go (sockaddr_str sockaddr :: failed) (error :: errors) rest)))
           in
           go [] [] sockaddrs)
 

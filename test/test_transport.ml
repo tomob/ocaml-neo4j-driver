@@ -83,6 +83,33 @@ let contains_substring sub s =
   in
   sub_len = 0 || go 0
 
+(* TCP keep-alive: Transport.connect sets SO_KEEPALIVE on the socket (read back
+   through Eio.Net.getsockopt). *)
+let keep_alive_default () =
+  Test_mock.with_server
+    (fun _clock _flow -> ())
+    (fun net clock sw port ->
+      match connect net clock sw port with
+      | Error error -> fail (Errors.to_string error)
+      | Ok transport ->
+          check bool "keepalive default" true (Transport.keep_alive transport);
+          Transport.close transport)
+
+let keep_alive_disabled () =
+  Test_mock.with_server
+    (fun _clock _flow -> ())
+    (fun net clock sw port ->
+      let address = Addressing.IPv4 ("127.0.0.1", port) in
+      match
+        Transport.connect net sw
+          ~timeout:(Eio.Time.Timeout.seconds clock 1.0)
+          ~keep_alive:false address
+      with
+      | Error error -> fail (Errors.to_string error)
+      | Ok transport ->
+          check bool "keepalive disabled" false (Transport.keep_alive transport);
+          Transport.close transport)
+
 (* Connecting to a closed port fails with an aggregated Service_unavailable
    message naming the address (exercises the multi-address failure path). *)
 let closed_port () =
@@ -122,5 +149,9 @@ let tests =
     ("[Transport] echo", [ test_case "write/read_exact echo" `Quick echo ]);
     ("[Transport] framing_round_trip", [ test_case "multi-chunk framing" `Quick framing_round_trip ]);
     ("[Transport] noop_skip", [ test_case "NOOP skipping" `Quick noop_skip ]);
+    ( "[Transport] keep_alive default",
+      [ test_case "SO_KEEPALIVE on by default" `Quick keep_alive_default ] );
+    ( "[Transport] keep_alive disabled",
+      [ test_case "SO_KEEPALIVE off when requested" `Quick keep_alive_disabled ] );
     ("[Transport] closed_port", [ test_case "aggregated connect failure" `Quick closed_port ]);
   ]

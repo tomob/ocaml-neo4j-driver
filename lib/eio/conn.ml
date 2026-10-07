@@ -27,6 +27,7 @@ type config = {
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
+  keep_alive : bool;
 }
 
 type t = {
@@ -282,6 +283,7 @@ let id t = Transport.id t.transport
    is not in a clean state and needs a RESET before it can be reused. *)
 let is_failed t = State.failed !(t.state)
 let address t = t.address
+let keep_alive t = Transport.keep_alive t.transport
 
 (* The connection reports request failures to an optional callback (installed by
    the routing cluster to deactivate dead addresses, and by the pool to handle
@@ -659,7 +661,8 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
   in
   let connect_single address =
     let* transport =
-      Transport.connect net sw ~timeout:(timeout_of_config clock config) ~tls address
+      Transport.connect net sw ~timeout:(timeout_of_config clock config)
+        ~keep_alive:config.keep_alive ~tls address
     in
     Transport.set_read_timeout transport Eio.Time.Timeout.none;
     let keep = ref false in

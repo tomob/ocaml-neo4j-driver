@@ -25,6 +25,7 @@ type config = {
   telemetry_disabled : bool;
   notifications_min_severity : string option;
   notifications_disabled_categories : string list option;
+  keep_alive : bool;
 }
 (** Target connection settings. The scheme selects TLS: [Bolt] plain, [Bolt_secure] TLS with
     certificate validation, [Bolt_self_signed] TLS without validation; [encryption] and
@@ -35,7 +36,8 @@ type config = {
     [telemetry_disabled] suppresses the Bolt 5.4+ TELEMETRY notifications.
     [notifications_min_severity] and [notifications_disabled_categories] are the driver-level
     notification filtering settings carried in HELLO on Bolt >= 5.2 ([None] omits the field;
-    [Some []] sends an empty category list). *)
+    [Some []] sends an empty category list). [keep_alive] sets the [SO_KEEPALIVE] socket option on
+    the TCP socket (default [true]). *)
 
 val client_certificate_of_config :
   Config.client_certificate -> (Tls_client.client_certificate, Errors.t) result
@@ -102,6 +104,9 @@ val connect :
 
 val address : t -> Addressing.t
 (** The resolved address the connection is established with. *)
+
+val keep_alive : t -> bool
+(** Whether TCP keep-alive ([SO_KEEPALIVE]) is enabled on the connection's socket. *)
 
 val version : t -> int * int
 (** The negotiated protocol version [(major, minor)]. *)

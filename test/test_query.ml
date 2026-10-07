@@ -21,6 +21,7 @@ let config host port =
       telemetry_disabled = false;
       notifications_min_severity = None;
       notifications_disabled_categories = None;
+      keep_alive = true;
     }
 
 let connect net clock sw port =

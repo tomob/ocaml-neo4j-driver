@@ -441,9 +441,10 @@ The pool honors [max_connection_pool_size], [connection_acquisition_timeout],
 require the server to advertise [telemetry.enabled]);
 [notifications_min_severity] and [notifications_disabled_categories] are the
 driver-level notification filtering settings sent in HELLO (Bolt >= 5.2;
-[None] omits the field, [Some []] sends an empty category list).
-[connection_timeout], [connection_write_timeout] and [keep_alive] are not wired
-yet. [disable_auto_commit_retries] turns off
+[None] omits the field, [Some []] sends an empty category list). [keep_alive]
+sets the [SO_KEEPALIVE] socket option on every TCP connection (default [true];
+a failure to set it fails the connection); [connection_timeout] and
+[connection_write_timeout] are not wired yet. [disable_auto_commit_retries] turns off
 the automatic one-shot retry of an auto-commit [Session.run] after a server
 failure marked idempotent — the Bolt >= 6.0 [diagnostic_record._idempotent]
 flag — which is on by default (like the Python driver).

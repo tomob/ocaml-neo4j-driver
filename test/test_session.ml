@@ -25,6 +25,7 @@ let config host port scheme =
       telemetry_disabled = false;
       notifications_min_severity = None;
       notifications_disabled_categories = None;
+      keep_alive = true;
     }
 
 let unpack_message bytes =
