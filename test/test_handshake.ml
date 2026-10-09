@@ -54,6 +54,22 @@ let manifest_highest () =
       | Ok (major, minor) -> check (pair int int) "manifest highest" (6, 0) (major, minor)
       | Error error -> fail (Errors.to_string error))
 
+(* A server-controlled offering count is bounded: an oversized count is rejected
+   instead of allocating that many offerings. *)
+let manifest_too_many () =
+  Test_mock.with_mock (Test_mock.Manifest_count 100) (fun net clock sw port ->
+      match negotiate net clock sw port with
+      | Ok _ -> fail "an oversized manifest count should fail"
+      | Error _ -> ())
+
+(* A count varint that never terminates is rejected rather than looping or
+   overflowing the shift. *)
+let manifest_oversized_varint () =
+  Test_mock.with_mock Test_mock.Manifest_oversized_varint (fun net clock sw port ->
+      match negotiate net clock sw port with
+      | Ok _ -> fail "an oversized varint should fail"
+      | Error _ -> ())
+
 let tests =
   [
     ("[Handshake] v1", [ test_case "v1 negotiation" `Quick v1 ]);
@@ -63,4 +79,8 @@ let tests =
       [ test_case "unknown manifest version" `Quick manifest_unknown ] );
     ("[Handshake] manifest", [ test_case "manifest negotiation" `Quick manifest ]);
     ("[Handshake] manifest_highest", [ test_case "manifest picks highest" `Quick manifest_highest ]);
+    ( "[Handshake] manifest_too_many",
+      [ test_case "oversized manifest count rejected" `Quick manifest_too_many ] );
+    ( "[Handshake] manifest_oversized_varint",
+      [ test_case "oversized varint rejected" `Quick manifest_oversized_varint ] );
   ]

@@ -18,6 +18,8 @@ type behavior =
   | Http
   | Manifest_unknown
   | Manifest of (int * int * int) list
+  | Manifest_count of int
+  | Manifest_oversized_varint
   | Session of (int * int) * Bytes.t list ref * response list
   (* handshake at the given version, then read one Bolt message per
          [response], recording each in [received] and replying accordingly *)
@@ -158,6 +160,16 @@ let rec serve_behavior ?clock behavior flow =
   | Reject -> write flow "\x00\x00\x00\x00"
   | Http -> write flow "HTTP"
   | Manifest_unknown -> write flow "\x00\x00\x02\xff"
+  | Manifest_count count ->
+      (* A manifest v1 whose offering count is [count]; the offerings themselves
+         are not sent, so a client that rejects the count never reads them. *)
+      write flow "\x00\x00\x01\xff";
+      write flow (varint count)
+  | Manifest_oversized_varint ->
+      (* A manifest v1 whose count varint is a run of continuation bytes that
+         never terminates. *)
+      write flow "\x00\x00\x01\xff";
+      write flow (String.make 10 '\x80')
   | Manifest offerings ->
       write flow "\x00\x00\x01\xff";
       write flow (varint (List.length offerings));

@@ -24,6 +24,12 @@ let supported =
   @ List.init 3 (fun i -> (4, 4 - i))
   @ [ (3, 0) ]
 
+(* The manifest may carry at most this many version-range offerings. The count
+   comes from the server, so it must be bounded: a hostile server could
+   otherwise claim billions of offerings and make the driver allocate
+   unbounded memory. Real servers list only a handful. *)
+let max_offerings = 64
+
 (* Read a variable-length integer (LEB128-style) from the connection.
 
    Bytes are read one at a time; each contributes its low 7 bits to the
@@ -31,14 +37,20 @@ let supported =
    signals that more bytes follow, so the loop continues at the next 7-bit
    group (shift += 7). Decoding stops at the first byte without the
    continuation bit. This is the encoding used by the Bolt manifest handshake
-   for the number of offerings and the capabilities. *)
+   for the number of offerings and the capabilities.
+
+   A varint is at most 10 bytes (LEB128 for 64 bits): the loop stops with an
+   error once the shift reaches the width of an OCaml int, so a stream of
+   continuation bytes cannot spin forever or overflow the shift. *)
 let read_varint transport =
   let byte = Bytes.create 1 in
   let rec go shift acc =
-    let* () = Transport.read_exact transport byte 0 1 in
-    let b = Bytes.get_uint8 byte 0 in
-    let acc = acc lor ((b land 0x7F) lsl shift) in
-    if b land 0x80 <> 0 then go (shift + 7) acc else Ok acc
+    if shift >= 63 then Error (Errors.Service_unavailable "Malformed Bolt handshake varint")
+    else
+      let* () = Transport.read_exact transport byte 0 1 in
+      let b = Bytes.get_uint8 byte 0 in
+      let acc = acc lor ((b land 0x7F) lsl shift) in
+      if b land 0x80 <> 0 then go (shift + 7) acc else Ok acc
   in
   go 0 0
 
@@ -61,6 +73,13 @@ let version_hex major minor = Printf.sprintf "0x%06X%02X" minor major
 let negotiate_manifest transport =
   let id = Transport.id transport in
   let* count = read_varint transport in
+  let* () =
+    if count > max_offerings then
+      Error
+        (Errors.Service_unavailable
+           (Printf.sprintf "Bolt handshake manifest offers %d versions (max %d)" count max_offerings))
+    else Ok ()
+  in
   let buf = Bytes.create 4 in
   let rec read_offerings acc = function
     | 0 -> Ok (List.rev acc)
