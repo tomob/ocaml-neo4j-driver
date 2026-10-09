@@ -18,6 +18,7 @@ type t = {
   socket : [ Eio.Flow.two_way_ty | Eio.Resource.close_ty ] r;
   raw : [ `Socket | `Close ] r;
   mutable timeout : Eio.Time.Timeout.t;
+  mutable write_timeout : Eio.Time.Timeout.t;
 }
 
 (* Bolt messages are sent in chunks of at most 64 KiB; the drivers use 16 KiB. *)
@@ -28,10 +29,13 @@ let id t = t.id
    SO_KEEPALIVE option back). *)
 let keep_alive t = Eio.Net.getsockopt t.raw Eio.Net.Sockopt.SO_KEEPALIVE
 
-(* Replace the timeout bounding reads (and writes) on the connection: the
-   server advertises a receive timeout through the [connection.recv_timeout_seconds]
-   HELLO hint, overriding the driver-configured default for that connection. *)
+(* Replace the timeout bounding reads on the connection: the server advertises a
+   receive timeout through the [connection.recv_timeout_seconds] HELLO hint,
+   overriding the driver-configured default for that connection. *)
 let set_read_timeout t timeout = t.timeout <- timeout
+
+(* Replace the timeout bounding writes on the connection. *)
+let set_write_timeout t timeout = t.write_timeout <- timeout
 
 (* A read that ran out of time means the connection is defunct (like the Python
    driver, which closes a connection whose receive timed out): close the socket
@@ -63,7 +67,8 @@ let set_keep_alive socket keep_alive =
         (Errors.Service_unavailable
            (Printf.sprintf "Could not set SO_KEEPALIVE: %s" (Printexc.to_string exn)))
 
-let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(keep_alive = true) ?(tls = Plain) address =
+let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(write_timeout = Eio.Time.Timeout.none)
+    ?(keep_alive = true) ?(tls = Plain) address =
   (* One total deadline covering every TCP connect / TLS handshake attempt. *)
   let with_timeout f =
     try Eio.Time.Timeout.run_exn timeout f with
@@ -140,7 +145,7 @@ let connect net sw ?(timeout = Eio.Time.Timeout.none) ?(keep_alive = true) ?(tls
                         go (sockaddr_str sockaddr :: failed) (error :: errors) rest
                     | Ok () -> (
                         match secure id socket with
-                        | Ok socket -> Ok { socket; raw; timeout; id }
+                        | Ok socket -> Ok { socket; raw; timeout; write_timeout; id }
                         | Error error ->
                             Log.debug Log.io (fun m ->
                                 m "[#0000]  S: <CONNECTION FAILED> %s %s" (sockaddr_str sockaddr)
@@ -181,8 +186,10 @@ let read_exact t buf off len =
 let write t buf =
   let buffer = Cstruct.of_bytes buf in
   let write () = Eio.Flow.write t.socket [ buffer ] in
-  try Ok (Eio.Time.Timeout.run_exn t.timeout write) with
-  | Eio.Time.Timeout -> Error (Errors.Service_unavailable "Write timed out")
+  try Ok (Eio.Time.Timeout.run_exn t.write_timeout write) with
+  | Eio.Time.Timeout ->
+      close_after_timeout t;
+      Error (Errors.Service_unavailable "Write timed out")
   | exn ->
       if cancelled exn then raise exn
       else

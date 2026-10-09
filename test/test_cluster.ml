@@ -23,6 +23,7 @@ let config host port =
       port;
       scheme = Addressing.Bolt;
       connection_timeout = 5.0;
+      connection_write_timeout = 30.0;
       user_agent = "test-agent";
       auth = auth ();
       routing_context = None;

@@ -33,17 +33,19 @@ val connect :
     supplies the tokens: new connections authenticate with its current token and a reused connection
     is re-authenticated when it rotates. [resolver] replaces the address lookup for direct [bolt://]
     drivers (each returned address is tried in turn); [user_agent] defaults to
-    [Conn.default_user_agent]; [connection_timeout] (seconds) defaults to 30.0 and bounds each
-    connection attempt and its subsequent reads/writes. [encryption] and [trusted_certificates] are
-    the explicit security config: they override the URI scheme's TLS choice (see
-    {!Conn.tls_of_config}) and a conflicting combination is an error. [client_certificate] is the
-    mTLS certificate presented to the server (requires TLS); [client_certificate_provider] supplies
-    a (possibly rotating) client certificate, fetched per connection, and takes precedence over
-    [client_certificate]. [pool_config] (defaults from [Config.default_pool_config]: 100
-    connections, 1h lifetime, 60s acquisition timeout, no liveness check) sizes the pool and its
-    acquisition timeout. Connections are established lazily on first use; for [neo4j://] the URI's
-    address is the initial router and routing tables are fetched on demand. The [sw] switch is
-    captured (it hosts the connection attempts), so it must outlive the returned [t].
+    [Conn.default_user_agent]; [connection_timeout] (seconds) defaults to
+    [pool_config.connection_timeout] and bounds each connection attempt and its subsequent reads,
+    while writes are bounded by [pool_config.connection_write_timeout]. [encryption] and
+    [trusted_certificates] are the explicit security config: they override the URI scheme's TLS
+    choice (see {!Conn.tls_of_config}) and a conflicting combination is an error.
+    [client_certificate] is the mTLS certificate presented to the server (requires TLS);
+    [client_certificate_provider] supplies a (possibly rotating) client certificate, fetched per
+    connection, and takes precedence over [client_certificate]. [pool_config] (defaults from
+    [Config.default_pool_config]: 100 connections, 1h lifetime, 60s acquisition timeout, no liveness
+    check) sizes the pool and its acquisition timeout. Connections are established lazily on first
+    use; for [neo4j://] the URI's address is the initial router and routing tables are fetched on
+    demand. The [sw] switch is captured (it hosts the connection attempts), so it must outlive the
+    returned [t].
     @return
       [Error (Configuration_error _)] for an unparseable URI or a conflicting security config;
       [Error _] from the lazy connect on first use otherwise. *)

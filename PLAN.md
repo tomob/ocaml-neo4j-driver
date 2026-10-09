@@ -151,20 +151,11 @@ Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db)
 1. **Phase A10 (TLS)** — done: custom CA trust anchors, the explicit
    `encryption`/`trusted_certificates` config, mTLS client certificates (incl. password-protected
    keys and rotation) and the fully-green `tests.tls` suite.
-2. **Config wiring** — `connection_timeout` / `connection_write_timeout` (see below).
+2. **Config wiring** — done: `Driver.connect` defaults `connection_timeout` from
+   `pool_config.connection_timeout`, and `connection_write_timeout` bounds writes through a separate
+   `Transport` write deadline.
 3. **`neodriver_lwt` / `lib/lwt`** — deferred: a second backend will only be added if requested.
 4. **B10** — TestKit CI job + server-version matrix.
-
-## Config wiring (details)
-
-Two `Config.pool_config` settings are still not connected to the connection behaviour:
-
-1. **`connection_timeout`** — the `pool_config` field is dead: the `Driver.connect` `?connection_timeout` argument defaults to a hardcoded 30.0 instead of `pool_config.connection_timeout`. The value that is used flows into `Conn.config.connection_timeout`, which `timeout_of_config` turns into the single TCP-connect/TLS/read/write deadline (the `connection.recv_timeout_seconds` HELLO hint later overrides the read timeout via `Transport.set_read_timeout`). Fix: default `connection_timeout` from `pool_config.connection_timeout` when the argument is absent.
-2. **`connection_write_timeout`** — not wired at all. `Conn.config` has only `connection_timeout`, and `Transport.t` carries a single `timeout` shared by reads and writes (`read_exact` and `write`). Fix: add `connection_write_timeout` to `Conn.config` and a separate write deadline to `Transport.t` (`set_write_timeout`, used by `write`/`write_message`), and plumb `pool_config.connection_write_timeout` through `Driver.conn_config` (the Python driver sets it via `socket.set_write_timeout`).
-
-(`keep_alive` is done: `Eio.Net.Sockopt.SO_KEEPALIVE` — Eio >= 1.4 — is set on every TCP connection
-before the TLS wrap, plumbed from `Config.pool_config.keep_alive` through `Driver`/`Conn`/`Transport`;
-a `setsockopt` failure fails the connection, like the Python driver.)
 
 ## Risks and open decisions
 

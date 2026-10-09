@@ -17,6 +17,7 @@ type config = {
   port : int;
   scheme : Addressing.scheme;
   connection_timeout : float;
+  connection_write_timeout : float;
   user_agent : string;
   auth : auth;
   routing_context : (string * string) list option;
@@ -72,9 +73,11 @@ let capabilities_of t = Capabilities.of_version t.major t.minor
 let supports_impersonation t = t.major > 4 || (t.major = 4 && t.minor >= 4)
 let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth
 
-let timeout_of_config clock config =
-  if config.connection_timeout = infinity then Eio.Time.Timeout.none
-  else Eio.Time.Timeout.seconds clock config.connection_timeout
+let timeout_of_value clock seconds =
+  if seconds = infinity then Eio.Time.Timeout.none else Eio.Time.Timeout.seconds clock seconds
+
+let timeout_of_config clock config = timeout_of_value clock config.connection_timeout
+let write_timeout_of_config clock config = timeout_of_value clock config.connection_write_timeout
 
 (* The bolt_agent header is sent from Bolt 5.3. *)
 let bolt_agent_version major minor = major > 5 || (major = 5 && minor >= 3)
@@ -662,13 +665,21 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
   let connect_single address =
     let* transport =
       Transport.connect net sw ~timeout:(timeout_of_config clock config)
+        ~write_timeout:(write_timeout_of_config clock config)
         ~keep_alive:config.keep_alive ~tls address
     in
+    (* The Bolt handshake is not bounded by the socket connection timeout (an
+       enclosing acquisition deadline bounds it instead); writes during the
+       handshake are likewise left unbounded. *)
     Transport.set_read_timeout transport Eio.Time.Timeout.none;
+    Transport.set_write_timeout transport Eio.Time.Timeout.none;
     let keep = ref false in
     Fun.protect
       ~finally:(fun () ->
-        if !keep then Transport.set_read_timeout transport (timeout_of_config clock config)
+        if !keep then begin
+          Transport.set_read_timeout transport (timeout_of_config clock config);
+          Transport.set_write_timeout transport (write_timeout_of_config clock config)
+        end
         else try Transport.close transport with _ -> ())
       (fun () ->
         let* major, minor = Handshake.negotiate transport in

@@ -25,7 +25,8 @@ v}
   [Session.t]: the server is contacted only on the first query.
 - [Conn.basic_auth] builds the authentication token (default principal
   [neo4j]; only the [basic] scheme is supported).
-- [?user_agent], [?connection_timeout] (seconds, default 30.0) and [?config]
+- [?user_agent], [?connection_timeout] (seconds, default
+  [pool_config.connection_timeout]) and [?config]
   (a [Session.config]) tune the connection.
 - The [sw] switch must outlive the session (it hosts the connection attempt).
 - [?resolver] replaces address lookup (useful for custom DNS resolution).
@@ -358,8 +359,9 @@ a failure is worth retrying.
   (principal defaults to [neo4j], credentials to the empty string).
 - [?user_agent] — the HELLO user agent (default [Conn.default_user_agent]).
 - [?connection_timeout] (seconds) — bounds the TCP connect / TLS handshake
-  and the connection's reads and writes (default 30.0; [infinity] disables the
-  deadline). The Bolt version handshake itself is bounded by the
+  and the connection's reads (default [pool_config.connection_timeout]);
+  writes are bounded by [pool_config.connection_write_timeout] ([infinity]
+  disables either). The Bolt version handshake itself is bounded by the
   [connection_acquisition_timeout] acquisition deadline, not by this timeout.
 - [?config] — a [Session.config] (see below).
 - [?resolver] — [Addressing.t -> (Addressing.t list, Errors.t) result];
@@ -443,8 +445,9 @@ require the server to advertise [telemetry.enabled]);
 driver-level notification filtering settings sent in HELLO (Bolt >= 5.2;
 [None] omits the field, [Some []] sends an empty category list). [keep_alive]
 sets the [SO_KEEPALIVE] socket option on every TCP connection (default [true];
-a failure to set it fails the connection); [connection_timeout] and
-[connection_write_timeout] are not wired yet. [disable_auto_commit_retries] turns off
+a failure to set it fails the connection); [connection_timeout] bounds the
+connect / TLS handshake and reads, and [connection_write_timeout] the writes.
+[disable_auto_commit_retries] turns off
 the automatic one-shot retry of an auto-commit [Session.run] after a server
 failure marked idempotent — the Bolt >= 6.0 [diagnostic_record._idempotent]
 flag — which is on by default (like the Python driver).

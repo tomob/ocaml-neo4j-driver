@@ -10,7 +10,6 @@
 open Neodriver_core
 
 let ( let* ) = Result.bind
-let default_connection_timeout = 30.0
 
 (* How the driver provides connections: a routing cluster for [neo4j://] URIs,
    or a single-address pool for [bolt://] and its TLS variants. *)
@@ -32,6 +31,7 @@ let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~
       port = Addressing.port addr;
       scheme = parsed.scheme;
       connection_timeout;
+      connection_write_timeout = pool_config.connection_write_timeout;
       user_agent;
       auth;
       routing_context;
@@ -110,7 +110,9 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
     ?encryption ?trusted_certificates ?client_certificate ?client_certificate_provider
     ?(pool_config = Config.default_pool_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
-  let connection_timeout = Option.value ~default:default_connection_timeout connection_timeout in
+  let connection_timeout =
+    Option.value ~default:pool_config.connection_timeout connection_timeout
+  in
   let user_agent = Option.value ~default:Conn.default_user_agent user_agent in
   (* The explicit security config overrides the URI scheme's TLS choice; an
      invalid override (e.g. explicit config with a secure scheme) is reported

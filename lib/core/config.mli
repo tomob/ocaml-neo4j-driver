@@ -60,11 +60,13 @@ type pool_config = {
     driver remembers a resolved home database (default [Float.infinity], i.e. the cache is on — a
     default-database session guesses the cached home database only when a server-side-routing
     capable connection has been seen); a TTL <= [0.0] disables the cache and every default-database
-    session re-fetches the home database over ROUTE. [keep_alive] sets the [SO_KEEPALIVE] socket
-    option on every TCP connection (default [true]; a failure to set it fails the connection).
-    [notifications_min_severity] and [notifications_disabled_categories] are the driver-level
-    notification filtering settings sent in HELLO (Bolt >= 5.2; [None] omits the field, [Some []]
-    sends an empty category list). *)
+    session re-fetches the home database over ROUTE. [connection_timeout] bounds the TCP connect /
+    TLS handshake and subsequent reads (default [30.0]; [Float.infinity] disables it);
+    [connection_write_timeout] bounds writes (default [30.0]; [Float.infinity] disables it).
+    [keep_alive] sets the [SO_KEEPALIVE] socket option on every TCP connection (default [true]; a
+    failure to set it fails the connection). [notifications_min_severity] and
+    [notifications_disabled_categories] are the driver-level notification filtering settings sent in
+    HELLO (Bolt >= 5.2; [None] omits the field, [Some []] sends an empty category list). *)
 
 val default_access_mode : access_mode
 (** Default access mode ([Write]). *)

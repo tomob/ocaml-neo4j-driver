@@ -110,6 +110,24 @@ let keep_alive_disabled () =
           check bool "keepalive disabled" false (Transport.keep_alive transport);
           Transport.close transport)
 
+(* The write timeout bounds writes independently of the read deadline: a write to
+   a peer that never reads blocks once the socket buffers fill up and times out
+   with the configured write deadline ("Write timed out"). *)
+let write_timeout () =
+  Test_mock.with_server
+    (fun clock _flow -> Eio.Time.Mono.sleep clock 0.5)
+    (fun net clock sw port ->
+      match connect net clock sw port with
+      | Error error -> fail (Errors.to_string error)
+      | Ok transport -> (
+          Transport.set_write_timeout transport (Eio.Time.Timeout.seconds clock 0.2);
+          let big = Bytes.make 32_000_000 'x' in
+          match Transport.write transport big with
+          | Error (Errors.Service_unavailable message) ->
+              check string "write timed out" "Write timed out" message
+          | Error error -> fail (Errors.to_string error)
+          | Ok () -> fail "expected a write timeout"))
+
 (* Connecting to a closed port fails with an aggregated Service_unavailable
    message naming the address (exercises the multi-address failure path). *)
 let closed_port () =
@@ -153,5 +171,6 @@ let tests =
       [ test_case "SO_KEEPALIVE on by default" `Quick keep_alive_default ] );
     ( "[Transport] keep_alive disabled",
       [ test_case "SO_KEEPALIVE off when requested" `Quick keep_alive_disabled ] );
+    ("[Transport] write_timeout", [ test_case "a blocked write times out" `Quick write_timeout ]);
     ("[Transport] closed_port", [ test_case "aggregated connect failure" `Quick closed_port ]);
   ]

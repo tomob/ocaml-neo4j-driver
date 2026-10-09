@@ -15,6 +15,7 @@ type config = {
   port : int;
   scheme : Addressing.scheme;
   connection_timeout : float;
+  connection_write_timeout : float;
   user_agent : string;
   auth : auth;
   routing_context : (string * string) list option;
@@ -37,7 +38,9 @@ type config = {
     [notifications_min_severity] and [notifications_disabled_categories] are the driver-level
     notification filtering settings carried in HELLO on Bolt >= 5.2 ([None] omits the field;
     [Some []] sends an empty category list). [keep_alive] sets the [SO_KEEPALIVE] socket option on
-    the TCP socket (default [true]). *)
+    the TCP socket (default [true]). [connection_timeout] bounds the TCP connect / TLS handshake,
+    and reads after the handshake; [connection_write_timeout] bounds writes ([infinity] disables
+    either). *)
 
 val client_certificate_of_config :
   Config.client_certificate -> (Tls_client.client_certificate, Errors.t) result

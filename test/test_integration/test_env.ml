@@ -38,6 +38,7 @@ let conn_config ?scheme ?password (env : t) =
       port = env.port;
       scheme = Option.value ~default:(scheme_of_string env.scheme) scheme;
       connection_timeout = 10.0;
+      connection_write_timeout = 30.0;
       user_agent = Neodriver_eio.Conn.default_user_agent;
       auth =
         Neodriver_eio.Conn.basic_auth ~principal:env.user
