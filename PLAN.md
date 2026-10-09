@@ -1,166 +1,143 @@
-# Neo4j OCaml Driver — Implementation Plan
+# Neo4j OCaml Driver — Audit Plan
 
-Plan for a pure OCaml Neo4j client library (full cluster driver), built as a **new project** using
-[ocaml-neo4j-bolt](https://github.com/jeong-sik/ocaml-neo4j-bolt) as a reference (MIT) and modelled
-on the architecture of the Neo4j Python driver.
+Actionable plan for the `ocaml-neo4j-driver` packages, derived from the ponytail audit
+of 2026-10-09. It replaces the earlier phase-based roadmap; that history is in the git
+log.
 
-## Established decisions
+Assumed load: an application or agent talking to one Neo4j server or cluster, a single
+Eio domain, a handful of concurrent users within the process.
 
-- **New project** → clean architecture; port the clean `packstream.ml` (MIT) and fix it (marker
-  validation, error handling).
-- **Eio-first** → core logic in **direct style** (no monads); a narrow `transport.mli` so Lwt can be
-  a second adapter later.
-- **Full cluster driver** → a correct single client first, then cluster reliability.
-- **TestKit from the start** → a separate parallel track (Track B) that forces early public API
-  stability.
+Priorities:
+- **Must fix** — correctness or security; can break, or be abused, at the expected load.
+- **Should fix** — a real risk, a missing test, or code that should not exist.
+- **Nice to have** — small correctness, robustness and clean-up wins.
 
-## Project structure (dune/opam)
-
-```
-ocaml-neo4j-driver/
-  lib/packstream/    neodriver_packstream — pure, no dependencies
-  lib/core/          neodriver_core — errors, config, addressing, hydration, values,
-                     state, summary, auth/bookmark managers, routing table
-  lib/eio/           neodriver_eio — transport, handshake, TLS, conn, bolt, tx,
-                     session, pool, cluster, result, summary, driver
-  lib/neodriver/     neodriver — friendly aggregator (open Neodriver)
-  lib/lwt/           (later) neodriver_lwt
-  testkitbackend/    Track B — TestKit JSON backend
-  test/              alcotest per module (+ test/test_integration/)
-  examples/  docs/  scripts/  benchmarks/
-```
+Each item states the concrete problem, the fix and how to verify it.
 
 ---
 
-## TRACK A — Library core
+## Must fix
 
-### Phase A0 — Foundations — Done
-`errors.ml` (taxonomy, `is_retryable`, `_ERROR_REWRITE_MAP` port), `config.ml` (validated builders
-and defaults), `addressing.ml` (`bolt://`/`neo4j://` + `+s`/`+ssc`, routing context, percent
-decoding), `deadline.ml` (monotonic, min-timeout).
+### 1. Bound the Bolt manifest handshake count — `lib/eio/handshake.ml` — done
 
-### Phase A1 — PackStream + hydration — Done
-Ported `packstream.ml` (marker validation → `ProtocolError`, bounds, depth/size limits); `values.ml`
-(Node/Rel/Path/Point/Vector/UUID/Unsupported/Broken), `hydration.ml` (per-version tags, per-query
-graph dedup, `Broken` propagation), `temporal.ml` (Date/Time/DateTime/Duration, named zones).
+**Done.** `negotiate_manifest` rejects a `count` above `max_offerings` (64) with
+`Service_unavailable`, and `read_varint` errors once `shift >= 63` instead of growing it
+without bound. Covered by `manifest_too_many` and `manifest_oversized_varint` in
+`test/test_handshake.ml` (mock server).
 
-### Phase A2 — Eio transport + handshake + TLS — Done
-TCP transport with deadlines, chunk framing + NOOP skip, coalescing; handshake v1 + manifest `0xFF`
-(highest common version); TLS `bolt+s://` (system CAs + hostname verification + SNI) and
-`bolt+ssc://` (TrustAll); `getaddrinfo` address iteration with aggregated connect errors.
-Deferred: custom CA trust anchors and mTLS client certificates (`tls_client.ml`); `SO_KEEPALIVE`
-(not exposed by Eio's portable `Net` API).
+**Problem.** During version negotiation a server can answer with a manifest (last byte
+`0xFF`) whose offering count is a varint controlled entirely by the server.
+`read_varint` (`handshake.ml:35-43`) grows its shift without bound, and
+`read_offerings [] count` (`handshake.ml:61-74`) allocates one triple per offering,
+reading 4 bytes each. A malicious or broken server can advertise `count = 2^40` and
+trickle the bytes, exhausting the driver's memory — a denial of service. Reachable on
+plain `bolt://` by a man in the middle, and by any server the user was persuaded to
+connect to.
 
-### Phase A3 — Single connection — Done
-HELLO/LOGON/LOGOFF (inline auth ≤ 5.0, LOGON/LOGOFF ≥ 5.1, `bolt_agent` ≥ 5.3), server state
-machine with automatic RESET after FAILURE/IGNORED, RUN/PULL/DISCARD streaming (`fetch_size`,
-`has_more`, `qid`), per-version `Capabilities`, connection re-auth (`re_auth`/`mark_unauthenticated`).
+**Fix.**
+- Reject a manifest `count` above a small constant (for example 64 offerings) with
+  `Errors.Service_unavailable`.
+- Bound `read_varint`: stop with an error once `shift >= 64` (or after a small byte
+  cap).
 
-### Phase A5 — Sessions and transactions + retry — Done
-`tx.ml` (explicit transactions with `Open`/`Failed`/`Closed`), `session.ml` (auto-commit + managed
-transactions with the jittered retry budget), bookmarks captured from COMMIT/PULL summaries.
-
-### Phase A4 — Result + summary + notifications — Done
-`neo4j_result.ml` (lazy streaming: `next`/`peek`/`fetch`/`values`/`data`/`consume`/`single`),
-`summary.ml` (counters, plan/profile, query type, `t_first`/`t_last`, GQL status objects, server
-info), notification filtering.
-
-### Phase A6 — Pool — Done
-Bounded single-address pool (`Eio.Semaphore`, FIFO idle queue, acquisition timeout,
-lifetime/liveness checks, release with RESET), `IncompleteCommit`, pool-backed `Driver`.
-
-### Phase A6.5 — Vector + UUID — Done
-`Values.Vector` (dtype marker is a single BYTES byte) and `Values.Uuid` (marker `0xE0`, 16 BE bytes,
-Bolt 6.1); TestKit features + Cypher encode/decode. Multi-db tests still need an enterprise server
-(server limitation, not driver code).
-
-### Phase A7 — Routing + home db + SSR — Done
-ROUTE (`0x66`) with the procedure fallback for Bolt 3 / 4.0–4.2; `routing_table.ml`; `cluster.ml`
-(per-database tables with TTL, per-address pools, least-loaded selection, address deactivation,
-negative cache, single-flight fetches); SSR (routing context in HELLO, `rt` in RUN responses);
-home-db cache (keyed by impersonated user, `home_db_cache_ttl`); routed-only guessed-database
-pinning; TestKit `Backend:RTFetch`/`RTForceUpdate`.
-
-### Phase A8 — Auth management — Done
-`Auth_manager` (static/basic/bearer over `ExpiringAuth`), pool/cluster re-auth on rotation,
-`AuthorizationExpired` mark-all, session-level auth (user switching, Bolt ≥ 5.1), TestKit
-auth-token managers + `Feature:Auth:Managed`; `Backend:MockTime` fake-time providers.
-
-### Phase A8 — Bookmarks — Done
-`Bookmarks` (immutable, first-seen-order set) and `Bookmark_manager` (built-in + custom); sessions
-seed RUN/BEGIN/ROUTE from the manager and hand the committed bookmark back; TestKit
-`NewBookmarkManager`.
-
-### Phase A9 — High-level API — Done
-`Driver.execute_query` (+ `EagerResult` keys/records/summary), `Driver.verify_connectivity` and
-`Driver.supports_multi_db`, backed by the driver's implicit `execute_query_bookmark_manager`; the
-TestKit backend now calls these instead of re-implementing them. `warn_notification_severity` (the
-Python driver's native-warning emission) is intentionally not implemented in OCaml — there is no
-equivalent `warnings` mechanism; notifications are available on `Summary.notifications` and logged
-through `Log.notifications`. Also done here: `Driver.verify_authentication`, TELEMETRY telemetry,
-notification filtering, impersonation (auto-commit and transactions), idempotent auto-commit
-retries, `disable_auto_commit_retries`.
-
-### Phase A10 — TLS trust options — Done
-Custom CA trust anchors, the explicit `encryption`/`trusted_certificates` security config and mTLS
-client certificates (including password-protected legacy-OpenSSL-PEM keys via the local `Pem_key`
-helper, and rotation through a `client_certificate_provider`). The backend reports
-`Feature:API:SSLConfig`, `Feature:API:SSLClientCertificate` and `Feature:API:Driver:IsEncrypted`,
-and `scripts/testkit_tls.sh` runs the whole `tests.tls` suite green (43 tests, 0 skips).
+**Verify.** Unit test in `test/test_handshake.ml` with the mock server: a manifest whose
+`count` is over the cap, and a run of continuation bytes, both return an `Error` instead
+of allocating; a normal manifest still negotiates.
 
 ---
 
-## TRACK B — TestKit
+## Should fix
 
-JSON-over-TCP backend translating commands onto the **public library API**.
+### 2. Remove the non-standard Struct8/Struct16 markers — `lib/packstream/packstream.ml`
 
-- **B0a scaffold / B0b query path** — Done (TCP server, driver/session lifecycle, RUN/PULL, result
-  iteration, summary, custom resolver, features).
-- **B1–B5 command coverage** — Done (transactions + retry protocol, sessions, routing, auth-token /
-  bookmark / fake-time managers).
-- **B10 full conformance** — **Remaining**: server matrix (Bolt 4.x/5.x/6.x) and a CI job running the
-  backend in containers (`ci.yml` currently only builds/tests/docs).
-- **B11 all `tests.stub.*` green** — Done (59 modules, 0 failures, 0 errors).
-- **TLS suites** — `scripts/testkit_tls.sh` runs `tests.tls.*` (Go TLS server, host or container
-  backend) and `run_all_tests.sh --tls` adds the phase; the backend reports
-  `Feature:API:SSLSchemes` + `Feature:API:SSLConfig` + `Feature:API:SSLClientCertificate` +
-  `Feature:TLS:1.2`/`1.3` and the script adds the testkit root CA via `OCAML_EXTRA_CA_CERTS`. The
-  whole TLS suite is green (**0 skips**, 43 tests).
+**Problem.** `pack` and `unpack` handle a `Structure` with 16 or more fields using the
+markers `0xDC`/`0xDD` (`packstream.ml:51-52`, `:260-276`, `:357-362`). PackStream
+defines only tiny structures (`0xB0`-`0xBF`, at most 15 fields); `0xDC`/`0xDD` are
+reserved (they are MessagePack array markers). Worse, `pack` writes
+`[marker][size][tag]` while `unpack` reads `[marker][tag][size]`, so even this invented
+format does not round-trip. No Bolt value has 16 or more fields, so the code is dead and
+untested (`test_packstream.ml:72` covers only tiny structs) and non-conformant: a
+reserved `0xDC` byte is accepted rather than reported as `Unknown_marker`.
 
-Current real-server state: `OK (skipped=7)` on community (3 vector + 4 multi-db),
-`OK (skipped=4)` with `NEO4J_EDITION=aura`.
+**Fix.** Delete `marker_struct_8`, `marker_struct_16` and their `pack`/`unpack`
+branches. Keep tiny structures, and treat `0xDC`/`0xDD` as `Unknown_marker`.
 
----
-
-## TRACK C — Documentation and developer enablement
-
-- **C0 user-facing API** (`Driver.connect`, `Conn.basic_auth`, aggregator aliases) — Done.
-- **C1 API documentation (odoc, per-package index pages, `dune build @doc` clean)** — Done.
-- **C2 quickstart** (`docs/quickstart.md`) — Done.
-- **C3 usage documentation** (`docs/usage.md`) — Done.
-- **C4 example programs** (`examples/`) — Done.
-- **C5 GitHub Pages + auto docs** (`deploy-docs.yml`) — Done.
-- **C6 README polish** — Done.
-- **C7 logging (Python parity, `NEO4J_LOG_LEVEL`/`NEO4J_LOG_SCOPES`)** — Done.
-- **Release prep** (opam lint, docs site) — Done.
+**Verify.** `dune runtest`; add a packstream test asserting that unpacking `0xDC`
+returns `Unknown_marker`.
 
 ---
 
-## Remaining work (summary)
+## Nice to have
 
-1. **Phase A10 (TLS)** — done: custom CA trust anchors, the explicit
-   `encryption`/`trusted_certificates` config, mTLS client certificates (incl. password-protected
-   keys and rotation) and the fully-green `tests.tls` suite.
-2. **Config wiring** — done: `Driver.connect` defaults `connection_timeout` from
-   `pool_config.connection_timeout`, and `connection_write_timeout` bounds writes through a separate
-   `Transport` write deadline.
-3. **`neodriver_lwt` / `lib/lwt`** — deferred: a second backend will only be added if requested.
-4. **B10** — TestKit CI job + server-version matrix.
+### 3. Evict expired home-database cache entries — `lib/eio/cluster.ml`
 
-## Risks and open decisions
+**Problem.** `home_dbs` maps a session identity (`imp_user` plus auth) to a home
+database. Entries are replaced on refresh but never removed when their TTL lapses, so a
+driver serving many distinct impersonated users grows the map without bound.
 
-1. **`tls-eio` maturity** — resolved: 2.0.4 is usable (needs `Mirage_crypto_rng_unix.use_default ()`).
-2. **Package names** — `neo4j_bolt` is taken by the reference repo; this project uses the
-   `neodriver_*` prefix.
-3. **Version coverage** — design for Bolt 3–6 (state machine + feature gates); all target versions
-   (3.0, 4.2–4.4, 5.0–5.8, 6.0–6.1) are implemented.
+**Fix.** On lookup, drop the stale entry; optionally sweep expired keys when storing.
+
+**Verify.** Unit test: a `home_db_cache_ttl` of 0 (or a clock jump) drops the entry.
+
+### 4. Clamp the routing-table TTL received from the server — `lib/core/routing_table.ml:52`
+
+**Problem.** `ttl_seconds = Int64.to_int ttl` is unvalidated. A TTL of 0 or less makes
+`fresh_table` (`cluster.ml`) treat the table as always expired, so every acquire issues a
+fresh ROUTE — extra load, worst of all from a misbehaving server.
+
+**Fix.** Clamp to a minimum of 1 second (and reject absurd values).
+
+**Verify.** Unit test: `Routing_table.parse` with `ttl = 0` yields a table whose
+`ttl_seconds` is at least 1.
+
+### 5. Reject out-of-range ports when parsing — `lib/core/addressing.ml:35-40`
+
+**Problem.** `parse_port` accepts any `int >= 0`, so `host:99999999` (for example from a
+routing table) is accepted and fails only at connect time with a confusing error.
+
+**Fix.** Reject `port > 65535` with a `Configuration_error` at parse time.
+
+**Verify.** Unit test in `test/test_addressing.ml`: `parse "host:99999999"` is `Error`.
+
+### 6. Do not release a pool permit twice after the pool is closed — `lib/eio/pool.ml:331-336`
+
+**Problem.** `release` guards against a double release in the open branch (the `Skip`
+case), but the `t.closed` branch unconditionally calls `Eio.Semaphore.release`. Releasing
+the same connection twice while the pool is closed pushes the permit count above
+`max_connection_pool_size`, corrupting `in_use_count`.
+
+**Fix.** Apply the same "already released" guard in the closed branch (or skip the permit
+release when closed).
+
+**Verify.** Unit test: connect, `Pool.close`, then `release` the same connection twice —
+the semaphore value never exceeds the pool size.
+
+### 7. Treat a vector whose byte length does not match its dtype as broken — `lib/core/values.ml:79`
+
+**Problem.** `vector_length = Bytes.length v.data / dtype_size` truncates when the server
+sends a byte length that is not a multiple of the dtype width, silently reporting a short
+vector instead of a `Broken` value.
+
+**Fix.** In hydration, mark the vector `Broken` when `Bytes.length data mod dtype_size <>
+0`.
+
+**Verify.** Unit test: a vector struct with a trailing partial element hydrates to
+`Broken`.
+
+### 8. Update the README feature list — `README.md:43,54`
+
+**Problem.** The Bolt version list ends at 6.0 (UUID / Bolt 6.1 is missing) and the auth
+line mentions only basic authentication, though the driver ships token management
+(bearer and custom schemes).
+
+**Fix.** List 6.1 and the auth managers.
+
+---
+
+## Notes
+
+- The earlier, phase-based roadmap was removed from this file on 2026-10-09; it remains
+  in the git history.
+- Source: the ponytail audit of 2026-10-09.
+- Not audited in depth: `temporal.ml` / `tz_lmt.ml`, the full `conn.ml`, all of
+  `cluster.ml`, `testkitbackend/commands.ml`, `pem_key.ml` and `tls_client.ml`.
