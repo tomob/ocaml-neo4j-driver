@@ -48,7 +48,12 @@ of allocating; a normal manifest still negotiates.
 
 ## Should fix
 
-### 2. Remove the non-standard Struct8/Struct16 markers — `lib/packstream/packstream.ml`
+### 2. Remove the non-standard Struct8/Struct16 markers — `lib/packstream/packstream.ml` — done
+
+**Done.** `marker_struct_8`/`marker_struct_16` and their `pack`/`unpack` branches are
+gone; `unpack` now reports `0xDC`/`0xDD` as `Unknown_marker`, and `pack` raises
+`Invalid_argument` for a `Structure` with more than 15 fields. Covered by
+`reserved_struct_markers` in `test/test_packstream.ml`.
 
 **Problem.** `pack` and `unpack` handle a `Structure` with 16 or more fields using the
 markers `0xDC`/`0xDD` (`packstream.ml:51-52`, `:260-276`, `:357-362`). PackStream
