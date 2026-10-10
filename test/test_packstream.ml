@@ -55,6 +55,7 @@ let round_trip () =
       Map [ ("a", Int 1L); ("b", String "bee") ];
       Structure (0x4E, [ String "node"; Int 42L ]);
       Structure (0x58, [ Float 1.0; Float 2.0; Float 3.0 ]);
+      Structure (0x4E, List.init 15 (fun i -> Int (Int64.of_int i)));
       List (List.init 256 (fun i -> Int (Int64.of_int i)));
       List (List.init 20 (fun i -> List [ Int (Int64.of_int i) ]));
     ]
@@ -120,6 +121,21 @@ let bogus_length () =
   | Ok _ -> fail "oversized list should fail"
   | Error e -> check string "oversized list" "Unexpected end of data" (Packstream.error_to_string e)
 
+(* PackStream has only the tiny structures (0xB0-0xBF, at most 15 fields): the
+   reserved markers 0xDC/0xDD are rejected, and a structure with 16 fields
+   cannot be packed. *)
+let reserved_struct_markers () =
+  (match Packstream.unpack (Bytes.of_string "\xdc") with
+  | Ok _ -> fail "0xDC is reserved and should fail"
+  | Error e -> check string "0xDC" "Unknown PackStream marker 0xDC" (Packstream.error_to_string e));
+  (match Packstream.unpack (Bytes.of_string "\xdd") with
+  | Ok _ -> fail "0xDD is reserved and should fail"
+  | Error e -> check string "0xDD" "Unknown PackStream marker 0xDD" (Packstream.error_to_string e));
+  let sixteen = Structure (0x4E, List.init 16 (fun i -> Int (Int64.of_int i))) in
+  match Packstream.pack sixteen with
+  | _ -> fail "a 16-field structure should not pack"
+  | exception Invalid_argument _ -> ()
+
 let tests =
   [
     ("[Packstream] round_trip", [ test_case "all value types" `Quick round_trip ]);
@@ -129,4 +145,6 @@ let tests =
     ("[Packstream] map_key_not_string", [ test_case "map key" `Quick map_key_not_string ]);
     ("[Packstream] depth_limit", [ test_case "depth limit" `Quick depth_limit ]);
     ("[Packstream] bogus_length", [ test_case "bogus lengths" `Quick bogus_length ]);
+    ( "[Packstream] reserved_struct_markers",
+      [ test_case "0xDC/0xDD reserved, >15 fields" `Quick reserved_struct_markers ] );
   ]

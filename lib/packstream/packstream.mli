@@ -29,7 +29,8 @@ val default_limits : limits
 (** Default [limits]: [max_depth = 256]. *)
 
 val pack : value -> Bytes.t
-(** Serialize a [value] into its PackStream byte representation. *)
+(** Serialize a [value] into its PackStream byte representation. Raises [Invalid_argument] for a
+    [Structure] with more than 15 fields, which PackStream cannot represent. *)
 
 val unpack : ?limits:limits -> Bytes.t -> (value, error) result
 (** Deserialize a [value] from PackStream [bytes], subject to the given [limits] (defaults to

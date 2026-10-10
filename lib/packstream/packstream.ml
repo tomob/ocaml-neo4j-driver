@@ -14,7 +14,8 @@
    - 16-bit and 32-bit container/sequence lengths are read as unsigned,
      fixing a crash (negative length) on values >= 2^15 / 2^31.
    - A dedicated [error] type with [error_to_string] describes decode
-     failures; [pack] remains total.
+     failures; [pack] raises [Invalid_argument] only for a [Structure] it
+     cannot represent (more than 15 fields, which Bolt never uses).
    - An interface file (.mli) exposes only the public API.
    - The value pretty-printer is exposed as [to_string].
 *)
@@ -48,8 +49,10 @@ let marker_list_32 = 0xD6
 let marker_map_8 = 0xD8
 let marker_map_16 = 0xD9
 let marker_map_32 = 0xDA
-let marker_struct_8 = 0xDC
-let marker_struct_16 = 0xDD
+
+(* 0xDC and 0xDD are reserved by PackStream (its structures are only the tiny
+   form 0xB0-0xBF, at most 15 fields), so they are not decoded: [unpack] reports
+   them as [Unknown_marker]. *)
 
 type value =
   | Null
@@ -258,21 +261,13 @@ let rec pack_value p = function
           pack_value p item)
         entries
   | Structure (tag, fields) ->
+      (* PackStream structures carry at most 15 fields (the tiny-struct markers
+         0xB0-0xBF); a larger structure has no valid encoding. *)
       let len = List.length fields in
-      if len < 16 then begin
-        write_byte p (marker_tiny_struct lor len);
-        write_byte p tag
-      end
-      else if len < 256 then begin
-        write_byte p marker_struct_8;
-        write_byte p len;
-        write_byte p tag
-      end
-      else begin
-        write_byte p marker_struct_16;
-        write_int16_be p len;
-        write_byte p tag
-      end;
+      if len > 15 then
+        invalid_arg (Printf.sprintf "PackStream structures hold at most 15 fields (got %d)" len);
+      write_byte p (marker_tiny_struct lor len);
+      write_byte p tag;
       List.iter (pack_value p) fields
 
 let pack value =
@@ -354,12 +349,6 @@ let rec unpack_value limits depth u =
   | m when m = marker_map_8 -> Map (unpack_map limits depth u (read_byte u))
   | m when m = marker_map_16 -> Map (unpack_map limits depth u (read_int16_be u land 0xFFFF))
   | m when m = marker_map_32 -> Map (unpack_map limits depth u (uint32_to_int (read_int32_be u)))
-  | m when m = marker_struct_8 ->
-      let tag = read_byte u in
-      Structure (tag, unpack_fields limits depth u (read_byte u))
-  | m when m = marker_struct_16 ->
-      let tag = read_byte u in
-      Structure (tag, unpack_fields limits depth u (read_int16_be u land 0xFFFF))
   | _ when high = marker_tiny_string -> String (read_string_raw u low)
   | _ when high = marker_tiny_list -> List (unpack_list limits depth u low)
   | _ when high = marker_tiny_map -> Map (unpack_map limits depth u low)
