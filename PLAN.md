@@ -155,13 +155,60 @@ vector instead of a `Broken` value.
 **Verify.** Unit test: a vector struct with a trailing partial element hydrates to
 `Broken`.
 
-### 8. Update the README feature list — `README.md:43,54`
+### 8. Update the README feature list — `README.md:43,54` — done
+
+**Done.** The feature list now ends the Bolt versions at 6.0–6.1, describes managed auth
+tokens (bearer/custom, re-authentication on rotation) alongside basic, and splits the
+value-type line into Vector (Bolt 6) and UUID (Bolt 6.1).
 
 **Problem.** The Bolt version list ends at 6.0 (UUID / Bolt 6.1 is missing) and the auth
 line mentions only basic authentication, though the driver ships token management
 (bearer and custom schemes).
 
 **Fix.** List 6.1 and the auth managers.
+
+---
+
+## Additions from the full review
+
+A deeper second pass found the items below. The 1-8 numbering above is kept so the fixes
+already done stay put.
+
+### 9. Fix the non-tail recursion in `Neo4jResult.list` — `lib/eio/neo4j_result.ml:84-97` (Must fix)
+
+**Problem.** `list` fetches the whole result in one PULL (`n = -1`) and drains it with a
+non-tail-recursive `drain` (`record :: drain ()`), so a result of a few hundred thousand
+records overflows the stack; `acc @ drain ()` also copies the accumulator on every batch.
+`values` / `fetch` are tail-recursive and unaffected.
+
+**Fix.** Make `drain` tail-recursive with an accumulator (`List.rev` at the end) and prepend
+its result instead of appending.
+
+**Verify.** Unit test: `Neo4jResult.list` on a mock result with a large single batch returns
+all records without a `Stack_overflow`.
+
+### 10. Reject an infinite `max_transaction_retry_time` — `lib/eio/session.ml:417` (Nice to have)
+
+**Problem.** `within_budget () = elapsed <= max_transaction_retry_time` is always true when
+`max_transaction_retry_time = infinity`, so a managed transaction on a persistently
+retryable error loops forever. `Session.config` is user-constructible and not validated.
+
+**Fix.** Reject (or clamp) a non-finite `max_transaction_retry_time` where the session
+config is built.
+
+**Verify.** Unit test: building a session with `max_transaction_retry_time = infinity` is
+rejected with a configuration error (rather than a transaction that never returns).
+
+### 11. Cover the remaining untested risky paths (Nice to have)
+
+**Problem.** The audit read `temporal.ml` / `tz_lmt.ml`, the full `conn.ml`, all of
+`cluster.ml`, `pem_key.ml` and `tls_client.ml` only partly; the time-zone and TLS-pem paths
+in particular have tricky logic whose branches are not all exercised.
+
+**Fix.** Add focused tests where a branch can silently produce a wrong result (a temporal
+zone offset, a PEM edge), reusing the existing mock harnesses.
+
+**Verify.** The new tests fail when the corresponding branch is broken.
 
 ---
 
