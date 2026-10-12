@@ -13,9 +13,9 @@ let negotiate_tls tls net clock sw port =
       Transport.close transport;
       result
 
-let secure ?client_certificate trust =
+let secure ?(host = "localhost") ?client_certificate trust =
   let client_certificate = Option.map (fun certificate () -> certificate) client_certificate in
-  Transport.Secure { Tls_client.trust; host = "localhost"; client_certificate }
+  Transport.Secure { Tls_client.trust; host; client_certificate }
 
 (* bolt+ssc: TLS handshake with no certificate validation succeeds. *)
 let trust_all () =
@@ -66,10 +66,29 @@ let client_certificate_absent () =
       | Ok _ -> fail "the server requires a client certificate"
       | Error _ -> ())
 
+(* bolt+s to an IP literal is verified against the certificate's IP SANs. The
+   fixture is valid for 127.0.0.1 but not for 1.2.3.4; trusting it as an anchor
+   isolates the IP check from the chain check. *)
+let verify_ip_san () =
+  let trust = Tls_client.Custom [ Test_tls_mock.certificate () ] in
+  Test_tls_mock.with_mock
+    (Test_mock.Manifest [ (5, 8, 8) ])
+    (fun net clock sw port ->
+      match negotiate_tls (secure ~host:"127.0.0.1" trust) net clock sw port with
+      | Ok (major, minor) -> check (pair int int) "matching IP accepted" (5, 8) (major, minor)
+      | Error error -> fail (Errors.to_string error));
+  Test_tls_mock.with_mock
+    (Test_mock.Manifest [ (5, 8, 8) ])
+    (fun net clock sw port ->
+      match negotiate_tls (secure ~host:"1.2.3.4" trust) net clock sw port with
+      | Ok _ -> fail "an IP not in the certificate SANs should be rejected"
+      | Error _ -> ())
+
 let tests =
   [
     ("[TLS] trust_all", [ test_case "bolt+ssc handshake over TLS" `Quick trust_all ]);
     ("[TLS] verify", [ test_case "bolt+s rejects self-signed" `Quick verify_rejects_self_signed ]);
+    ("[TLS] verify_ip_san", [ test_case "bolt+s checks IP SANs" `Quick verify_ip_san ]);
     ( "[TLS] plain_server",
       [ test_case "tls against plain server fails" `Quick tls_against_plain_server ] );
     ( "[TLS] client_certificate",

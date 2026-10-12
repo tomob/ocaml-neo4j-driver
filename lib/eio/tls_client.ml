@@ -43,9 +43,11 @@ let authenticator = function
       Ok
         (X509.Authenticator.chain_of_trust ~time:(fun () -> Some (Ptime_clock.now ())) certificates)
 
-(* The host is used for SNI and hostname verification. Addresses that are not
-   valid domain names (e.g. IP literals) simply skip both. *)
+(* The peer identity used for SNI and certificate verification: a domain name
+   is checked against the certificate's DNS names, an IP literal against its IP
+   addresses (so a [bolt+s] connection to an IP cannot skip verification). *)
 let peer_name host = Result.to_option (Result.bind (Domain_name.of_string host) Domain_name.host)
+let peer_ip host = Result.to_option (Ipaddr.of_string host)
 
 let wrap config socket =
   let* authenticator = authenticator config.trust in
@@ -56,14 +58,18 @@ let wrap config socket =
         `Single (chain, key))
       config.client_certificate
   in
-  match Tls.Config.client ~authenticator ?certificates ~version:(`TLS_1_2, `TLS_1_3) () with
+  (* An IP literal has no name: verify it against the certificate's IP SANs
+     ([?ip]) instead of its DNS names ([?host], which also drives SNI). *)
+  let ip = peer_ip config.host in
+  let host = match ip with Some _ -> None | None -> peer_name config.host in
+  match Tls.Config.client ~authenticator ?ip ?certificates ~version:(`TLS_1_2, `TLS_1_3) () with
   | Error (`Msg msg) ->
       Error
         (Errors.Certificate_configuration_error (Printf.sprintf "Invalid TLS configuration: %s" msg))
   | Ok client -> (
       Mirage_crypto_rng_unix.use_default ();
       let tls =
-        try Ok (Tls_eio.client_of_flow client ?host:(peer_name config.host) socket) with
+        try Ok (Tls_eio.client_of_flow client ?host socket) with
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | exn ->
             Error
