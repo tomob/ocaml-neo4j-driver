@@ -74,7 +74,11 @@ returns `Unknown_marker`.
 
 ## Nice to have
 
-### 3. Evict expired home-database cache entries — `lib/eio/cluster.ml`
+### 3. Evict expired home-database cache entries — `lib/eio/cluster.ml` — done
+
+**Done.** `home_db_of` drops a lapsed entry on lookup, and `set_home_db` sweeps expired
+entries before inserting, so the map stays bounded. Covered by `home_db_cache_is_bounded`
+in `test/test_cluster.ml` (a test-support `Cluster.home_db_cache_size` reads the size).
 
 **Problem.** `home_dbs` maps a session identity (`imp_user` plus auth) to a home
 database. Entries are replaced on refresh but never removed when their TTL lapses, so a
