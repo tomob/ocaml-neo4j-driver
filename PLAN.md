@@ -138,7 +138,12 @@ release when closed).
 **Verify.** Unit test: connect, `Pool.close`, then `release` the same connection twice —
 the semaphore value never exceeds the pool size.
 
-### 7. Treat a vector whose byte length does not match its dtype as broken — `lib/core/values.ml:79`
+### 7. Treat a vector whose byte length does not match its dtype as broken — `lib/core/values.ml:79` — done
+
+**Done.** `hydrate_vector` now returns `None` (a `Broken` value) when
+`Bytes.length data mod Values.vector_dtype_size dtype <> 0`, instead of the length being
+silently truncated by `vector_length`. Covered in `point_vector_unsupported` in
+`test/test_hydration.ml` (an I64 vector of 5 bytes hydrates to `Broken`).
 
 **Problem.** `vector_length = Bytes.length v.data / dtype_size` truncates when the server
 sends a byte length that is not a multiple of the dtype width, silently reporting a short
