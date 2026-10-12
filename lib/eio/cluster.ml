@@ -242,18 +242,30 @@ let pool_for cluster addr =
       pool
 
 (* The cached home database of the session identity [key], if its age is within
-   [home_db_cache_ttl] (caller holds the lock). An expired entry is a miss: the
-   next default-database session resolves it again over ROUTE. *)
+   [home_db_cache_ttl] (caller holds the lock). An expired entry is dropped and
+   treated as a miss: the next default-database session resolves it again over
+   ROUTE. *)
 let home_db_of cluster key =
   match Hashtbl.find_opt cluster.home_dbs key with
   | Some (database, cached_at)
     when elapsed_s cluster cached_at <= cluster.pool_config.home_db_cache_ttl ->
       Some database
-  | _ -> None
+  | Some _ ->
+      Hashtbl.remove cluster.home_dbs key;
+      None
+  | None -> None
 
 (* Cache [database] as the home database of the session identity [key] (caller
-   holds the lock). *)
-let set_home_db cluster key database = Hashtbl.replace cluster.home_dbs key (database, now cluster)
+   holds the lock). Entries whose TTL has lapsed are swept first, so a driver
+   serving many distinct session identities does not grow the map without
+   bound. *)
+let set_home_db cluster key database =
+  let ttl = cluster.pool_config.home_db_cache_ttl in
+  Hashtbl.filter_map_inplace
+    (fun _ (db, cached_at) ->
+      if elapsed_s cluster cached_at <= ttl then Some (db, cached_at) else None)
+    cluster.home_dbs;
+  Hashtbl.replace cluster.home_dbs key (database, now cluster)
 
 (* Re-authenticate the routing connection when the manager's token differs from
    the one it is logged on with (or when it was marked unauthenticated), like a
@@ -798,6 +810,10 @@ let routing_table_of cluster ~database =
       match Hashtbl.find_opt cluster.tables database with
       | Some (table, _) -> Some table
       | None -> None)
+
+(* Test-support: the number of cached home-database entries (one per session
+   identity; expired ones are swept, so the map stays bounded). *)
+let home_db_cache_size cluster = with_lock cluster (fun () -> Hashtbl.length cluster.home_dbs)
 
 (* Force a fresh fetch of the routing table for [database], bypassing the
    freshness and negative-cache checks, and store it (refreshing [routers] and

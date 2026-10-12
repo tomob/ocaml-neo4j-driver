@@ -82,6 +82,10 @@ val routing_table_of : t -> database:string option -> Routing_table.t option
 (** The cached routing table for [database], if any (no fetch; read under the lock). Test-support
     API for the TestKit backend ([GetRoutingTable]). *)
 
+val home_db_cache_size : t -> int
+(** The number of cached home-database entries (one per session identity). Expired entries are
+    swept, so the map stays bounded. Test-support API. *)
+
 val force_routing_table_update :
   t -> database:string option -> bookmarks:string list -> (unit, Errors.t) result
 (** Fetch a fresh routing table for [database] via the routers, bypassing the freshness and

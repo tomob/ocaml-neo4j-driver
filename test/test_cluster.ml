@@ -1531,6 +1531,32 @@ let routed_security_error_retryable () =
         (tags (List.nth received 1));
       Cluster.close cluster)
 
+(* Expired home-database cache entries are swept, so a driver serving many
+   distinct session identities does not grow the cache without bound. *)
+let home_db_cache_is_bounded () =
+  Eio_main.run (fun env ->
+      let clock = Eio.Stdenv.mono_clock env in
+      let initial = Addressing.IPv4 ("127.0.0.1", 7687) in
+      let never ~session_auth:_ _ = Error (Errors.Service_unavailable "not used") in
+      let cluster =
+        Cluster.create
+          ~pool_config:{ Config.default_pool_config with home_db_cache_ttl = 0.0 }
+          ~connect:never ~connect_routing:never ~routing_context:[] ~initial clock
+      in
+      let rt db =
+        Packstream.Map
+          [
+            ("ttl", Packstream.Int 300L);
+            ("servers", Packstream.List []);
+            ("db", Packstream.String db);
+          ]
+      in
+      Cluster.update_table cluster ~database:None ~imp_user:(Some "u1") ~session_auth:None (rt "h1");
+      Eio.Time.Mono.sleep clock 0.001;
+      Cluster.update_table cluster ~database:None ~imp_user:(Some "u2") ~session_auth:None (rt "h2");
+      check int "expired home-db entries are evicted" 1 (Cluster.home_db_cache_size cluster);
+      Cluster.close cluster)
+
 let tests =
   [
     ( "[Cluster] acquire falls back to the next router",
@@ -1583,4 +1609,6 @@ let tests =
       [ test_case "update_table seeds the cache" `Quick update_table_captures_home_db ] );
     ( "[Cluster] routed security error",
       [ test_case "retryable + token refresh" `Quick routed_security_error_retryable ] );
+    ( "[Cluster] home-db cache stays bounded",
+      [ test_case "expired entries are swept" `Quick home_db_cache_is_bounded ] );
   ]
