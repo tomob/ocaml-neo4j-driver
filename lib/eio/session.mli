@@ -136,8 +136,10 @@ val execute :
     transaction each attempt. On [Ok] the transaction is committed and the session's bookmarks
     updated. On [Error (Driver e)] the transaction is rolled back; if [Errors.is_retryable e] and
     the [max_transaction_retry_time] budget remains, [work] is retried after a jittered backoff. On
-    [Error Client] the transaction is rolled back without retrying. [telemetry] is the TELEMETRY
-    feature code reported for the API (0, the transaction-function default, matching
+    [Error Client] the transaction is rolled back without retrying. A non-finite
+    [config.max_transaction_retry_time] (NaN or infinity) is rejected with a [Configuration_error]
+    before anything is sent (it would otherwise retry forever). [telemetry] is the TELEMETRY feature
+    code reported for the API (0, the transaction-function default, matching
     [Session.execute_read]/[execute_write]; high-level callers such as [execute_query] pass their
     own code). *)
 

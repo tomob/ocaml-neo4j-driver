@@ -896,6 +896,23 @@ let execute_telemetry_code () =
       | [ telemetry ] -> check int "telemetry feature" 3 (telemetry_feature telemetry)
       | _ -> fail "expected exactly one TELEMETRY message")
 
+(* A non-finite max_transaction_retry_time is rejected before anything is sent
+   (it would otherwise retry a failing managed transaction forever). *)
+let execute_rejects_infinite_retry_time () =
+  Eio_main.run (fun env ->
+      let clock = Eio.Stdenv.mono_clock env in
+      let config = { Session.default_config with max_transaction_retry_time = infinity } in
+      let session =
+        Session.create config ~clock
+          ~connect:(fun ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ ->
+            fail "connect must not be called")
+          ()
+      in
+      match Session.execute session ~mode:Config.Write (fun _ -> Ok ()) with
+      | Error (Session.Driver (Errors.Configuration_error _)) -> ()
+      | Ok () -> fail "expected a configuration error"
+      | Error _ -> fail "expected a configuration error")
+
 let tests =
   [
     ("[Session] execute_ok", [ test_case "commit + bookmark" `Quick execute_ok ]);
@@ -915,6 +932,8 @@ let tests =
       [ test_case "list after next pulls all" `Quick run_list_after_next_fetches_all_at_once ] );
     ( "[Session] run_list_large_result",
       [ test_case "large result does not overflow" `Quick run_list_large_result ] );
+    ( "[Session] execute_rejects_infinite_retry_time",
+      [ test_case "infinite retry time rejected" `Quick execute_rejects_infinite_retry_time ] );
     ( "[Session] run_retries_idempotent",
       [ test_case "idempotent RUN failure retried once" `Quick run_retries_idempotent ] );
     ( "[Session] run_disabled_no_idempotent_retry",

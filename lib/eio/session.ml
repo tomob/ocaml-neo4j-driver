@@ -256,6 +256,13 @@ let validate_timeout = function
 let validate_execute_timeout timeout =
   match validate_timeout timeout with Ok () -> Ok () | Error e -> Error (Driver e)
 
+(* A non-finite retry budget (NaN or infinity) would retry a persistently
+   failing managed transaction forever, so it is a configuration error. *)
+let validate_retry_time seconds =
+  if Float.is_finite seconds then Ok ()
+  else
+    Error (Driver (Errors.Configuration_error "The transaction retry time must be a finite number"))
+
 (* The jittered backoff delays of the Python driver's retry_delay_generator. *)
 let retry_delay_generator config =
   let delay = ref config.initial_retry_delay in
@@ -412,6 +419,7 @@ let mark_tx_ended t ~bookmark =
 let execute t ~mode ?metadata ?timeout ?telemetry ?(pipeline_begin = false) work =
   let telemetry = Option.value ~default:0 telemetry in
   let* () = validate_execute_timeout timeout in
+  let* () = validate_retry_time t.config.max_transaction_retry_time in
   let t0 = now t in
   let delay = retry_delay_generator t.config in
   let within_budget () = elapsed_s t t0 <= t.config.max_transaction_retry_time in
