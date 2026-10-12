@@ -245,7 +245,11 @@ and a configured server receive timeout.
 `connection.recv_timeout_seconds` applies the recv timeout (needs a way to observe the
 effective read timeout).
 
-### 13. Skip the home-db cache sweep when the TTL is infinite — `lib/eio/cluster.ml:262-268` (Should fix)
+### 13. Skip the home-db cache sweep when the TTL is infinite — `lib/eio/cluster.ml:262-268` (Should fix) — done
+
+**Done.** `set_home_db` only sweeps when `not (Float.is_infinite ttl)`, so the default
+(infinite) TTL no longer scans the whole map on every store. Added
+`home_db_cache_keeps_all_with_infinite_ttl` in `test/test_cluster.ml`.
 
 **Problem.** `set_home_db` runs a full `Hashtbl.filter_map_inplace` on every store. With the
 default `home_db_cache_ttl = Float.infinity` nothing ever expires, so the scan evicts
