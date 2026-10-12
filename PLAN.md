@@ -288,7 +288,11 @@ so 12 is not caught; there is no TLS hostname-mismatch test, so 14 is not caught
 
 **Verify.** Each new test fails when the corresponding branch is broken.
 
-### 16. Reject a tiny server-provided recv timeout — `lib/eio/conn.ml:534-536` (Nice to have)
+### 16. Reject a tiny server-provided recv timeout — `lib/eio/conn.ml:534-536` (Nice to have) — done
+
+**Done.** `set_recv_timeout_hint` ignores a value below 1 second (matching the Python
+driver's positive-integer check), so a sub-second hint no longer makes every read time out
+immediately. Covered by `recv_timeout_hint_tiny_ignored` in `test/test_conn.ml`.
 
 **Problem.** `set_recv_timeout_hint` accepts any `seconds > 0.0`; a server sending `1e-9`
 makes every read time out immediately (the connection unusable).
