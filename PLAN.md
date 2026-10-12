@@ -174,7 +174,14 @@ line mentions only basic authentication, though the driver ships token managemen
 A deeper second pass found the items below. The 1-8 numbering above is kept so the fixes
 already done stay put.
 
-### 9. Fix the non-tail recursion in `Neo4jResult.list` — `lib/eio/neo4j_result.ml:84-97` (Must fix)
+### 9. Fix the non-tail recursion in `Neo4jResult.list` — `lib/eio/neo4j_result.ml:84-97` (Must fix) — done
+
+**Done.** `drain` is now tail-recursive (accumulator + `List.rev`) and `collect` no longer
+appends per batch. Added `run_list_large_result` (`test/test_session.ml`), which drains a
+10 000-record single batch in order. Note: a *stack-overflow* regression test proved
+impractical — the native stack on the dev machine tolerates millions of non-tail frames, so
+the original loop does not overflow at practical sizes; the fix is still correct and removes
+the latent non-tail recursion and the per-batch append.
 
 **Problem.** `list` fetches the whole result in one PULL (`n = -1`) and drains it with a
 non-tail-recursive `drain` (`record :: drain ()`), so a result of a few hundred thousand
