@@ -223,10 +223,70 @@ zone offset, a PEM edge), reusing the existing mock harnesses.
 
 ---
 
+## From the connection / cluster / TLS review (2026-10-12)
+
+### 12. Fix the misplaced `connection.recv_timeout_seconds` hint handling — `lib/eio/conn.ml:562-569` (Must fix)
+
+**Problem.** The recv-timeout hint handling is nested inside the `telemetry.enabled`
+match: when the server sends `telemetry.enabled: true` the `()` branch runs and
+`connection.recv_timeout_seconds` is never applied, so the connection keeps the driver's
+own read timeout (30 s) instead of the server's. Reachable on Neo4j 5.4+ with telemetry
+and a configured server receive timeout.
+
+**Fix.** Handle `connection.recv_timeout_seconds` in its own match, independent of
+`telemetry.enabled`.
+
+**Verify.** A HELLO whose `hints` set both `telemetry.enabled` and
+`connection.recv_timeout_seconds` applies the recv timeout (needs a way to observe the
+effective read timeout).
+
+### 13. Skip the home-db cache sweep when the TTL is infinite — `lib/eio/cluster.ml:262-268` (Should fix)
+
+**Problem.** `set_home_db` runs a full `Hashtbl.filter_map_inplace` on every store. With the
+default `home_db_cache_ttl = Float.infinity` nothing ever expires, so the scan evicts
+nothing (pure overhead); across many session identities it is O(n) per store, O(n²) total.
+
+**Fix.** Skip the sweep when `Float.is_infinite ttl`.
+
+**Verify.** A unit test with an infinite TTL stores many identities and the store stays
+O(1)-ish (or the map size is unchanged only via the sweep when finite).
+
+### 14. Verify the certificate host for an IP-literal `+s` connection — `lib/eio/tls_client.ml:44-48` (Should fix)
+
+**Problem.** `peer_name` returns `None` for IP literals, so `bolt+s://203.0.113.5` does no
+SNI and no hostname check — only the chain is validated. A certificate issued for any domain
+by a trusted CA is accepted (a MITM), whereas the Python driver checks IP SANs.
+
+**Fix.** When the host is an IP, verify against IP SANs (`Tls.Config.client ?ip`,
+`Certificate.ips`) instead of `~host`, or reject `+s` with an IP literal.
+
+**Verify.** A `+s` connection to a server whose certificate is for a different name fails.
+
+### 15. Add tests for 12 and 14 (Should fix)
+
+**Problem.** The mock HELLO never sets `telemetry.enabled`/`connection.recv_timeout_seconds`,
+so 12 is not caught; there is no TLS hostname-mismatch test, so 14 is not caught.
+
+**Fix.** Add the two cases (12 needs a way to observe the effective read timeout).
+
+**Verify.** Each new test fails when the corresponding branch is broken.
+
+### 16. Reject a tiny server-provided recv timeout — `lib/eio/conn.ml:534-536` (Nice to have)
+
+**Problem.** `set_recv_timeout_hint` accepts any `seconds > 0.0`; a server sending `1e-9`
+makes every read time out immediately (the connection unusable).
+
+**Fix.** Ignore a value below a small floor (e.g. 1 s).
+
+**Verify.** A hint of `1e-9` is ignored.
+
+---
+
 ## Notes
 
 - The earlier, phase-based roadmap was removed from this file on 2026-10-09; it remains
   in the git history.
 - Source: the ponytail audit of 2026-10-09.
-- Not audited in depth: `temporal.ml` / `tz_lmt.ml`, the full `conn.ml`, all of
-  `cluster.ml`, `testkitbackend/commands.ml`, `pem_key.ml` and `tls_client.ml`.
+- Not audited in depth: `temporal.ml` / `tz_lmt.ml` and `testkitbackend/commands.ml`
+  (`conn.ml`, `cluster.ml`, `pem_key.ml` and `tls_client.ml` were reviewed on 2026-10-12;
+  see 12-16).
