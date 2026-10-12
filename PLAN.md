@@ -119,7 +119,13 @@ routing table) is accepted and fails only at connect time with a confusing error
 
 **Verify.** Unit test in `test/test_addressing.ml`: `parse "host:99999999"` is `Error`.
 
-### 6. Do not release a pool permit twice after the pool is closed — `lib/eio/pool.ml:331-336`
+### 6. Do not release a pool permit twice after the pool is closed — `lib/eio/pool.ml:331-336` — done
+
+**Done.** The closed branch of `release` no longer releases a permit (a closed pool is
+never acquired from, and `close` clears `live`, so the open branch's guard is unavailable);
+it only closes the connection and drops it from `live`. Covered by the `closed_pool` test
+in `test/test_pool.ml`, which now releases the same connection twice and asserts
+`in_use_count >= 0`.
 
 **Problem.** `release` guards against a double release in the open branch (the `Skip`
 case), but the `t.closed` branch unconditionally calls `Eio.Semaphore.release`. Releasing
