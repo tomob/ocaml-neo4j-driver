@@ -40,7 +40,7 @@ project, running this program and what is going on under the hood.
 
 ## Features
 
-- Bolt protocol 3.0, 4.2–4.4, 5.0–5.8 and 6.0.
+- Bolt protocol 3.0, 4.2–4.4, 5.0–5.8 and 6.0–6.1.
 - Plain `bolt://` and TLS `bolt+s://` / `bolt+ssc://` connections.
 - Auto-commit queries with lazy streaming results (`Neo4jResult` / `Summary`).
 - The high-level `execute_query` API (eager results) plus `verify_connectivity`
@@ -51,8 +51,9 @@ project, running this program and what is going on under the hood.
 - Bookmarks.
 - Temporal types with named time zones (embedded IANA database plus an LMT
   fallback before 1970).
-- Basic authentication (LOGON after HELLO on Bolt >= 5.1).
-- Vector and UUID value types (Bolt 6).
+- Authentication: basic (LOGON after HELLO on Bolt >= 5.1) plus managed auth
+  tokens (bearer and custom schemes) with re-authentication on rotation.
+- Vector (Bolt 6) and UUID (Bolt 6.1) value types.
 - TLS trust options: system CAs (`bolt+s`), trust-all (`bolt+ssc`), custom CA
   files, and mTLS client certificates (including password-protected keys and
   rotation via a provider).
