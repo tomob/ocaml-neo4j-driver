@@ -46,3 +46,10 @@
  (libraries neodriver neodriver_eio eio_main)
  (enabled_if
   (= %{profile} dev)))
+
+(executable
+ (name config)
+ (modules config common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))

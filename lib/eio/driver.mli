@@ -25,6 +25,7 @@ val connect :
   ?client_certificate:Config.client_certificate ->
   ?client_certificate_provider:(unit -> Tls_client.client_certificate) ->
   ?pool_config:Config.pool_config ->
+  ?workspace_config:Config.workspace_config ->
   [> `Network | `Platform of [> `Generic ] ] Eio.Resource.t ->
   Mtime.t Eio.Time.clock_ty Eio.Resource.t ->
   Eio.Switch.t ->
@@ -42,10 +43,13 @@ val connect :
     [client_certificate_provider] supplies a (possibly rotating) client certificate, fetched per
     connection, and takes precedence over [client_certificate]. [pool_config] (defaults from
     [Config.default_pool_config]: 100 connections, 1h lifetime, 60s acquisition timeout, no liveness
-    check) sizes the pool and its acquisition timeout. Connections are established lazily on first
-    use; for [neo4j://] the URI's address is the initial router and routing tables are fetched on
-    demand. The [sw] switch is captured (it hosts the connection attempts), so it must outlive the
-    returned [t].
+    check) sizes the pool and its acquisition timeout. [workspace_config] (defaults from
+    [Config.default_workspace_config]) supplies the defaults of every session created by this
+    driver: retry policy, [fetch_size], [database] and [impersonated_user] (a session's own
+    [~config] overrides them), like the Python driver's driver-level workspace config. Connections
+    are established lazily on first use; for [neo4j://] the URI's address is the initial router and
+    routing tables are fetched on demand. The [sw] switch is captured (it hosts the connection
+    attempts), so it must outlive the returned [t].
     @return
       [Error (Configuration_error _)] for an unparseable URI or a conflicting security config;
       [Error _] from the lazy connect on first use otherwise. *)
@@ -58,8 +62,8 @@ val is_encrypted : t -> bool
 val session : ?config:Session.config -> t -> Session.t
 (** A new session borrowing a connection from the driver's pool (or routing cluster, selected by the
     session's [access_mode]/[database]) on first use and returning it (with a RESET) on close.
-    [config] defaults to [Session.default_config]: write access, no database or impersonation, the
-    Python retry defaults. *)
+    [config] defaults to the driver's workspace defaults (see {!connect}'s [workspace_config]: write
+    access, the configured database/impersonation, retry policy and fetch size). *)
 
 val acquire : ?mode:Config.access_mode -> t -> (Conn.t, Errors.t) result
 (** A connection for driver-level operations (e.g. verify connectivity); return it with [release].
@@ -103,12 +107,12 @@ val execute_query :
   parameters:(string * Values.t) list ->
   (Eager_result.t, Errors.t) result
 (** Execute [query] in a managed, retried transaction (a fresh session per call) and return its
-    eager result, like the Python driver's [Driver.execute_query]. [config] defaults to
-    [Session.default_config] with the driver's implicit bookmark manager (see
-    {!execute_query_bookmark_manager}); an explicit [config] controls the session settings exactly
-    ([database], [access_mode], [impersonated_user], [bookmarks], [auth], ...). [metadata] and
-    [timeout] are the transaction metadata and timeout. The result is drained eagerly into an
-    [Eager_result.t], so a retry re-runs the query against a fresh connection. *)
+    eager result, like the Python driver's [Driver.execute_query]. [config] defaults to the driver's
+    workspace defaults (see {!connect}'s [workspace_config]) with the driver's implicit bookmark
+    manager (see {!execute_query_bookmark_manager}); an explicit [config] controls the session
+    settings exactly ([database], [access_mode], [impersonated_user], [bookmarks], [auth], ...).
+    [metadata] and [timeout] are the transaction metadata and timeout. The result is drained eagerly
+    into an [Eager_result.t], so a retry re-runs the query against a fresh connection. *)
 
 val close : t -> unit
 (** Close the driver's pool/cluster: idle connections are closed and further [acquire]/[session]

@@ -10,9 +10,9 @@ let uri = env "NEO4J_URI" "bolt://localhost:7687"
 let user = env "NEO4J_USER" "neo4j"
 let password = env "NEO4J_PASSWORD" ""
 
-let connect ~net ~clock ~sw =
+let connect ?pool_config ?workspace_config net clock sw =
   match
-    Driver.connect ~uri
+    Driver.connect ~uri ?pool_config ?workspace_config
       ~auth:(Conn.basic_auth ~principal:user ~credentials:password ())
       net clock sw
   with
@@ -21,12 +21,12 @@ let connect ~net ~clock ~sw =
 
 (* Run [f] on a session (borrowed from the driver's pool), closing the session
    afterwards so its connection returns to the pool. *)
-let with_session f =
+let with_session ?pool_config ?workspace_config f =
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
       Eio.Switch.run (fun sw ->
-          let session = connect ~net ~clock ~sw |> Driver.session in
+          let session = connect ?pool_config ?workspace_config net clock sw |> Driver.session in
           Fun.protect ~finally:(fun () -> Session.close session) (fun () -> f session)))
 
 (* A hydration scope for the session's connection. *)

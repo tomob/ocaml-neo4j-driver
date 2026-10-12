@@ -88,3 +88,15 @@ transaction and returns an eager result (`keys` / `records` / `summary`);
 ```sh
 dune exec examples/execute_query.exe
 ```
+
+## config
+
+Tune the driver once instead of per session: a connection-pool config
+(`~pool_config`) and driver-level workspace defaults (`~workspace_config`:
+retry policy, fetch size, database, impersonated user). Every session the driver
+creates inherits the workspace defaults; a session's own `~config` overrides
+them. Runs a simple `RETURN 1`.
+
+```sh
+dune exec examples/config.exe
+```

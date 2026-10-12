@@ -20,7 +20,24 @@ type t = {
   connection : cluster_or_pool;
   encrypted : bool;
   query_bookmark_manager : Bookmark_manager.t;
+  default_session_config : Session.config;
 }
+
+(* The driver-level workspace settings are the defaults of every session
+   (Python's [default_workspace_config]): retry policy, fetch size, database and
+   impersonated user. A session's own [~config] overrides them. *)
+let session_config_of_workspace (w : Config.workspace_config) : Session.config =
+  {
+    Session.default_config with
+    database = w.database;
+    impersonated_user = w.impersonated_user;
+    fetch_size = Some w.fetch_size;
+    max_transaction_retry_time = w.max_transaction_retry_time;
+    initial_retry_delay = w.initial_retry_delay;
+    retry_delay_multiplier = w.retry_delay_multiplier;
+    retry_delay_jitter_factor = w.retry_delay_jitter_factor;
+    disable_auto_commit_retries = w.disable_auto_commit_retries;
+  }
 
 (* The target connection configuration for a single address. *)
 let conn_config ~(parsed : Addressing.uri) ~(pool_config : Config.pool_config) ~connection_timeout
@@ -108,7 +125,8 @@ let make_pool ?resolver ?domain_name_resolver ~(parsed : Addressing.uri)
 
 let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent ?connection_timeout
     ?encryption ?trusted_certificates ?client_certificate ?client_certificate_provider
-    ?(pool_config = Config.default_pool_config) net clock sw =
+    ?(pool_config = Config.default_pool_config)
+    ?(workspace_config = Config.default_workspace_config) net clock sw =
   let* parsed = Addressing.parse_uri uri in
   let connection_timeout =
     Option.value ~default:pool_config.connection_timeout connection_timeout
@@ -159,12 +177,13 @@ let connect ?resolver ?domain_name_resolver ~uri ~auth ?auth_manager ?user_agent
       connection;
       encrypted;
       query_bookmark_manager = Bookmark_manager.neo4j_bookmark_manager ();
+      default_session_config = session_config_of_workspace workspace_config;
     }
 
 let is_encrypted t = t.encrypted
 
 let session ?config t =
-  let config = Option.value ~default:Session.default_config config in
+  let config = Option.value ~default:t.default_session_config config in
   let connect ~mode ~database ~bookmarks ~auth =
     match t.connection with
     | Cluster cluster ->
@@ -296,7 +315,7 @@ let execute_query ?config ?metadata ?timeout t ~query ~parameters =
   let config =
     match config with
     | Some config -> config
-    | None -> { Session.default_config with bookmark_manager = Some t.query_bookmark_manager }
+    | None -> { t.default_session_config with bookmark_manager = Some t.query_bookmark_manager }
   in
   let session = session ~config t in
   let eager = ref None in

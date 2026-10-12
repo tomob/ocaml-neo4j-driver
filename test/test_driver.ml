@@ -166,6 +166,43 @@ let custom_config () =
           check (list string) "bookmarks" [ "bm-1" ] bookmarks
       | _ -> fail "expected RUN with query, parameters and extra")
 
+(* The driver-level workspace config is the default of every session created by
+   the driver: its database flows into the auto-commit RUN extra. *)
+let workspace_config_default () =
+  let received = ref [] in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         received,
+         [ Test_mock.Success; Test_mock.Success; Test_mock.Success; Test_mock.Records ([], false) ]
+       ))
+    (fun net clock sw port ->
+      let workspace_config =
+        { Config.default_workspace_config with database = Some "workspacedb" }
+      in
+      let session =
+        match
+          Driver.connect
+            ~uri:("bolt://127.0.0.1:" ^ string_of_int port)
+            ~auth:(Conn.basic_auth ()) ~workspace_config net clock sw
+        with
+        | Ok driver -> Driver.session driver
+        | Error e -> fail (Errors.to_string e)
+      in
+      (match Session.run session ~query:"RETURN 1" ~parameters:[] with
+      | Ok result -> (
+          match Neo4jResult.consume result with Ok _ -> () | Error e -> fail (Errors.to_string e))
+      | Error e -> fail (Errors.to_string e));
+      let messages = List.rev !received in
+      match Packstream.unpack (List.nth messages 2) with
+      | Ok (Packstream.Structure (tag, [ _; _; Packstream.Map extra ])) ->
+          check int "run tag" 0x10 tag;
+          check (option string) "db" (Some "workspacedb")
+            (match List.assoc_opt "db" extra with
+            | Some (Packstream.String s) -> Some s
+            | _ -> None)
+      | _ -> fail "expected RUN with query, parameters and extra")
+
 (* EagerResult.of_result drains a lazy auto-commit result into its keys,
    records and summary. *)
 let eager_result_of_result () =
@@ -512,6 +549,8 @@ let tests =
     ("[Driver] neo4j:// lazy", [ test_case "lazy reject" `Quick neo4j_uri_lazy ]);
     ("[Driver] connect and run", [ test_case "connect" `Quick connect_and_run ]);
     ("[Driver] custom config", [ test_case "config" `Quick custom_config ]);
+    ( "[Driver] workspace config",
+      [ test_case "driver-level defaults" `Quick workspace_config_default ] );
     ( "[EagerResult] of_result",
       [ test_case "drain into keys/records/summary" `Quick eager_result_of_result ] );
     ( "[Driver] supports_multi_db Bolt 3",

@@ -70,7 +70,7 @@ let () =
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
       Eio.Switch.run (fun sw ->
-          let driver = Common.connect ~net ~clock ~sw in
+          let driver = Common.connect net clock sw in
           Fun.protect
             ~finally:(fun () -> Driver.close driver)
             (fun () ->
