@@ -390,6 +390,42 @@ let run_list_fetches_all_at_once () =
       check (list int) "wire sequence" [ 0x01; 0x6A; 0x10; 0x3F ] (message_tags received);
       check (list int) "pull sizes" [ 1 ] (pull_sizes received))
 
+(* [list] drains a larger single batch in order (the drain loop accumulates in
+   reverse and is tail-recursive, so it does not build a stack proportional to
+   the result). *)
+let run_list_large_result () =
+  let count = 10_000 in
+  let records = List.init count (fun i -> [ Packstream.Int (Int64.of_int i) ]) in
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         ref [],
+         [
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Success;
+           Test_mock.Records (records, false);
+         ] ))
+    (fun net clock sw port ->
+      let connect ~mode:_ ~database:_ ~bookmarks:_ ~auth:_ =
+        match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+        | Ok conn -> Ok (conn, None)
+        | Error error -> Error error
+      in
+      let session = Session.create Session.default_config ~clock ~connect () in
+      let result =
+        match Session.run session ~query:"RETURN 1" ~parameters:[] with
+        | Ok result -> result
+        | Error error -> fail (Errors.to_string error)
+      in
+      match Neo4jResult.list result with
+      | Ok records -> (
+          check int "all records returned" count (List.length records);
+          match List.nth records (count - 1) with
+          | [ Values.Int n ] -> check int64 "last record" (Int64.of_int (count - 1)) n
+          | _ -> fail "expected a single-Int record")
+      | Error error -> fail (Errors.to_string error))
+
 (* [list] keeps records already buffered by a prior [next] and fetches the rest
    at once. *)
 let run_list_after_next_fetches_all_at_once () =
@@ -877,6 +913,8 @@ let tests =
       [ test_case "list pulls all in one PULL" `Quick run_list_fetches_all_at_once ] );
     ( "[Session] run_list_after_next_fetches_all_at_once",
       [ test_case "list after next pulls all" `Quick run_list_after_next_fetches_all_at_once ] );
+    ( "[Session] run_list_large_result",
+      [ test_case "large result does not overflow" `Quick run_list_large_result ] );
     ( "[Session] run_retries_idempotent",
       [ test_case "idempotent RUN failure retried once" `Quick run_retries_idempotent ] );
     ( "[Session] run_disabled_no_idempotent_retry",

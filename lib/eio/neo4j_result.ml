@@ -83,15 +83,17 @@ let values t = fetch_loop max_int [] t
    [values], this never pulls batch by batch with [fetch_size]. *)
 let list t =
   let* () = check_open t in
-  let rec drain () =
-    match Conn.next_record t.stream with Some record -> record :: drain () | None -> []
+  (* A tail-recursive drain (accumulating in reverse) so a large single batch
+     cannot overflow the stack; the collected order is restored by [List.rev]. *)
+  let rec drain acc =
+    match Conn.next_record t.stream with Some record -> drain (record :: acc) | None -> acc
   in
   let rec collect acc =
-    let acc = acc @ drain () in
+    let acc = drain acc in
     if Conn.has_more t.stream then
       let* _ = Conn.pull_stream t.stream in
       collect acc
-    else Ok acc
+    else Ok (List.rev acc)
   in
   let* records = collect [] in
   match Conn.error t.stream with Some error -> Error error | None -> Ok records
