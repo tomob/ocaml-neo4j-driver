@@ -193,7 +193,10 @@ let hydrate_vector fields =
   match fields with
   | [ dtype; data ] -> (
       match (vector_dtype_of_bytes dtype, bytes_ data) with
-      | Some dtype, Some data -> Some (Values.Vector { Values.dtype; Values.data })
+      (* A byte length that is not a whole number of elements is malformed: mark
+         it broken rather than silently truncating the length. *)
+      | Some dtype, Some data when Bytes.length data mod Values.vector_dtype_size dtype = 0 ->
+          Some (Values.Vector { Values.dtype; Values.data })
       | _ -> None)
   | _ -> None
 

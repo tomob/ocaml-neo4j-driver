@@ -155,6 +155,14 @@ let point_vector_unsupported () =
    with
   | Values.Vector v -> check int "vector len" 1 (Values.vector_length v)
   | v -> fail (Values.to_string v));
+  (* A byte length that is not a whole number of elements is broken, not
+     silently truncated. *)
+  (match
+     Hydration.hydrate h
+       (Structure (0x56, [ Bytes (Bytes.of_string "\xcb"); Bytes (Bytes.create 5) ]))
+   with
+  | Values.Broken _ -> ()
+  | v -> fail (Values.to_string v));
   (match Hydration.hydrate h (Structure (0x3F, [ String "FancyType"; Int 6L; Int 0L; Map [] ])) with
   | Values.Unsupported u ->
       check string "unsupported name" "FancyType" u.name;
