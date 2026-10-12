@@ -44,6 +44,9 @@ type t = {
   last_database : string option ref;
   ssr_enabled : bool ref;
   telemetry_enabled : bool ref;
+  (* The server's [connection.recv_timeout_seconds] hint, when one was applied
+     (test-support so a test can observe it). *)
+  recv_timeout_hint : float option ref;
   pipelined_pull : bool ref;
   pending_begin : int ref;
   begin_db : string option ref;
@@ -532,8 +535,10 @@ let request_telemetry ?(pending_pulls = 0) t ~message ~re_auth feature action =
 (* A positive [connection.recv_timeout_seconds] hint replaces the transport's
    receive timeout with that many seconds. *)
 let set_recv_timeout_hint conn seconds =
-  if seconds > 0.0 then
+  if seconds > 0.0 then begin
+    conn.recv_timeout_hint := Some seconds;
     Transport.set_read_timeout conn.transport (Eio.Time.Timeout.seconds conn.clock seconds)
+  end
 
 (* Record the HELLO response metadata: the server agent, the confirmed [utc]
    patch (DateTimes then use the Bolt 5 encoding), and the [ssr.enabled] hint
@@ -559,14 +564,13 @@ let set_hello_metadata conn = function
              (telemetry_disabled) with the server's hint, folded into
              [telemetry_enabled] at connect time: a server that does not
              advertise telemetry (or explicitly disables it) turns it off. *)
-          match List.assoc_opt "telemetry.enabled" hints with
+          (match List.assoc_opt "telemetry.enabled" hints with
           | Some (Packstream.Bool true) -> ()
-          | _ -> (
-              conn.telemetry_enabled := false;
-              match List.assoc_opt "connection.recv_timeout_seconds" hints with
-              | Some (Packstream.Int seconds) -> set_recv_timeout_hint conn (Int64.to_float seconds)
-              | Some (Packstream.Float seconds) -> set_recv_timeout_hint conn seconds
-              | _ -> ()))
+          | _ -> conn.telemetry_enabled := false);
+          match List.assoc_opt "connection.recv_timeout_seconds" hints with
+          | Some (Packstream.Int seconds) -> set_recv_timeout_hint conn (Int64.to_float seconds)
+          | Some (Packstream.Float seconds) -> set_recv_timeout_hint conn seconds
+          | _ -> ())
       | _ -> conn.telemetry_enabled := false)
   | _ -> ()
 
@@ -721,6 +725,7 @@ let connect ?resolver ?domain_name_resolver net clock sw config =
       last_database = ref None;
       ssr_enabled = ref false;
       telemetry_enabled = ref (not config.telemetry_disabled);
+      recv_timeout_hint = ref None;
       pipelined_pull = ref false;
       pending_begin = ref 0;
       begin_db = ref None;
@@ -1397,6 +1402,7 @@ let route ?db ?imp_user t ~routing_context ~bookmarks =
 
 let server_agent t = !(t.server_agent)
 let ssr_enabled t = !(t.ssr_enabled)
+let recv_timeout_hint t = !(t.recv_timeout_hint)
 let capabilities t = capabilities_of t
 let current_auth t = !(t.current_auth)
 

@@ -372,6 +372,10 @@ val ssr_enabled : t -> bool
 (** Whether the server advertised the [ssr.enabled] hint in its HELLO response, i.e. whether it
     sends [rt] routing tables in RUN responses (server-side routing). *)
 
+val recv_timeout_hint : t -> float option
+(** The server's [connection.recv_timeout_seconds] hint (in seconds) if one was applied, else
+    [None]. Test-support API. *)
+
 val capabilities : t -> Capabilities.t
 (** The protocol capabilities of the connection's version. *)
 

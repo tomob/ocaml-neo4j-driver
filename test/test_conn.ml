@@ -977,6 +977,35 @@ let ssr_enabled_hint () =
           check bool "ssr disabled without hint" false (Conn.ssr_enabled conn);
           Conn.close conn)
 
+(* The connection.recv_timeout_seconds hint is applied even when the server also
+   advertises telemetry (the two hints are independent). *)
+let recv_timeout_hint_with_telemetry () =
+  Test_mock.with_mock
+    (Test_mock.Session
+       ( (5, 4),
+         ref [],
+         [
+           Test_mock.Success_meta
+             [
+               ("server", Packstream.String "Neo4j/5.14.0");
+               ( "hints",
+                 Packstream.Map
+                   [
+                     ("telemetry.enabled", Packstream.Bool true);
+                     ("connection.recv_timeout_seconds", Packstream.Int 5L);
+                   ] );
+             ];
+           Test_mock.Success;
+         ] ))
+    (fun net clock sw port ->
+      match Conn.connect net clock sw (config "127.0.0.1" port Addressing.Bolt) with
+      | Error error -> fail (Errors.to_string error)
+      | Ok conn ->
+          check
+            (option (float 1e-9))
+            "recv timeout hint applied" (Some 5.0) (Conn.recv_timeout_hint conn);
+          Conn.close conn)
+
 (* The [rt] routing table of a RUN response is captured in the run metadata. *)
 let run_captures_rt () =
   let rt = Packstream.Map [ ("ttl", Packstream.Int 300L); ("servers", Packstream.List []) ] in
@@ -1056,6 +1085,8 @@ let tests =
     ( "[Conn] hello_notification_config",
       [ test_case "notification config in HELLO" `Quick hello_notification_config ] );
     ("[Conn] ssr_enabled_hint", [ test_case "ssr.enabled hint parsed" `Quick ssr_enabled_hint ]);
+    ( "[Conn] recv_timeout_hint_with_telemetry",
+      [ test_case "recv timeout applied with telemetry" `Quick recv_timeout_hint_with_telemetry ] );
     ("[Conn] run_captures_rt", [ test_case "rt metadata captured" `Quick run_captures_rt ]);
     ("[Conn] logoff_logon", [ test_case "LOGOFF/LOGON round trip" `Quick logoff_logon ]);
     ("[Conn] logon_unsupported", [ test_case "LOGON unsupported for 5.0" `Quick logon_unsupported ]);
