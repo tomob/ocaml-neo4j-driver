@@ -36,7 +36,7 @@ let parse_port ~default_port port =
   if port = "" then Ok default_port
   else
     match int_of_string_opt port with
-    | Some port when port >= 0 -> Ok port
+    | Some port when port >= 0 && port <= 65535 -> Ok port
     | _ -> config_error "Invalid port %S" port
 
 let split_host_port s =

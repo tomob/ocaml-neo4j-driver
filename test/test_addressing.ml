@@ -27,6 +27,16 @@ let parse () =
   (match Addressing.parse "[::1" with
   | Ok _ -> fail "unterminated IPv6 should be rejected"
   | Error _ -> ());
+  parse_ok "h:65535" "h:65535";
+  (match Addressing.parse "host:65536" with
+  | Ok _ -> fail "port above 65535 should be rejected"
+  | Error _ -> ());
+  (match Addressing.parse "host:99999999" with
+  | Ok _ -> fail "out-of-range port should be rejected"
+  | Error _ -> ());
+  (match Addressing.parse "[::1]:70000" with
+  | Ok _ -> fail "out-of-range IPv6 port should be rejected"
+  | Error _ -> ());
   match Addressing.parse "[::1]:banana" with
   | Ok _ -> fail "non-numeric IPv6 port should be rejected"
   | Error _ -> ()
