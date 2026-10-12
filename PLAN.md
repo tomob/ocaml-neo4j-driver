@@ -106,7 +106,11 @@ fresh ROUTE — extra load, worst of all from a misbehaving server.
 **Verify.** Unit test: `Routing_table.parse` with `ttl = 0` yields a table whose
 `ttl_seconds` is at least 1.
 
-### 5. Reject out-of-range ports when parsing — `lib/core/addressing.ml:35-40`
+### 5. Reject out-of-range ports when parsing — `lib/core/addressing.ml:35-40` — done
+
+**Done.** `parse_port` now rejects a port above 65535 (a `Configuration_error`), so
+`"host:99999999"` and `"[::1]:70000"` fail at parse time. Covered in the `parse` test in
+`test/test_addressing.ml` (with `"h:65535"` still accepted).
 
 **Problem.** `parse_port` accepts any `int >= 0`, so `host:99999999` (for example from a
 routing table) is accepted and fails only at connect time with a confusing error.
