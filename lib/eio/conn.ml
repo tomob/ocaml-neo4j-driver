@@ -532,10 +532,12 @@ let request_telemetry ?(pending_pulls = 0) t ~message ~re_auth feature action =
       recover_after_failure t error;
       Error error
 
-(* A positive [connection.recv_timeout_seconds] hint replaces the transport's
-   receive timeout with that many seconds. *)
+(* A [connection.recv_timeout_seconds] hint replaces the transport's receive
+   timeout with that many seconds. A non-positive or sub-second value is ignored
+   (like the Python driver's positive-integer check): it would otherwise make
+   every read time out immediately. *)
 let set_recv_timeout_hint conn seconds =
-  if seconds > 0.0 then begin
+  if seconds >= 1.0 then begin
     conn.recv_timeout_hint := Some seconds;
     Transport.set_read_timeout conn.transport (Eio.Time.Timeout.seconds conn.clock seconds)
   end
