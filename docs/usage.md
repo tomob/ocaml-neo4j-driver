@@ -559,5 +559,3 @@ with
 The Python driver's `warn_notification_severity` (turning server notifications
 into native Python warnings) has no OCaml equivalent: notifications are
 available on `Summary.notifications` and are logged through `Log.notifications`.
-
-See [PLAN.md](../PLAN.md) for the full roadmap.

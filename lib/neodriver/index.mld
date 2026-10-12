@@ -25,8 +25,6 @@ packages) under one namespace with short names.
 - {{:usage.html }Usage} — sessions, transactions, value types, errors.
 - {{:https://github.com/tomob/ocaml-neo4j-driver/tree/main/examples }Examples} —
   runnable programs.
-- {{:https://github.com/tomob/ocaml-neo4j-driver/blob/main/PLAN.md }PLAN.md} —
-  the implementation plan and the status of every phase.
 
 {1 Quickstart}
 

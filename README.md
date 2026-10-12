@@ -60,8 +60,6 @@ project, running this program and what is going on under the hood.
 - TestKit conformance: 119 of 126 tests passing (7 skipped — vector on the
   community server and multi-db; 4 skipped with `NEO4J_EDITION=aura`).
 
-See [PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
-
 ## Packages
 
 | Package               | Description                                                    |
@@ -78,7 +76,6 @@ See [PLAN.md](./PLAN.md) for the roadmap and what each phase delivers.
 - [Examples](./examples/) — runnable programs (`dune exec examples/<name>.exe`).
 - [API reference](https://tomob.github.io/ocaml-neo4j-driver/) — generated with
   `dune build @doc`.
-- [PLAN.md](./PLAN.md) — the implementation plan and status of every phase.
 
 ## Build
 
