@@ -143,6 +143,28 @@ val execute :
     [Session.execute_read]/[execute_write]; high-level callers such as [execute_query] pass their
     own code). *)
 
+val execute_read :
+  t ->
+  ?metadata:(string * Values.t) list ->
+  ?timeout:float ->
+  ?telemetry:int ->
+  ?pipeline_begin:bool ->
+  (Tx.t -> (unit, failure) result) ->
+  (unit, failure) result
+(** Like {!execute} with [mode = Config.Read]: the unit of work runs in a managed transaction routed
+    to a reader, with the same retry behaviour. *)
+
+val execute_write :
+  t ->
+  ?metadata:(string * Values.t) list ->
+  ?timeout:float ->
+  ?telemetry:int ->
+  ?pipeline_begin:bool ->
+  (Tx.t -> (unit, failure) result) ->
+  (unit, failure) result
+(** Like {!execute} with [mode = Config.Write]: the unit of work runs in a managed transaction
+    routed to a writer, with the same retry behaviour. *)
+
 val last_bookmarks : t -> Bookmarks.t
 (** The session's last known bookmarks (seeded from the config, updated on every successful commit).
     The bookmarks of sessions sharing a [Bookmark_manager] are available through the manager;

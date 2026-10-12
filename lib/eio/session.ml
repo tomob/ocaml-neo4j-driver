@@ -491,6 +491,12 @@ let execute t ~mode ?metadata ?timeout ?telemetry ?(pipeline_begin = false) work
   in
   attempt ()
 
+let execute_read t ?metadata ?timeout ?telemetry ?pipeline_begin work =
+  execute t ~mode:Config.Read ?metadata ?timeout ?telemetry ?pipeline_begin work
+
+let execute_write t ?metadata ?timeout ?telemetry ?pipeline_begin work =
+  execute t ~mode:Config.Write ?metadata ?timeout ?telemetry ?pipeline_begin work
+
 let close_with_result (t : t) =
   let rollback_error =
     match !(t.current_tx) with
