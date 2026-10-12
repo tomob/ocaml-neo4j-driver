@@ -205,12 +205,25 @@ let removals_keep_database () =
   check (option string) "database after remove_writer" (Some "homedb")
     (Routing_table.database table)
 
+(* A non-positive or oversized server TTL is clamped so the table never expires
+   immediately (which would force a ROUTE on every acquire). *)
+let parse_clamps_ttl () =
+  let ttl_of value =
+    match Routing_table.parse value with
+    | Some table -> Routing_table.ttl_seconds table
+    | None -> fail "expected a table"
+  in
+  check int "zero ttl clamped up" 1 (ttl_of (rt_value ~ttl:0L []));
+  check int "negative ttl clamped up" 1 (ttl_of (rt_value ~ttl:(-5L) []));
+  check int "huge ttl capped" max_int (ttl_of (rt_value ~ttl:Int64.max_int []))
+
 let tests =
   [
     ("[RoutingTable] parse_valid", [ test_case "roles and addresses" `Quick parse_valid ]);
     ("[RoutingTable] parse_skips_bad", [ test_case "unknown roles ignored" `Quick parse_skips_bad ]);
     ("[RoutingTable] parse_malformed", [ test_case "malformed values" `Quick parse_malformed ]);
     ("[RoutingTable] parse_database_field", [ test_case "db captured" `Quick parse_database_field ]);
+    ("[RoutingTable] parse_clamps_ttl", [ test_case "ttl clamped" `Quick parse_clamps_ttl ]);
     ( "[RoutingTable] removals_keep_database",
       [ test_case "db preserved by removals" `Quick removals_keep_database ] );
     ( "[RoutingTable] least_loaded_picks_min",

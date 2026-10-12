@@ -287,7 +287,7 @@ let least_loaded_reader_selection () =
 
 (* The first refresh goes through a router whose ROUTE fails with a non-fatal
    error; the router is deactivated and the cluster falls back to the next one.
-   A later refresh (TTL 0) skips the deactivated router. *)
+   A later refresh skips the deactivated router. *)
 let acquire_falls_back_to_next_router () =
   let received = List.init 3 (fun _ -> ref []) in
   Test_mock.with_servers 3
@@ -301,7 +301,8 @@ let acquire_falls_back_to_next_router () =
           ( (5, 0),
             List.nth received 0,
             [
-              Test_mock.Success; Test_mock.Success_meta [ ("rt", rt ~ttl:0L [ b; c ] [ c ] [ c ]) ];
+              Test_mock.Success;
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ b; c ] [ c ] [ c ]) ];
             ] );
         ];
         (* router B: HELLO ok, ROUTE fails (non-fatal -> deactivated) *)
@@ -322,7 +323,7 @@ let acquire_falls_back_to_next_router () =
             List.nth received 2,
             [
               Test_mock.Success;
-              Test_mock.Success_meta [ ("rt", rt ~ttl:0L [ c ] [ c ] [ c ]) ];
+              Test_mock.Success_meta [ ("rt", rt ~db:"homedb" [ c ] [ c ] [ c ]) ];
               Test_mock.Success;
             ] );
         ];

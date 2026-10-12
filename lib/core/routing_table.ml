@@ -37,6 +37,15 @@ let parse_server = function
       | _ -> None)
   | _ -> None
 
+(* The server-provided TTL clamped to a sane range: at least 1 second — a
+   non-positive TTL would make the table expire immediately, forcing a ROUTE on
+   every acquire — and at most [max_int], so a value too large for an OCaml int
+   is capped instead of wrapped by [Int64.to_int]. *)
+let clamp_ttl ttl =
+  if Int64.compare ttl 1L <= 0 then 1
+  else if Int64.compare ttl (Int64.of_int max_int) > 0 then max_int
+  else Int64.to_int ttl
+
 (* Parse an [rt] value: { ttl: Int; servers: [{ addresses: [String]; role: String }]; db: String }.
    The optional [db] field is the routing table's database (the server's home database when it was
    fetched for the default database). *)
@@ -49,7 +58,7 @@ let parse value =
             | [] ->
                 Some
                   {
-                    ttl_seconds = Int64.to_int ttl;
+                    ttl_seconds = clamp_ttl ttl;
                     routers = List.rev routers;
                     readers = List.rev readers;
                     writers = List.rev writers;
