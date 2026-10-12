@@ -194,17 +194,21 @@ its result instead of appending.
 **Verify.** Unit test: `Neo4jResult.list` on a mock result with a large single batch returns
 all records without a `Stack_overflow`.
 
-### 10. Reject an infinite `max_transaction_retry_time` — `lib/eio/session.ml:417` (Nice to have)
+### 10. Reject an infinite `max_transaction_retry_time` — `lib/eio/session.ml:417` (Nice to have) — done
+
+**Done.** `Session.execute` validates the retry budget up front (`validate_retry_time`) and
+returns a `Configuration_error` for a non-finite value, before anything is sent. Rejection
+lives in `execute` (not in `Session.create`, which has no error channel). Covered by
+`execute_rejects_infinite_retry_time` in `test/test_session.ml`.
 
 **Problem.** `within_budget () = elapsed <= max_transaction_retry_time` is always true when
 `max_transaction_retry_time = infinity`, so a managed transaction on a persistently
 retryable error loops forever. `Session.config` is user-constructible and not validated.
 
-**Fix.** Reject (or clamp) a non-finite `max_transaction_retry_time` where the session
-config is built.
+**Fix.** Reject (or clamp) a non-finite `max_transaction_retry_time`.
 
-**Verify.** Unit test: building a session with `max_transaction_retry_time = infinity` is
-rejected with a configuration error (rather than a transaction that never returns).
+**Verify.** Unit test: `Session.execute` with `max_transaction_retry_time = infinity` returns
+a configuration error (rather than a transaction that never returns).
 
 ### 11. Cover the remaining untested risky paths (Nice to have)
 
