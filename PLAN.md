@@ -260,7 +260,12 @@ nothing (pure overhead); across many session identities it is O(n) per store, O(
 **Verify.** A unit test with an infinite TTL stores many identities and the store stays
 O(1)-ish (or the map size is unchanged only via the sweep when finite).
 
-### 14. Verify the certificate host for an IP-literal `+s` connection — `lib/eio/tls_client.ml:44-48` (Should fix)
+### 14. Verify the certificate host for an IP-literal `+s` connection — `lib/eio/tls_client.ml:44-48` (Should fix) — done
+
+**Done.** `wrap` now detects an IP-literal host and passes `?ip` to `Tls.Config.client` so the
+authenticator checks the certificate's IP SANs (`Certificate.ips`); a domain name still goes
+through `?host`. Covered by `verify_ip_san` in `test/test_tls.ml` (trusting the fixture as an
+anchor, `127.0.0.1` is accepted and `1.2.3.4` rejected); it fails without the fix.
 
 **Problem.** `peer_name` returns `None` for IP literals, so `bolt+s://203.0.113.5` does no
 SNI and no hostname check — only the chain is validated. A certificate issued for any domain
@@ -271,7 +276,10 @@ by a trusted CA is accepted (a MITM), whereas the Python driver checks IP SANs.
 
 **Verify.** A `+s` connection to a server whose certificate is for a different name fails.
 
-### 15. Add tests for 12 and 14 (Should fix)
+### 15. Add tests for 12 and 14 (Should fix) — done
+
+**Done.** 12 is covered by `recv_timeout_hint_with_telemetry` (with the `Conn.recv_timeout_hint`
+accessor) and 14 by `verify_ip_san`; both fail when the corresponding branch is broken.
 
 **Problem.** The mock HELLO never sets `telemetry.enabled`/`connection.recv_timeout_seconds`,
 so 12 is not caught; there is no TLS hostname-mismatch test, so 14 is not caught.
@@ -279,9 +287,6 @@ so 12 is not caught; there is no TLS hostname-mismatch test, so 14 is not caught
 **Fix.** Add the two cases (12 needs a way to observe the effective read timeout).
 
 **Verify.** Each new test fails when the corresponding branch is broken.
-
-**Progress.** 12's test is done (`recv_timeout_hint_with_telemetry`, with the
-`Conn.recv_timeout_hint` accessor); 14's TLS hostname-mismatch test remains.
 
 ### 16. Reject a tiny server-provided recv timeout — `lib/eio/conn.ml:534-536` (Nice to have)
 
