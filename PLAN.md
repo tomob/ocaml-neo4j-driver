@@ -88,7 +88,14 @@ driver serving many distinct impersonated users grows the map without bound.
 
 **Verify.** Unit test: a `home_db_cache_ttl` of 0 (or a clock jump) drops the entry.
 
-### 4. Clamp the routing-table TTL received from the server — `lib/core/routing_table.ml:52`
+### 4. Clamp the routing-table TTL received from the server — `lib/core/routing_table.ml:52` — done
+
+**Done.** `clamp_ttl` maps a non-positive TTL to 1 second and caps a value too large for
+an OCaml int at `max_int` (instead of wrapping to a negative via `Int64.to_int`). Covered
+by `parse_clamps_ttl` in `test/test_routing_table.ml`. One cluster test
+(`acquire_falls_back_to_next_router`) used `ttl = 0` to force an immediate re-resolve; it
+now caches the table under a home database so the second acquire re-resolves without
+relying on that.
 
 **Problem.** `ttl_seconds = Int64.to_int ttl` is unvalidated. A TTL of 0 or less makes
 `fresh_table` (`cluster.ml`) treat the table as always expired, so every acquire issues a
