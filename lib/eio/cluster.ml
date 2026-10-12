@@ -261,10 +261,11 @@ let home_db_of cluster key =
    bound. *)
 let set_home_db cluster key database =
   let ttl = cluster.pool_config.home_db_cache_ttl in
-  Hashtbl.filter_map_inplace
-    (fun _ (db, cached_at) ->
-      if elapsed_s cluster cached_at <= ttl then Some (db, cached_at) else None)
-    cluster.home_dbs;
+  if not (Float.is_infinite ttl) then
+    Hashtbl.filter_map_inplace
+      (fun _ (db, cached_at) ->
+        if elapsed_s cluster cached_at <= ttl then Some (db, cached_at) else None)
+      cluster.home_dbs;
   Hashtbl.replace cluster.home_dbs key (database, now cluster)
 
 (* Re-authenticate the routing connection when the manager's token differs from

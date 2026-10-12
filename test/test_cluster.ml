@@ -1558,6 +1558,30 @@ let home_db_cache_is_bounded () =
       check int "expired home-db entries are evicted" 1 (Cluster.home_db_cache_size cluster);
       Cluster.close cluster)
 
+(* With the default (infinite) TTL nothing expires, so every identity is kept
+   (and the store path does not scan the whole cache). *)
+let home_db_cache_keeps_all_with_infinite_ttl () =
+  Eio_main.run (fun env ->
+      let clock = Eio.Stdenv.mono_clock env in
+      let initial = Addressing.IPv4 ("127.0.0.1", 7687) in
+      let never ~session_auth:_ _ = Error (Errors.Service_unavailable "not used") in
+      let cluster =
+        Cluster.create ~pool_config:Config.default_pool_config ~connect:never ~connect_routing:never
+          ~routing_context:[] ~initial clock
+      in
+      let rt db =
+        Packstream.Map
+          [
+            ("ttl", Packstream.Int 300L);
+            ("servers", Packstream.List []);
+            ("db", Packstream.String db);
+          ]
+      in
+      Cluster.update_table cluster ~database:None ~imp_user:(Some "u1") ~session_auth:None (rt "h1");
+      Cluster.update_table cluster ~database:None ~imp_user:(Some "u2") ~session_auth:None (rt "h2");
+      check int "infinite ttl keeps every identity" 2 (Cluster.home_db_cache_size cluster);
+      Cluster.close cluster)
+
 let tests =
   [
     ( "[Cluster] acquire falls back to the next router",
@@ -1612,4 +1636,6 @@ let tests =
       [ test_case "retryable + token refresh" `Quick routed_security_error_retryable ] );
     ( "[Cluster] home-db cache stays bounded",
       [ test_case "expired entries are swept" `Quick home_db_cache_is_bounded ] );
+    ( "[Cluster] home-db cache with infinite ttl",
+      [ test_case "every identity kept" `Quick home_db_cache_keeps_all_with_infinite_ttl ] );
   ]
