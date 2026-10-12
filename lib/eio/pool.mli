@@ -59,7 +59,9 @@ val put_conn : t -> Conn.t -> unit
 
 val release : t -> Conn.t -> unit
 (** Return a connection to the pool: RESET it and queue it for reuse. A connection in the [Failed]
-    state, or one whose RESET fails, is closed instead (its permit is still released). *)
+    state, or one whose RESET fails, is closed instead (its permit is still released). When the pool
+    is closed the connection is closed and no permit is released (a closed pool is never acquired
+    from). *)
 
 val close : t -> unit
 (** Close all idle connections. Connections still in use by open sessions are not closed here. *)

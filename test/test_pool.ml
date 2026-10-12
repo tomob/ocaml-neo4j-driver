@@ -263,7 +263,9 @@ let acquisition_timeout () =
           | Error _ -> fail "expected Connection_acquisition_timeout"))
 
 (* After the pool is closed, acquire fails and a released connection is closed
-   (not returned to the idle queue, so no RESET is sent). *)
+   (not returned to the idle queue, so no RESET is sent). Releasing the same
+   connection twice must not over-release its permit (the in-use count cannot
+   drop below zero). *)
 let closed_pool () =
   let received = ref [] in
   Test_mock.with_mock
@@ -281,6 +283,8 @@ let closed_pool () =
       | Ok _ -> fail "acquire on a closed pool should fail"
       | Error _ -> fail "expected Connection_pool_error");
       Pool.release pool conn;
+      Pool.release pool conn;
+      check bool "permit count not corrupted by a double release" true (Pool.in_use_count pool >= 0);
       check (list int) "wire" [ 0x01; 0x6A ] (message_tags received))
 
 (* Session.close is idempotent: the connection is released once (the second

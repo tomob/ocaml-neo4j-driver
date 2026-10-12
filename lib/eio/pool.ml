@@ -327,12 +327,14 @@ let put_conn t conn =
    RESET here, like the Python driver's release (which resets anything not
    already clean); a connection whose RESET fails (unreachable server) is
    closed. Clean connections are released without a RESET — the reset is sent
-   lazily when the next acquire reuses one. *)
+   lazily when the next acquire reuses one. When the pool is closed the
+   connection is closed and no permit is released (a closed pool is never
+   acquired from, so releasing it — once per [release] call — would only push
+   the permit count above the pool size on a double release). *)
 let release t conn =
   if t.closed then begin
     Conn.close conn;
-    remove_live t conn;
-    Eio.Semaphore.release t.permits
+    remove_live t conn
   end
   else begin
     let reusable =
