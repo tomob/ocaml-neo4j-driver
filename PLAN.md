@@ -225,7 +225,12 @@ zone offset, a PEM edge), reusing the existing mock harnesses.
 
 ## From the connection / cluster / TLS review (2026-10-12)
 
-### 12. Fix the misplaced `connection.recv_timeout_seconds` hint handling — `lib/eio/conn.ml:562-569` (Must fix)
+### 12. Fix the misplaced `connection.recv_timeout_seconds` hint handling — `lib/eio/conn.ml:562-569` (Must fix) — done
+
+**Done.** `connection.recv_timeout_seconds` is now handled in its own match, independent of
+`telemetry.enabled`. Added `Conn.recv_timeout_hint` (test-support) and
+`recv_timeout_hint_with_telemetry` in `test/test_conn.ml`, which checks the hint is applied
+even when the server also advertises telemetry.
 
 **Problem.** The recv-timeout hint handling is nested inside the `telemetry.enabled`
 match: when the server sends `telemetry.enabled: true` the `()` branch runs and
@@ -270,6 +275,9 @@ so 12 is not caught; there is no TLS hostname-mismatch test, so 14 is not caught
 **Fix.** Add the two cases (12 needs a way to observe the effective read timeout).
 
 **Verify.** Each new test fails when the corresponding branch is broken.
+
+**Progress.** 12's test is done (`recv_timeout_hint_with_telemetry`, with the
+`Conn.recv_timeout_hint` accessor); 14's TLS hostname-mismatch test remains.
 
 ### 16. Reject a tiny server-provided recv timeout — `lib/eio/conn.ml:534-536` (Nice to have)
 
