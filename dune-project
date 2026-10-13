@@ -27,6 +27,7 @@
  (depends
   (ocaml (>= 5.2.0))
   (neodriver_packstream (= :version))
+  (fmt (>= 0.9.0))
   (ptime (>= 1.1))
   (mtime (>= 2.0))
   (uri (>= 4.0))
