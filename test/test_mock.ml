@@ -240,6 +240,7 @@ let with_mock behavior client =
    behavior, sharing the [received] log. The client connects once per session
    (e.g. a pool that opens a fresh connection after discarding an old one). *)
 let with_mock_multi sessions client =
+  if not (Lazy.force can_bind) then Alcotest.skip ();
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
