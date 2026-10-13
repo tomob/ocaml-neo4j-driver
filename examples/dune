@@ -13,6 +13,13 @@
   (= %{profile} dev)))
 
 (executable
+ (name read_write_transaction)
+ (modules read_write_transaction common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
+
+(executable
  (name run_cypher)
  (modules run_cypher common)
  (libraries neodriver neodriver_eio eio_main)

@@ -75,6 +75,16 @@ afterwards.
 dune exec examples/managed_transaction.exe
 ```
 
+## read_write_transaction
+
+The read/write split: a managed write transaction (`Session.execute_write`)
+creates a `Person`, then a managed read transaction (`Session.execute_read`)
+fetches its id, both in the same session.
+
+```sh
+dune exec examples/read_write_transaction.exe
+```
+
 ## bookmarks
 
 Causal consistency with bookmarks: what they are and how to chain sessions. The
