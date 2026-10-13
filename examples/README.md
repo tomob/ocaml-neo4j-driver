@@ -19,6 +19,15 @@ export NEO4J_USER=neo4j
 export NEO4J_PASSWORD=your_password
 ```
 
+## hello_world
+
+The canonical start: create a `Greeting` node in a managed (retried) write
+transaction and print the message the server returns.
+
+```sh
+dune exec examples/hello_world.exe
+```
+
 ## connect
 
 Connect (forcing the lazy connection) and print the server address, protocol

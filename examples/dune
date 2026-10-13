@@ -1,4 +1,11 @@
 (executable
+ (name hello_world)
+ (modules hello_world common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
+
+(executable
  (name connect)
  (modules connect common)
  (libraries neodriver neodriver_eio eio_main)
