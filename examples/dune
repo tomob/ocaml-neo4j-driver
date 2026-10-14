@@ -48,6 +48,13 @@
   (= %{profile} dev)))
 
 (executable
+ (name transaction_config)
+ (modules transaction_config common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
+
+(executable
  (name managed_transaction)
  (modules managed_transaction common)
  (libraries neodriver neodriver_eio eio_main)

@@ -75,6 +75,17 @@ afterwards.
 dune exec examples/managed_transaction.exe
 ```
 
+## transaction_config
+
+Attach transaction options to a managed write: custom metadata (recorded by the
+server with the query) and a timeout, via
+`Session.execute_write ~metadata ~timeout`. The same options are accepted by
+`Driver.execute_query`.
+
+```sh
+dune exec examples/transaction_config.exe
+```
+
 ## read_write_transaction
 
 The read/write split: a managed write transaction (`Session.execute_write`)
