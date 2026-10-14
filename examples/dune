@@ -20,6 +20,13 @@
   (= %{profile} dev)))
 
 (executable
+ (name database_selection)
+ (modules database_selection common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
+
+(executable
  (name run_cypher)
  (modules run_cypher common)
  (libraries neodriver neodriver_eio eio_main)

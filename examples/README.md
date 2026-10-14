@@ -85,6 +85,18 @@ fetches its id, both in the same session.
 dune exec examples/read_write_transaction.exe
 ```
 
+## database_selection
+
+Target a named database through the session config: a one-shot
+`Driver.execute_query ~config` writes, then a `Driver.session ~config` reads it
+back. Requires a server that offers the `examples` database (multi-database:
+enterprise, or a server where it was created); otherwise the query fails with a
+clear server error.
+
+```sh
+dune exec examples/database_selection.exe
+```
+
 ## bookmarks
 
 Causal consistency with bookmarks: what they are and how to chain sessions. The
