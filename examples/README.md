@@ -131,6 +131,19 @@ transaction and returns an eager result (`keys` / `records` / `summary`);
 dune exec examples/execute_query.exe
 ```
 
+## retain_result
+
+How to retain a result across transactions: `Neo4jResult.t` is lazy and tied to
+its transaction's connection, so `Neo4jResult.list` materializes it *inside* the
+read transaction; the plain values can then be used by later write transactions.
+Reads every `Person` name and links each to a `Company` in its own managed write
+transaction. Expects some `:Person` nodes to exist (run `create` or
+`read_write_transaction` first).
+
+```sh
+dune exec examples/retain_result.exe
+```
+
 ## config
 
 Tune the driver once instead of per session: a connection-pool config
