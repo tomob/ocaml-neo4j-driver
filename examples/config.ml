@@ -9,7 +9,7 @@ let or_fail = function Ok value -> value | Error error -> failwith (Errors.to_st
 
 let pool_config () =
   Config.make_pool_config ~max_connection_pool_size:50 ~max_connection_lifetime:1800.
-    ~connection_acquisition_timeout:120. ()
+    ~connection_acquisition_timeout:120. ~connection_timeout:15. ()
   |> or_fail
 
 let workspace_config () =
@@ -22,7 +22,7 @@ let () =
       match Neo4jResult.values result |> or_fail with
       | [ [ Values.Int n ] ] ->
           Printf.printf
-            "pool: max 50 connections, 30m lifetime, 2m acquisition\n\
+            "pool: max 50 connections, 30m lifetime, 2m acquisition, 15s connect\n\
              workspace: retry 15s, fetch size 500\n\
              RETURN 1 -> %Ld\n"
             n
