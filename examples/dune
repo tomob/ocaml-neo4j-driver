@@ -76,6 +76,13 @@
   (= %{profile} dev)))
 
 (executable
+ (name tls)
+ (modules tls common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))
+
+(executable
  (name custom_auth)
  (modules custom_auth common)
  (libraries neodriver neodriver_eio eio_main)

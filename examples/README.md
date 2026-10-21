@@ -131,6 +131,20 @@ transaction and returns an eager result (`keys` / `records` / `summary`);
 dune exec examples/execute_query.exe
 ```
 
+## tls
+
+Encryption and certificate trust. The URI scheme selects them: `bolt+s` /
+`neo4j+s` verify against the system CAs, the `+ssc` variants trust any
+certificate. To trust custom CA files, set `NEO4J_TLS_CA` to comma-separated
+PEM paths and use a plain `bolt://` URI (the example then enables encryption and
+passes `Config.Custom`). Combining explicit encryption/trust with a secure
+`+s`/`+ssc` scheme is a configuration error: the scheme already carries it.
+
+```sh
+NEO4J_URI=bolt+s://localhost:7687 dune exec examples/tls.exe
+NEO4J_URI=bolt://localhost:7687 NEO4J_TLS_CA=/path/to/ca.pem dune exec examples/tls.exe
+```
+
 ## custom_auth
 
 Build an authentication token for an arbitrary scheme with
