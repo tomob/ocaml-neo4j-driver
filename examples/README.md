@@ -194,6 +194,17 @@ transaction. Expects some `:Person` nodes to exist (run `create` or
 dune exec examples/retain_result.exe
 ```
 
+## concurrency
+
+Concurrency on Eio fibers: the driver is shared and each fiber runs its own
+`Driver.execute_query` (which creates a session and a managed transaction), so
+no separate async API is needed. Runs eight `RETURN $i` queries in parallel and
+sums the results.
+
+```sh
+dune exec examples/concurrency.exe
+```
+
 ## config
 
 Tune the driver once instead of per session: a connection-pool config
