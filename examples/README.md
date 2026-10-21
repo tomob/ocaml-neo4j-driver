@@ -131,6 +131,17 @@ transaction and returns an eager result (`keys` / `records` / `summary`);
 dune exec examples/execute_query.exe
 ```
 
+## kerberos_auth
+
+Kerberos authentication: `Conn.kerberos_auth` builds a token with the
+`kerberos` scheme and the ticket from `KRB_TICKET` as credentials. The example
+builds the (lazy) driver without connecting; a real connection needs a server
+configured for Kerberos.
+
+```sh
+KRB_TICKET=... dune exec examples/kerberos_auth.exe
+```
+
 ## routing_resolver
 
 A custom address resolver via `Driver.connect ~resolver`: the URI's virtual

@@ -22,6 +22,10 @@ val basic_auth : ?principal:string -> ?credentials:string -> ?realm:string -> un
 val bearer_auth : string -> token
 (** A bearer (SSO) token: [scheme = "bearer"], only the token as [credentials]. *)
 
+val kerberos_auth : ?realm:string -> string -> token
+(** A Kerberos token ([scheme = "kerberos"]): the ticket as [credentials], with an optional [realm].
+*)
+
 val custom_auth :
   ?principal:string ->
   ?credentials:string ->

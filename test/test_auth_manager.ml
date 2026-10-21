@@ -61,6 +61,17 @@ let custom () =
     (Some (Packstream.to_string (Packstream.Map [ ("k", Packstream.String "v") ])))
     (field "parameters" fields |> Option.map Packstream.to_string)
 
+let kerberos () =
+  let token = Auth_manager.kerberos_auth "ticket123" in
+  let fields = fields_of token in
+  check (option string) "kerberos scheme" (Some "kerberos")
+    (field "scheme" fields |> Option.map (function Packstream.String s -> s | _ -> fail "scheme"));
+  check bool "kerberos principal omitted" true (field "principal" fields = None);
+  check (option string) "kerberos credentials" (Some "ticket123")
+    (field "credentials" fields
+    |> Option.map (function Packstream.String s -> s | _ -> fail "credentials"));
+  check bool "kerberos realm absent" true (field "realm" fields = None)
+
 let equality () =
   let a = Auth_manager.basic_auth ~principal:"neo4j" ~credentials:"pw" () in
   let b = Auth_manager.basic_auth ~principal:"neo4j" ~credentials:"pw" () in
@@ -193,6 +204,7 @@ let tests =
     ("[Auth_manager] to_map basic", [ test_case "basic token map" `Quick to_map ]);
     ("[Auth_manager] to_map bearer", [ test_case "bearer token map" `Quick bearer ]);
     ("[Auth_manager] to_map custom", [ test_case "custom token map" `Quick custom ]);
+    ("[Auth_manager] to_map kerberos", [ test_case "kerberos token map" `Quick kerberos ]);
     ("[Auth_manager] equality", [ test_case "token equality" `Quick equality ]);
     ("[Auth_manager] expiry", [ test_case "expiring auth" `Quick expiry ]);
     ("[Auth_manager] static", [ test_case "static manager" `Quick static_manager ]);

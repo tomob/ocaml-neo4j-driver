@@ -72,6 +72,9 @@ let basic_auth ?(principal = "neo4j") ?(credentials = "") ?realm () =
 
 (* A bearer (SSO) token: only the token as credentials. *)
 let bearer_auth = Auth_manager.bearer_auth
+
+(* A Kerberos token: the ticket as the "kerberos" scheme's credentials. *)
+let kerberos_auth = Auth_manager.kerberos_auth
 let capabilities_of t = Capabilities.of_version t.major t.minor
 let supports_impersonation t = t.major > 4 || (t.major = 4 && t.minor >= 4)
 let re_auth_of major minor = (Capabilities.of_version major minor).supports_re_auth

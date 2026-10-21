@@ -79,6 +79,10 @@ val basic_auth : ?principal:string -> ?credentials:string -> ?realm:string -> un
 val bearer_auth : string -> auth
 (** A bearer (SSO) token ([scheme = "bearer"]), with the token as [credentials]. *)
 
+val kerberos_auth : ?realm:string -> string -> auth
+(** A Kerberos token ([scheme = "kerberos"]): the ticket as [credentials], with an optional [realm].
+*)
+
 val connect :
   ?resolver:(Addressing.t -> (Addressing.t list, Errors.t) result) ->
   ?domain_name_resolver:(string -> (string list, Errors.t) result) ->

@@ -42,6 +42,12 @@ let bearer_auth credentials =
     parameters = [];
   }
 
+(* A Kerberos token: scheme [kerberos] with the ticket as credentials (the
+   principal is omitted on the wire), mirroring the Java driver's
+   [AuthTokens.kerberos]. *)
+let kerberos_auth ?realm ticket =
+  { scheme = "kerberos"; principal = None; credentials = Some ticket; realm; parameters = [] }
+
 (* A custom token for arbitrary authentication schemes, mirroring the Python
    [custom_auth]: optional principal / credentials / realm plus extra
    [parameters] sent as a map. *)
