@@ -131,6 +131,19 @@ transaction and returns an eager result (`keys` / `records` / `summary`);
 dune exec examples/execute_query.exe
 ```
 
+## custom_auth
+
+Build an authentication token for an arbitrary scheme with
+`Auth_manager.custom_auth ~principal ~credentials ~realm ~parameters scheme`
+and pass it as `~auth` to the driver. The defaults (basic scheme,
+`NEO4J_USER`/`NEO4J_PASSWORD`) behave like basic auth; override with
+`AUTH_SCHEME`, `AUTH_PRINCIPAL`, `AUTH_CREDENTIALS`, `AUTH_REALM`,
+`AUTH_PARAM_KEY` and `AUTH_PARAM_VALUE`. Runs `RETURN 1`.
+
+```sh
+dune exec examples/custom_auth.exe
+```
+
 ## retain_result
 
 How to retain a result across transactions: `Neo4jResult.t` is lazy and tied to
