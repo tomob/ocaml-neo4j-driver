@@ -10,23 +10,27 @@ let uri = env "NEO4J_URI" "bolt://localhost:7687"
 let user = env "NEO4J_USER" "neo4j"
 let password = env "NEO4J_PASSWORD" ""
 
-let connect ?auth ?pool_config ?workspace_config net clock sw =
+let connect ?uri:target_uri ?auth ?resolver ?pool_config ?workspace_config net clock sw =
+  let target_uri = Option.value ~default:uri target_uri in
   let auth =
     Option.value ~default:(Conn.basic_auth ~principal:user ~credentials:password ()) auth
   in
-  match Driver.connect ~uri ?pool_config ?workspace_config ~auth net clock sw with
+  match
+    Driver.connect ~uri:target_uri ?resolver ?pool_config ?workspace_config ~auth net clock sw
+  with
   | Ok driver -> driver
   | Error error -> failwith (Errors.to_string error)
 
 (* Run [f] on a session (borrowed from the driver's pool), closing the session
    afterwards so its connection returns to the pool. *)
-let with_session ?auth ?pool_config ?workspace_config f =
+let with_session ?uri ?auth ?resolver ?pool_config ?workspace_config f =
   Eio_main.run (fun env ->
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.mono_clock env in
       Eio.Switch.run (fun sw ->
           let session =
-            connect ?auth ?pool_config ?workspace_config net clock sw |> Driver.session
+            connect ?uri ?auth ?resolver ?pool_config ?workspace_config net clock sw
+            |> Driver.session
           in
           Fun.protect ~finally:(fun () -> Session.close session) (fun () -> f session)))
 

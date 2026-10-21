@@ -131,6 +131,18 @@ transaction and returns an eager result (`keys` / `records` / `summary`);
 dune exec examples/execute_query.exe
 ```
 
+## routing_resolver
+
+A custom address resolver via `Driver.connect ~resolver`: the URI's virtual
+host (`bolt://virtual.example.com:7687`) is mapped to the host/port parsed from
+`NEO4J_URI`. For `bolt://` the resolver replaces the address lookup (each
+returned address is tried in turn); for `neo4j://` it also supplies the routing
+seeds. Runs a `CREATE`.
+
+```sh
+dune exec examples/routing_resolver.exe
+```
+
 ## tls
 
 Encryption and certificate trust. The URI scheme selects them: `bolt+s` /
