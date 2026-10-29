@@ -10,6 +10,8 @@ packages) under one namespace with short names.
 - Plain [bolt://] and TLS [bolt+s://] / [bolt+ssc://] connections.
 - [neo4j://] routing (minimal: ROUTE message, per-database routing tables).
 - Auto-commit queries with lazy streaming results ([Neo4jResult] / [Summary]).
+- Typed result decoding ([Decode]): name-based field lookup, one decoder for rows and node
+  properties.
 - Explicit and managed transactions with automatic retry.
 - Bookmarks.
 - Temporal types with named time zones (embedded IANA database plus an LMT
@@ -93,4 +95,5 @@ The root {!module:Neodriver} re-exports the whole API:
 - core types: {!module:Neodriver.Packstream}, {!module:Neodriver.Errors},
   {!module:Neodriver.Config}, {!module:Neodriver.Addressing},
   {!module:Neodriver.Temporal}, {!module:Neodriver.Values},
-  {!module:Neodriver.Hydration}, {!module:Neodriver.Capabilities}.
+  {!module:Neodriver.Decode}, {!module:Neodriver.Hydration},
+  {!module:Neodriver.Capabilities}.

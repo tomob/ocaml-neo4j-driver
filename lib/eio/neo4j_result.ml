@@ -101,7 +101,13 @@ let list t =
 let data t =
   let ks = keys t in
   let* records = values t in
-  Ok (List.map (fun record -> List.combine ks record) records)
+  let rec collect acc = function
+    | [] -> Ok (List.rev acc)
+    | record :: rest ->
+        let* row = Decode.row_of_values ~keys:ks record in
+        collect (row :: acc) rest
+  in
+  collect [] records
 
 let consume t =
   (* Drain the rest of the stream with a DISCARD (like the Python driver's
@@ -146,3 +152,40 @@ let single_optional t =
              Python driver's single(strict=False)), not a PULL-all. *)
           let* () = Conn.discard_stream t.stream in
           Ok (Some record, [ "expected at most one record but got multiple records" ]))
+
+let check_keys t decoder = Decode.check_keys ~keys:(keys t) decoder
+
+let next_as t (decoder : 'a Decode.t) : ('a option, Errors.t) result =
+  let* record = next t in
+  match record with
+  | None -> Ok None
+  | Some values ->
+      let* row = Decode.row_of_values ~keys:(keys t) values in
+      Result.map (fun value -> Some value) (Decode.decode_row decoder row)
+
+let decode_all t decoder =
+  let rec loop index acc =
+    match next_as t decoder with
+    | Ok None -> Ok (List.rev acc)
+    | Ok (Some value) -> loop (index + 1) (value :: acc)
+    | Error (Errors.Decode_error message) ->
+        (* The caller abandons the result: discard the rest so the connection is
+           left clean. *)
+        ignore (consume t);
+        Error (Errors.Decode_error (Printf.sprintf "record %d: %s" index message))
+    | Error error -> Error error
+  in
+  loop 1 []
+
+let decode_single t decoder =
+  let* values = single t in
+  let* row = Decode.row_of_values ~keys:(keys t) values in
+  Decode.decode_row decoder row
+
+let decode_single_optional t decoder =
+  let* record, warnings = single_optional t in
+  match record with
+  | None -> Ok (None, warnings)
+  | Some values ->
+      let* row = Decode.row_of_values ~keys:(keys t) values in
+      Result.map (fun value -> (Some value, warnings)) (Decode.decode_row decoder row)

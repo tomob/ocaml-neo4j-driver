@@ -42,7 +42,9 @@ project, running this program and what is going on under the hood.
 
 - Bolt protocol 3.0, 4.2–4.4, 5.0–5.8 and 6.0–6.1.
 - Plain `bolt://` and TLS `bolt+s://` / `bolt+ssc://` connections.
-- Auto-commit queries with lazy streaming results (`Neo4jResult` / `Summary`).
+- Auto-commit queries with lazy streaming results (`Neo4jResult` / `Summary`),
+  including typed decoding of records into OCaml values (`Decode`, field lookup
+  by name).
 - The high-level `execute_query` API (eager results) plus `verify_connectivity`
   and `supports_multi_db`.
 - Explicit and managed transactions with automatic retry.

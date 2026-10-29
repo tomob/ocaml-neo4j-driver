@@ -56,6 +56,7 @@ type t =
   | Result_consumed_error of string
   | Result_not_single_error of string
   | Broken_record_error of string
+  | Decode_error of string
   | Configuration_error of string
   | Auth_configuration_error of string
   | Certificate_configuration_error of string

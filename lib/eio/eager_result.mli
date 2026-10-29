@@ -14,3 +14,11 @@ type t = {
 
 val of_result : Neo4j_result.t -> (t, Errors.t) result
 (** Drain [result] fully and return its keys, records and summary. *)
+
+val check_keys : t -> 'a Decode.t -> (unit, Errors.t) result
+(** Check that [decoder] can find every field it reads in {!keys}; extra keys are allowed, a missing
+    or duplicate key is an [Errors.Decode_error]. *)
+
+val decode_all : t -> 'a Decode.t -> ('a list, Errors.t) result
+(** Decode every record with [decoder]. On a decode failure the error names the 1-based record
+    number. *)

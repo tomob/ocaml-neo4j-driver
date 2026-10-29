@@ -12,6 +12,7 @@ module Addressing = Neodriver_core.Addressing
 module Deadline = Neodriver_core.Deadline
 module Temporal = Neodriver_core.Temporal
 module Values = Neodriver_core.Values
+module Decode = Neodriver_core.Decode
 module Hydration = Neodriver_core.Hydration
 module Capabilities = Neodriver_core.Capabilities
 module Routing_table = Neodriver_core.Routing_table

@@ -26,6 +26,9 @@ module Temporal = Neodriver_core.Temporal
 module Values = Neodriver_core.Values
 (** Rich value types. *)
 
+module Decode = Neodriver_core.Decode
+(** Typed decoding of query results. *)
+
 module Hydration = Neodriver_core.Hydration
 (** Hydration. *)
 

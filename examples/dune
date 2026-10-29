@@ -123,3 +123,10 @@
  (libraries neodriver neodriver_eio eio_main)
  (enabled_if
   (= %{profile} dev)))
+
+(executable
+ (name typed_results)
+ (modules typed_results common)
+ (libraries neodriver neodriver_eio eio_main)
+ (enabled_if
+  (= %{profile} dev)))

@@ -8,6 +8,7 @@ module Addressing = Addressing
 module Deadline = Deadline
 module Temporal = Temporal
 module Values = Values
+module Decode = Decode
 module Hydration = Hydration
 module Capabilities = Capabilities
 module Routing_table = Routing_table

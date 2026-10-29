@@ -10,8 +10,8 @@ generated API documentation (`dune build @doc`, then open
 
 `open Neodriver` exposes the whole driver: `Driver`, `Conn`, `Session`, `Tx`,
 `Neo4jResult`, `Summary`, and the core types `Errors`, `Config`, `Addressing`,
-`Values`, `Temporal`, `Hydration` and `Packstream`. Programs also need the
-`eio_main` library for the `Eio_main.run` entry point.
+`Values`, `Decode`, `Temporal`, `Hydration` and `Packstream`. Programs also need
+the `eio_main` library for the `Eio_main.run` entry point.
 
 ## Connecting
 
@@ -82,6 +82,62 @@ match Session.run session ~query:"RETURN 1 AS n" ~parameters:[] with
   section below.
 - `Session.config` (base `Session.default_config`) also selects the `database`
   and the transaction retry settings.
+
+## Typed results
+
+`Neo4jResult.values` / `data` hand back `Values.t`; pattern matching works but is
+positional and brittle. `Decode` builds a decoder that reads fields **by name**
+— the names the server reported in the RUN metadata:
+
+```ocaml
+type person = { name : string; age : int }
+
+let person_decoder : person Decode.t =
+  let open Decode in
+  let+ name = field "name" string
+  and+ age = field "age" int in
+  { name; age }
+```
+
+- `field key d` reads a column; a missing column is an error listing the
+  available fields. `option d` accepts `Null` (as `None`) but still requires the
+  column; `field_opt key d` also accepts a missing column; `field_or key
+  ~default d` falls back to `default`.
+- The same decoder works for a `Values.Node` or `Values.Relationship` (it reads
+  their properties), so `field "person" person_decoder` handles both `RETURN p`
+  and `RETURN properties(p)`.
+- `list`, `array`, `map` and `both` compose decoders; `date`, `time`,
+  `datetime`, `duration`, `point`, `uuid`, `vector`, `node`, `relationship` and
+  the primitive decoders cover the value types. `raw` is the escape hatch.
+
+Decode a streamed result:
+
+```ocaml
+match Session.run session ~query ~parameters:[] with
+| Ok result -> (
+    match Neo4jResult.check_keys result person_decoder with
+    | Error error -> failwith (Errors.to_string error)
+    | Ok () -> (
+        match Neo4jResult.next_as result person_decoder with
+        | Ok (Some person) -> Printf.printf "%s\n" person.name
+        | Ok None -> ()
+        | Error error -> failwith (Errors.to_string error)))
+| Error error -> failwith (Errors.to_string error)
+```
+
+- `check_keys` compares the decoder's required fields with the result's before
+  any record is pulled; extra columns are allowed, and fields read with
+  `field_opt`/`field_or` are optional so they are not required.
+- `next_as` streams one decoded record; `decode_all` decodes everything (and
+  reports the 1-based record number on failure); `decode_single` and
+  `decode_single_optional` enforce cardinality.
+- `Neo4jResult.data` still returns the raw field/value pairs; a record whose
+  length does not match the field names is a `Broken_record_error` (not an
+  exception).
+- The eager API has `EagerResult.check_keys` and `EagerResult.decode_all`.
+
+The [typed results example](../examples/typed_results.ml) puts node, list,
+nullable and temporal decoding together.
 
 ## Transactions
 

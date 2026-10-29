@@ -56,6 +56,18 @@ record. Works best after `create`.
 dune exec examples/run_cypher.exe
 ```
 
+## typed_results
+
+Decode a result into OCaml records by field name: a node (read through its
+properties), an aggregated list, and nullable scalar/date/nested-map values.
+Shows `Neo4jResult.check_keys` (reject a wrong query/decoder pair before pulling
+records), `Neo4jResult.next_as` streaming and `consume`. Creates and cleans up
+its own `:TypedResultsDemo` data, so it can run on any empty database.
+
+```sh
+dune exec examples/typed_results.exe
+```
+
 ## transaction
 
 An explicit transaction: `BEGIN`, a `CREATE` inside the transaction, then

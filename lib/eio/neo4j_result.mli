@@ -21,8 +21,21 @@ val stream : t -> Conn.stream
 val keys : t -> string list
 (** The field names of the returned records. *)
 
+val check_keys : t -> 'a Decode.t -> (unit, Errors.t) result
+(** Check that [decoder] can find every field it requires (its [Decode.aliases]) in the result's
+    field names. Extra result fields are allowed; a missing required field or a duplicate result
+    field name is an [Errors.Decode_error]. Fields read with [Decode.field_opt] or [Decode.field_or]
+    are optional and are not required. RUN already reports the field names, so this can reject a
+    wrong query/decoder pair before any record is pulled. *)
+
 val next : t -> (Values.t list option, Errors.t) result
 (** The next record, or [None] once the stream is exhausted. *)
+
+val next_as : t -> 'a Decode.t -> ('a option, Errors.t) result
+(** Like {!next}, but decode the record with [decoder]. Field names come from the result's RUN
+    metadata, so decoding is by name, not by position. The record is consumed even when decoding
+    fails; the rest of the stream stays readable (drain it with {!consume}). The
+    server-failure/consumed-result behaviour is exactly that of {!next}. *)
 
 val peek : t -> (Values.t list option, Errors.t) result
 (** The next record without advancing past it. *)
@@ -40,7 +53,12 @@ val list : t -> (Values.t list list, Errors.t) result
     configured fetch size. *)
 
 val data : t -> ((string * Values.t) list list, Errors.t) result
-(** All remaining records, each paired with its field names. *)
+(** All remaining records, each paired with its field names. A record whose number of values does
+    not match the number of field names is a [Errors.Broken_record_error]. *)
+
+val decode_all : t -> 'a Decode.t -> ('a list, Errors.t) result
+(** All remaining records, decoded with [decoder]. On a decode failure the rest of the stream is
+    discarded and the error names the 1-based record number. *)
 
 val consume : t -> (Summary.t, Errors.t) result
 (** Drain the stream and return its summary. *)
@@ -48,6 +66,12 @@ val consume : t -> (Summary.t, Errors.t) result
 val single : t -> (Values.t list, Errors.t) result
 (** The single remaining record; an error unless exactly one. *)
 
+val decode_single : t -> 'a Decode.t -> ('a, Errors.t) result
+(** Like {!single}, decoded with [decoder]. *)
+
 val single_optional : t -> (Values.t list option * string list, Errors.t) result
 (** Expect at most one record. Zero records is [Ok (None, [])]; one is [Ok (Some _, [])]; more than
     one returns the first record together with a warning (draining the rest of the stream). *)
+
+val decode_single_optional : t -> 'a Decode.t -> ('a option * string list, Errors.t) result
+(** Like {!single_optional}, with the record decoded by [decoder]. *)

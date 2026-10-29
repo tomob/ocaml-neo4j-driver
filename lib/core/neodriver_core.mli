@@ -20,6 +20,10 @@ module Temporal = Temporal
 module Values = Values
 (** Rich value types (graph, spatial, temporal, vector, unsupported, broken). *)
 
+module Decode = Decode
+(** Typed decoding of query results (name-based field lookup, one decoder for rows and node
+    properties). *)
+
 module Hydration = Hydration
 (** Conversion between PackStream values and rich values. *)
 

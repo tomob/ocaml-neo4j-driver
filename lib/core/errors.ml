@@ -57,6 +57,7 @@ type t =
   | Result_consumed_error of string
   | Result_not_single_error of string
   | Broken_record_error of string
+  | Decode_error of string
   | Configuration_error of string
   | Auth_configuration_error of string
   | Certificate_configuration_error of string
@@ -76,7 +77,7 @@ let is_retryable = function
       true
   | Incomplete_commit _ | Session_error _ | Transaction_error _ | Transaction_nesting_error _
   | Result_failed_error _ | Result_consumed_error _ | Result_not_single_error _
-  | Broken_record_error _ | Configuration_error _ | Auth_configuration_error _
+  | Broken_record_error _ | Decode_error _ | Configuration_error _ | Auth_configuration_error _
   | Certificate_configuration_error _ | Unsupported_server_product _ | Connection_pool_error _
   | Connection_acquisition_timeout _ ->
       false
@@ -225,6 +226,7 @@ let message = function
   | Result_consumed_error m
   | Result_not_single_error m
   | Broken_record_error m
+  | Decode_error m
   | Configuration_error m
   | Auth_configuration_error m
   | Certificate_configuration_error m
