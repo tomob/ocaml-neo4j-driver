@@ -1,0 +1,9 @@
+(test
+ (name test_ppx)
+ (libraries alcotest neodriver_core)
+ (preprocess
+  (pps neodriver_ppx)))
+
+(test
+ (name check_errors)
+ (libraries alcotest ppxlib neodriver_ppx))

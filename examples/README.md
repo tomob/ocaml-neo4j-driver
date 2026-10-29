@@ -68,6 +68,27 @@ its own `:TypedResultsDemo` data, so it can run on any empty database.
 dune exec examples/typed_results.exe
 ```
 
+## typed_results_ppx
+
+The same query and output as `typed_results`, but the decoders are generated
+with `[@@deriving neo4j]` (the `neodriver_ppx` package). Shows
+`[@neo4j.missing_none]` for nullable columns and `[@neo4j.nested]` for the
+address map and the person node.
+
+```sh
+dune exec examples/typed_results_ppx.exe
+```
+
+## typed_create
+
+The `create` flow with a typed record and `[@@deriving neo4j_params]`: query
+parameters are generated from the record fields, with `[@neo4j.alias]` mapping
+`government_id` to the `$gov_id` parameter. Builds the `neodriver_ppx` package.
+
+```sh
+dune exec examples/typed_create.exe
+```
+
 ## transaction
 
 An explicit transaction: `BEGIN`, a `CREATE` inside the transaction, then

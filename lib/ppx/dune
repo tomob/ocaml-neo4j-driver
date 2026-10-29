@@ -1,0 +1,8 @@
+(library
+ (name neodriver_ppx)
+ (public_name neodriver_ppx)
+ (kind ppx_rewriter)
+ (libraries ppxlib)
+ (preprocess
+  (pps ppxlib.metaquot))
+ (ppx_runtime_libraries neodriver_core))

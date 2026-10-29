@@ -11,7 +11,7 @@ packages) under one namespace with short names.
 - [neo4j://] routing (minimal: ROUTE message, per-database routing tables).
 - Auto-commit queries with lazy streaming results ([Neo4jResult] / [Summary]).
 - Typed result decoding ([Decode]): name-based field lookup, one decoder for rows and node
-  properties.
+  properties. The optional [neodriver_ppx] package derives decoders and parameter encoders.
 - Explicit and managed transactions with automatic retry.
 - Bookmarks.
 - Temporal types with named time zones (embedded IANA database plus an LMT
@@ -62,13 +62,16 @@ v}
 
 {1 Packages}
 
-The four opam packages, in dependency order:
+The four core opam packages, in dependency order:
 
 - [neodriver] — this aggregator: [open Neodriver] covers the whole API.
 - [neodriver_packstream] — PackStream binary serialization.
 - [neodriver_core] — transport-agnostic core (errors, config, temporal
   values, hydration).
 - [neodriver_eio] — the Eio (OCaml 5) backend.
+
+The optional [neodriver_ppx] package provides the [@@deriving neo4j] and
+[@@deriving neo4j_params] derivers.
 
 {1 API reference}
 

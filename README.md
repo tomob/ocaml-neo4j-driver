@@ -44,7 +44,9 @@ project, running this program and what is going on under the hood.
 - Plain `bolt://` and TLS `bolt+s://` / `bolt+ssc://` connections.
 - Auto-commit queries with lazy streaming results (`Neo4jResult` / `Summary`),
   including typed decoding of records into OCaml values (`Decode`, field lookup
-  by name).
+  by name). An optional ppx (`neodriver_ppx`) derives the decoders
+  (`[@@deriving neo4j]`) and query-parameter encoders (`[@@deriving
+  neo4j_params]`).
 - The high-level `execute_query` API (eager results) plus `verify_connectivity`
   and `supports_multi_db`.
 - Explicit and managed transactions with automatic retry.
@@ -70,6 +72,7 @@ project, running this program and what is going on under the hood.
 | `neodriver_packstream`| PackStream binary serialization (pure, no async dependencies)   |
 | `neodriver_core`      | Transport-agnostic core logic (errors, config, hydration, ...)  |
 | `neodriver_eio`       | Eio (direct-style, OCaml 5) backend                              |
+| `neodriver_ppx`       | Optional ppx: `[@@deriving neo4j]` / `[@@deriving neo4j_params]` |
 
 ## Documentation
 

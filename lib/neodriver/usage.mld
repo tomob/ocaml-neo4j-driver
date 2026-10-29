@@ -128,6 +128,62 @@ v}
 
 The {{:https://github.com/tomob/ocaml-neo4j-driver/tree/main/examples/typed_results.ml }typed results example} puts node, list, nullable and temporal decoding together.
 
+{2 Generating decoders and parameters}
+
+The optional [neodriver_ppx] package derives the boilerplate. A record annotated
+with [@@deriving neo4j] gets [<type>_decoder] and [<type>_aliases];
+[@@deriving neo4j_params] gets [<type>_params], a [(string * Values.t) list] for
+[Session.run]:
+
+{v
+type address = {
+  city : string;
+  country : string option;
+} [@@deriving neo4j, neo4j_params]
+
+type person = {
+  name : string; [@neo4j.alias "full_name"]
+  age : int;
+  nickname : string option; [@neo4j.missing_none]
+  address : address option; [@neo4j.nested]
+  id : string; [@neo4j.uuid]
+  hired_at : Temporal.Date.t option;
+  tags : string list;
+} [@@deriving neo4j, neo4j_params]
+v}
+
+- [\[@neo4j.alias "name"\]] — the result field / query parameter name
+  (default: the OCaml field name).
+- [\[@neo4j.skip\]] — omit the field from [<type>_params]; decoding is
+  unaffected.
+- [\[@neo4j.missing_none\]] — the field must be an option; a missing result
+  field or [Null] decodes to [None] (and [check_keys] does not require it).
+  Parameter encoding turns [None] into [Null].
+- [\[@neo4j.nested\]] — the field is a record with its own derivers; uses
+  [<type>_decoder] / [<type>_params]. Works through [option] and [list]. The
+  nested type must be declared before the type that uses it.
+- [\[@neo4j.uuid\]] — a [string] field encoded/decoded as [Values.Uuid] (Bolt
+  6.1).
+
+Add the ppx to a dune stanza:
+
+{v
+(executable
+ (name app)
+ (libraries neodriver)
+ (preprocess (pps neodriver_ppx)))
+v}
+
+The generated code refers to [Neodriver_core] internally; the ppx declares it as
+a runtime library, so it does not need to be added to the stanza's [libraries].
+
+Supported field types: [string], [bool], [int], [int64], [float], [bytes],
+[list]/[option], [Temporal.Date.t]/[Time.t]/[DateTime.t]/[Duration.t],
+[Values.point]/[vector]/[node]/[relationship]/[unbound_relationship]/[path]/[t],
+and nested records via [\[@neo4j.nested\]]. Graph values are decoder-only and
+cannot be query parameters. Non-record types, polymorphic records, type groups
+and recursive records are rejected.
+
 {1 Transactions}
 
 {2 Explicit}

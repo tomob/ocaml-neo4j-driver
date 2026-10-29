@@ -72,3 +72,14 @@
   (neodriver_core (= :version))
   (neodriver_eio (= :version))
   (alcotest :with-test)))
+
+(package
+ (name neodriver_ppx)
+ (synopsis "ppx derivers for typed Neo4j query results and parameters")
+ (description
+  "Derives typed result decoders ([@@deriving neo4j]) and query-parameter encoders ([@@deriving neo4j_params]) for record types used with the pure OCaml Neo4j driver.")
+ (depends
+  (ocaml (>= 5.2.0))
+  (ppxlib (>= 0.33.0))
+  (neodriver_core (= :version))
+  (alcotest :with-test)))
