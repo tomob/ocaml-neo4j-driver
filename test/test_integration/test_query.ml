@@ -59,9 +59,12 @@ let streaming () =
                 | Ok conn ->
                     let hydration = Conn.hydration conn in
                     let outcome =
+                      (* [run] pipelines the first PULL with the RUN; use the
+                         same batch size here so the first [pull] consumes that
+                         in-flight batch instead of sending a second PULL. *)
                       match
-                        Conn.run conn ~hydration ~query:"UNWIND [1,2,3,4,5] AS n RETURN n"
-                          ~parameters:[]
+                        Conn.run conn ~hydration ~fetch_size:2
+                          ~query:"UNWIND [1,2,3,4,5] AS n RETURN n" ~parameters:[]
                       with
                       | Error error -> Error error
                       | Ok _ -> (

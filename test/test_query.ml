@@ -108,7 +108,7 @@ let streaming_has_more () =
     (fun net clock sw port ->
       let conn = connect net clock sw port in
       let hydration = Conn.hydration conn in
-      (match Conn.run conn ~hydration ~query:"q" ~parameters:[] with
+      (match Conn.run conn ~hydration ~fetch_size:2 ~query:"q" ~parameters:[] with
       | Ok _ -> ()
       | Error error -> fail (Errors.to_string error));
       (match Conn.pull conn ~hydration ~n:2 with
